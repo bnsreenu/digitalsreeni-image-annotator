@@ -27,14 +27,14 @@ CITATION REQUEST:
 If you use this software in your research, please cite it as follows:
 
 Bhattiprolu, S. (2024). Image Annotator [Computer software]. 
-https://github.com/bnsreenu/image_annotator
+https://github.com/bnsreenu/digitalsreeni-image-annotator
 
 BibTeX:
 @software{image_annotator,
   author = {Bhattiprolu, Sreenivas},
   title = {Image Annotator},
   year = {2024},
-  url = {https://github.com/bnsreenu/image_annotator}
+  url = {https://github.com/bnsreenu/digitalsreeni-image-annotator}
 }
 
 While not required by the license, citation is appreciated and helps support the 

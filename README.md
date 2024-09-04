@@ -1,7 +1,8 @@
-# Image Annotator
+# DigitalSreeni Image Annotator
 
-![Python Version](https://img.shields.io/badge/python-3.7%2B-blue)
+![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![PyPI version](https://badge.fury.io/py/digitalsreeni-image-annotator.svg)
 
 A powerful and user-friendly tool for annotating images with polygons and rectangles, built with PyQt5.
 
@@ -20,28 +21,21 @@ Dr. Sreenivas Bhattiprolu
 
 ## Installation
 
-1. Clone the repository:
-   ```
-   git clone https://github.com/your-username/image-annotator.git
-   cd image-annotator
-   ```
+You can install the DigitalSreeni Image Annotator directly from PyPI:
 
-2. Create a virtual environment (optional but recommended):
-   ```
-   python -m venv venv
-   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-   ```
-
-3. Install the package and its dependencies:
-   ```
-   pip install -e .
-   ```
+```bash
+pip install digitalsreeni-image-annotator
+```
 
 ## Usage
 
-1. Run the Image Annotator application:
+1. Run the DigitalSreeni Image Annotator application:
+   ```bash
+   digitalsreeni-image-annotator
    ```
-   python -m image_annotator.main
+   or
+   ```bash
+   python -m digitalsreeni_image_annotator.main
    ```
 
 2. Using the application:
@@ -52,12 +46,34 @@ Dr. Sreenivas Bhattiprolu
    - Edit existing annotations by double-clicking on them.
    - Save your annotations using the "Save Annotations" button.
    - Use "Import Saved Annotations" to load previously created annotations.
+   - Access the help documentation by clicking the "Help" button.
 
 3. Keyboard shortcuts:
    - Use the mouse wheel or trackpad to zoom in/out
    - Hold Ctrl and drag to pan the image
    - Press 'Esc' to cancel the current annotation
    - Press 'Enter' to finish the current polygon annotation
+
+## Development
+
+For development purposes, you can clone the repository and install it in editable mode:
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/bnsreenu/digitalsreeni-image-annotator.git
+   cd digitalsreeni-image-annotator
+   ```
+
+2. Create a virtual environment (optional but recommended):
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+   ```
+
+3. Install the package and its dependencies in editable mode:
+   ```bash
+   pip install -e .
+   ```
 
 ## Contributing
 
@@ -82,20 +98,20 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 Dr. Sreenivas Bhattiprolu - [@DigitalSreeni](https://twitter.com/DigitalSreeni)
 
-Project Link: [https://github.com/bnsreenu/image_annotator](https://github.com/bnsreenu/image_annotator)
+Project Link: [https://github.com/bnsreenu/digitalsreeni-image-annotator](https://github.com/bnsreenu/digitalsreeni-image-annotator)
 
 ## Citing
 
 If you use this software in your research, please cite it as follows:
 
-Bhattiprolu, S. (2024). Image Annotator [Computer software]. 
-https://github.com/bnsreenu/image_annotator
+Bhattiprolu, S. (2024). DigitalSreeni Image Annotator [Computer software]. 
+https://github.com/bnsreenu/digitalsreeni-image-annotator
 
-```
-@software{image_annotator,
+```bibtex
+@software{digitalsreeni_image_annotator,
   author = {Bhattiprolu, Sreenivas},
-  title = {Image Annotator},
+  title = {DigitalSreeni Image Annotator},
   year = {2024},
-  url = {https://github.com/bnsreenu/image_annotator}
+  url = {https://github.com/bnsreenu/digitalsreeni-image-annotator}
 }
 ```

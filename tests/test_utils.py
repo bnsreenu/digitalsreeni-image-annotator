@@ -6,7 +6,7 @@ Dr. Sreenivas Bhattiprolu
 """
 
 import unittest
-from image_annotator.utils import calculate_area, calculate_bbox
+from digitalsreeni_image_annotator.utils import calculate_area, calculate_bbox
 
 class TestUtils(unittest.TestCase):
     def test_calculate_area(self):

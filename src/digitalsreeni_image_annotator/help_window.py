@@ -11,6 +11,7 @@ Dr. Sreenivas Bhattiprolu
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextBrowser, QPushButton
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QTextDocument
 
 HELP_TEXT = """
 # Image Annotator Help Guide
@@ -108,21 +109,24 @@ class HelpWindow(QWidget):
     def initUI(self):
         self.setWindowTitle('Image Annotator Help')
         self.setGeometry(100, 100, 800, 600)
-
+    
         layout = QVBoxLayout()
-
+    
         self.textBrowser = QTextBrowser()
         self.textBrowser.setOpenExternalLinks(True)
-        self.textBrowser.setMarkdown(HELP_TEXT)
-
+        
+        # Use setHtml instead of setMarkdown
+        doc = QTextDocument()
+        doc.setMarkdown(HELP_TEXT)
+        self.textBrowser.setDocument(doc)
+    
         font = QFont('Arial', 10)
         self.textBrowser.setFont(font)
-
+    
         layout.addWidget(self.textBrowser)
-
+    
         closeButton = QPushButton('Close')
         closeButton.clicked.connect(self.close)
         layout.addWidget(closeButton, alignment=Qt.AlignRight)
-
+    
         self.setLayout(layout)
-

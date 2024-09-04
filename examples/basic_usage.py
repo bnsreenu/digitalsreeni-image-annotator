@@ -5,7 +5,7 @@ Basic usage example for the Image Annotator package.
 Dr. Sreenivas Bhattiprolu
 """
 
-from image_annotator import ImageAnnotator
+from digitalsreeni_image_annotator import ImageAnnotator
 from PyQt5.QtWidgets import QApplication
 import sys
 

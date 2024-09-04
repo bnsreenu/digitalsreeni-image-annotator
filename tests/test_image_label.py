@@ -8,7 +8,7 @@ Dr. Sreenivas Bhattiprolu
 import unittest
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QPixmap
-from image_annotator.image_label import ImageLabel
+from digitalsreeni_image_annotator.image_label import ImageLabel
 
 class TestImageLabel(unittest.TestCase):
     @classmethod

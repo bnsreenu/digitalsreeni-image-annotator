@@ -7,7 +7,7 @@ Dr. Sreenivas Bhattiprolu
 
 import unittest
 from PyQt5.QtWidgets import QApplication
-from image_annotator.annotator_window import ImageAnnotator
+from digitalsreeni_image_annotator.annotator_window import ImageAnnotator
 
 class TestImageAnnotator(unittest.TestCase):
     @classmethod
