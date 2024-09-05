@@ -27,6 +27,30 @@ You can install the DigitalSreeni Image Annotator directly from PyPI:
 pip install digitalsreeni-image-annotator
 ```
 
+### Important: PyQt5 Requirement
+
+This application requires PyQt5 version 5.15.7 or higher. If you encounter any issues related to PyQt5, you may need to install or upgrade it separately:
+
+```bash
+pip install PyQt5>=5.15.7
+```
+
+If you're using an older version of PyQt5, please upgrade to ensure compatibility:
+
+```bash
+pip install --upgrade PyQt5>=5.15.7
+```
+
+On some systems, especially Linux, you might need to install additional system packages. For example, on Ubuntu or Debian:
+
+```bash
+sudo apt-get install python3-pyqt5
+```
+
+Note that the system package manager might not always provide the latest version. In such cases, using pip as shown above is recommended.
+
+For other operating systems or if you encounter any issues, please refer to the [PyQt5 documentation](https://www.riverbankcomputing.com/static/Docs/PyQt5/installation.html).
+
 ## Usage
 
 1. Run the DigitalSreeni Image Annotator application:
