@@ -47,8 +47,6 @@ class ImageAnnotator(QMainWindow):
         self.loaded_json = None
         self.class_mapping = {}
         self.editing_mode = False
-        self.image_info_label = QLabel()
-        self.sidebar_layout.addWidget(self.image_info_label)
 
     def setup_ui(self):
         """Set up the user interface."""
@@ -165,8 +163,6 @@ class ImageAnnotator(QMainWindow):
         self.zoom_slider.setTickInterval(50)
         self.zoom_slider.valueChanged.connect(self.zoom_image)
         self.image_layout.addWidget(self.zoom_slider)
-        self.image_info_label = QLabel()
-        self.image_layout.addWidget(self.image_info_label)
 
     def setup_image_list(self):
         """Set up the image list area."""
@@ -257,15 +253,6 @@ class ImageAnnotator(QMainWindow):
 
     def show_info(self, title, message):
         QMessageBox.information(self, title, message)
-        
-    def update_image_info(self):
-        """Update and display image information."""
-        if self.image_label.original_pixmap:
-            width = self.image_label.original_pixmap.width()
-            height = self.image_label.original_pixmap.height()
-            bit_depth = self.image_label.bit_depth
-            info = f"Image: {width}x{height}, {bit_depth} bits"
-            self.image_info_label.setText(info)
     
     def show_question(self, title, message):
         return QMessageBox.question(self, title, message,
@@ -411,7 +398,6 @@ class ImageAnnotator(QMainWindow):
             if image_path and os.path.exists(image_path):
                 self.current_image = QImage(image_path)
                 self.image_file_name = file_name
-                self.image_label.image_path = image_path  # Set the image path
                 
                 # Update image info with actual dimensions
                 image_info["height"] = self.current_image.height()
@@ -689,7 +675,7 @@ class ImageAnnotator(QMainWindow):
             self.save_current_annotations()
     
             coco_format = {
-                "images": [{**img, "bit_depth": self.image_label.bit_depth} for img in self.all_images],
+                "images": self.all_images,
                 "categories": [{"id": id, "name": name} for name, id in self.class_mapping.items()],
                 "annotations": []
             }

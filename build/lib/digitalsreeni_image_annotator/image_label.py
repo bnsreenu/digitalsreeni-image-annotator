@@ -12,8 +12,6 @@ from PyQt5.QtWidgets import QLabel, QApplication
 from PyQt5.QtGui import (QPainter, QPen, QColor, QFont, QPolygonF, QBrush, QPolygon,
                          QPixmap, QImage, QWheelEvent, QMouseEvent, QKeyEvent)
 from PyQt5.QtCore import Qt, QPoint, QPointF, QRectF, QSize
-from PIL import Image
-import os
 
 
 class ImageLabel(QLabel):
@@ -46,9 +44,6 @@ class ImageLabel(QLabel):
         self.fill_opacity = 0.3
         self.drawing_rectangle = False
         self.current_rectangle = None
-        self.bit_depth = None
-        self.image_path = None
-
 
     def set_main_window(self, main_window):
         """Set the main window reference."""
@@ -58,28 +53,6 @@ class ImageLabel(QLabel):
         """Set the pixmap and update the scaled version."""
         self.original_pixmap = pixmap
         self.update_scaled_pixmap()
-        if self.image_path:
-            self.detect_bit_depth()
-        
-    def detect_bit_depth(self):
-        """Detect and store the actual image bit depth using PIL."""
-        if self.image_path and os.path.exists(self.image_path):
-            with Image.open(self.image_path) as img:
-                if img.mode == '1':
-                    self.bit_depth = 1
-                elif img.mode == 'L':
-                    self.bit_depth = 8
-                elif img.mode == 'I;16':
-                    self.bit_depth = 16
-                elif img.mode in ['RGB', 'HSV']:
-                    self.bit_depth = 24
-                elif img.mode in ['RGBA', 'CMYK']:
-                    self.bit_depth = 32
-                else:
-                    self.bit_depth = img.bits
-                
-                if self.main_window:
-                    self.main_window.update_image_info()
 
     def update_scaled_pixmap(self):
         """Update the scaled pixmap based on the zoom factor."""
