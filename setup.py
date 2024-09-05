@@ -11,7 +11,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="digitalsreeni-image-annotator",
-    version="0.1.6",  # version number
+    version="0.1.7",  # version number
     author="Dr. Sreenivas Bhattiprolu",
     author_email="digitalsreeni@gmail.com",
     description="A tool for annotating images with polygons and rectangles",
