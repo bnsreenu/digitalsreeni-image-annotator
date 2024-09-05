@@ -6,6 +6,8 @@
 
 A powerful and user-friendly tool for annotating images with polygons and rectangles, built with PyQt5.
 
+![DigitalSreeni Image Annotator Screenshot](screenshots/digitalsreeni-image-annotator.jpg)
+
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
 
