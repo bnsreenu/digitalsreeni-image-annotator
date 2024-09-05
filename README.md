@@ -2,7 +2,7 @@
 
 ![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![PyPI version](https://badge.fury.io/py/digitalsreeni-image-annotator.svg)
+![PyPI version](https://img.shields.io/pypi/v/digitalsreeni-image-annotator.svg)
 
 A powerful and user-friendly tool for annotating images with polygons and rectangles, built with PyQt5.
 
