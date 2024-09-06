@@ -6,7 +6,8 @@
 
 A powerful and user-friendly tool for annotating images with polygons and rectangles, built with PyQt5.
 
-![DigitalSreeni Image Annotator Screenshot](screenshots/digitalsreeni-image-annotator.jpg)
+![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
+
 
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
@@ -117,7 +118,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- Thanks to all contributors who have helped shape this project
+- Thanks to all my [YouTube](http://www.youtube.com/c/DigitalSreeni) subscribers who inspired me to work on this project
 - Inspired by the need for efficient image annotation in computer vision tasks
 
 ## Contact

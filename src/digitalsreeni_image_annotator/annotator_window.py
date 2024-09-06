@@ -1,32 +1,56 @@
-"""
-AnnotatorWindow module for the Image Annotator application.
-
-This module contains the ImageAnnotator class, which is the main window
-of the application.
-
-@DigitalSreeni
-Dr. Sreenivas Bhattiprolu
-"""
-
 import os
 import json
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QFileDialog, QListWidget, QInputDialog, 
                              QLabel, QButtonGroup, QListWidgetItem, QScrollArea, 
-                             QSlider, QMenu, QMessageBox, QColorDialog)
+                             QSlider, QMenu, QMessageBox, QColorDialog, QDialog,
+                             QGridLayout, QComboBox, QAbstractItemView)
 from PyQt5.QtGui import QPixmap, QColor, QIcon, QImage
 from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtWidgets import QAbstractItemView, QColorDialog
+import numpy as np
+from tifffile import TiffFile
+from czifile import CziFile
+from PIL import Image
 
 from .image_label import ImageLabel
 from .utils import calculate_area, calculate_bbox
 from .help_window import HelpWindow
 
-class ImageAnnotator(QMainWindow):
-    """
-    Main window class for the Image Annotator application.
-    """
+class DimensionDialog(QDialog):
+    def __init__(self, shape, file_name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Assign Dimensions")
+        layout = QVBoxLayout(self)
+        
+        # Add file name label
+        file_name_label = QLabel(f"File: {file_name}")
+        file_name_label.setWordWrap(True)
+        layout.addWidget(file_name_label)
+        
+        # Add dimension assignment widgets
+        dim_widget = QWidget()
+        dim_layout = QGridLayout(dim_widget)
+        self.combos = []
+        self.shape = shape
+        dimensions = ['T', 'S', 'Z', 'C', 'H', 'W']
+        for i, dim in enumerate(shape):
+            dim_layout.addWidget(QLabel(f"Dimension {i} (size {dim}):"), i, 0)
+            combo = QComboBox()
+            combo.addItems(dimensions)
+            dim_layout.addWidget(combo, i, 1)
+            self.combos.append(combo)
+        layout.addWidget(dim_widget)
+        
+        self.button = QPushButton("OK")
+        self.button.clicked.connect(self.accept)
+        layout.addWidget(self.button)
+        
+        self.setMinimumWidth(300)
 
+    def get_dimensions(self):
+        return [combo.currentText() for combo in self.combos]
+
+class ImageAnnotator(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Image Annotator")
@@ -36,7 +60,6 @@ class ImageAnnotator(QMainWindow):
         self.setCentralWidget(self.central_widget)
         self.layout = QHBoxLayout(self.central_widget)
 
-        self.setup_ui()
 
         self.current_image = None
         self.current_class = None
@@ -48,17 +71,388 @@ class ImageAnnotator(QMainWindow):
         self.class_mapping = {}
         self.editing_mode = False
         self.image_info_label = QLabel()
+        self.current_slice = None
+        self.slices = []
+        self.setup_ui()
         self.sidebar_layout.addWidget(self.image_info_label)
+        self.current_stack = None
+        self.image_dimensions = {}
+        self.image_slices = {}
+
 
     def setup_ui(self):
-        """Set up the user interface."""
         self.setup_sidebar()
         self.setup_image_area()
         self.setup_image_list()
+        self.setup_slice_list()
+
+    def setup_slice_list(self):
+        self.slice_list = QListWidget()
+        self.slice_list.itemClicked.connect(self.switch_slice)
+        self.image_list_layout.addWidget(QLabel("Slices:"))
+        self.image_list_layout.addWidget(self.slice_list)
+
+    def open_images(self):
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Open Images", "", "Image Files (*.png *.jpg *.bmp *.tif *.tiff *.czi)")
+        if file_names:
+            self.image_list.clear()
+            self.image_paths.clear()
+            self.all_images.clear()
+            self.slice_list.clear()
+            self.slices.clear()
+            self.current_stack = None
+            self.current_slice = None
+            self.add_images_to_list(file_names)
+
+    def add_images_to_list(self, file_names):
+        for file_name in file_names:
+            base_name = os.path.basename(file_name)
+            if base_name not in self.image_paths:
+                image_info = {
+                    "file_name": base_name,
+                    "height": 0,
+                    "width": 0,
+                    "id": len(self.all_images) + 1
+                }
+                self.all_images.append(image_info)
+                self.image_list.addItem(base_name)
+                self.image_paths[base_name] = file_name
+
+        if not self.current_image and self.all_images:
+            self.switch_image(self.image_list.item(0))
+
+    def switch_image(self, item):
+        if item is None:
+            return
+    
+        self.save_current_annotations()
+    
+        file_name = item.text()
+        image_info = next((img for img in self.all_images if img["file_name"] == file_name), None)
+        
+        if image_info:
+            image_path = self.image_paths.get(file_name)
+            if image_path and os.path.exists(image_path):
+                base_name = os.path.splitext(os.path.basename(image_path))[0]
+                if base_name in self.image_slices:
+                    self.slices = self.image_slices[base_name]
+                    self.update_slice_list()
+                else:
+                    self.slices = []
+                    self.slice_list.clear()
+                
+                if self.current_stack != file_name:
+                    self.load_image(image_path)
+                    self.image_file_name = file_name
+                    self.current_stack = file_name if self.slices else None
+                
+                self.display_image()
+                self.load_image_annotations()
+                self.update_annotation_list()
+                self.clear_highlighted_annotation()
+                self.image_label.reset_annotation_state()
+                self.image_label.clear_current_annotation()
+                self.update_image_info()
+            else:
+                self.current_image = None
+                self.image_label.clear()
+                self.update_image_info()
+        else:
+            self.current_image = None
+            self.image_label.clear()
+            self.update_image_info()
+
+    def load_image(self, image_path):
+        extension = os.path.splitext(image_path)[1].lower()
+        if extension in ['.tif', '.tiff']:
+            self.load_tiff(image_path)
+        elif extension == '.czi':
+            self.load_czi(image_path)
+        else:
+            self.load_regular_image(image_path)
+        self.current_slice = None
+
+
+    def load_tiff(self, image_path):
+        with TiffFile(image_path) as tif:
+            image_array = tif.asarray()
+        self.process_multidimensional_image(image_array, image_path)
+
+    def load_czi(self, image_path):
+        with CziFile(image_path) as czi:
+            image_array = czi.asarray()
+        self.process_multidimensional_image(image_array, image_path)
+
+    def load_regular_image(self, image_path):
+        self.current_image = QImage(image_path)
+        self.slices = []
+        self.slice_list.clear()
+
+    def process_multidimensional_image(self, image_array, image_path):
+        file_name = os.path.basename(image_path)
+        if file_name not in self.image_dimensions:
+            if image_array.ndim > 2:
+                while True:
+                    dialog = DimensionDialog(image_array.shape, file_name, self)
+                    dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+                    if dialog.exec_():
+                        dimensions = dialog.get_dimensions()
+                        if 'H' in dimensions and 'W' in dimensions:
+                            self.image_dimensions[file_name] = dimensions
+                            break
+                        else:
+                            QMessageBox.warning(self, "Invalid Dimensions", "You must assign both Height (H) and Width (W) dimensions.")
+                    else:
+                        # User cancelled, so we should not proceed with this image
+                        return
+            else:
+                self.image_dimensions[file_name] = ['H', 'W']
+    
+        if self.image_dimensions[file_name]:
+            self.create_slices(image_array, self.image_dimensions[file_name], image_path)
+        else:
+            self.current_image = self.array_to_qimage(image_array)
+            self.slices = []
+            self.slice_list.clear()
+        
+        self.update_image_info()
+
+
+    def create_slices(self, image_array, dimensions, image_path):
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        slices = []
+        self.slice_list.clear()
+    
+        height_index = dimensions.index('H')
+        width_index = dimensions.index('W')
+    
+        slice_indices = [i for i, dim in enumerate(dimensions) if dim not in ['H', 'W']]
+        total_slices = np.prod([image_array.shape[i] for i in slice_indices])
+    
+        for idx in np.ndindex(tuple(image_array.shape[i] for i in slice_indices)):
+            full_idx = list(image_array.shape)
+            for i, val in zip(slice_indices, idx):
+                full_idx[i] = val
+            full_idx[height_index] = slice(None)
+            full_idx[width_index] = slice(None)
+            
+            slice_array = image_array[tuple(full_idx)]
+            qimage = self.array_to_qimage(slice_array)
+            
+            slice_name = f"{base_name}_{'_'.join([f'{dimensions[i]}{val+1}' for i, val in zip(slice_indices, idx)])}"
+            slices.append((slice_name, qimage))
+            
+            item = QListWidgetItem(slice_name)
+            if slice_name in self.all_annotations:
+                item.setForeground(QColor(Qt.green))
+            else:
+                item.setForeground(QColor(Qt.black))
+            self.slice_list.addItem(item)
+    
+        self.image_slices[base_name] = slices
+        self.slices = slices
+    
+        if slices:
+            self.current_image = slices[0][1]
+            self.current_slice = slices[0][0]
+            self.slice_list.setCurrentRow(0)
+        
+        # Update image info
+        if slices:
+            slice_info = f"Total slices: {len(slices)}"
+            for dim, size in zip(dimensions, image_array.shape):
+                if dim not in ['H', 'W']:
+                    slice_info += f", {dim}: {size}"
+            self.update_image_info(additional_info=slice_info)
+
 
     
+    def array_to_qimage(self, array):
+        if array.ndim == 2:
+            height, width = array.shape
+            bytes_per_line = width
+            if array.dtype != np.uint8:
+                array = ((array - array.min()) / (array.max() - array.min()) * 255).astype(np.uint8)
+            return QImage(array.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
+        elif array.ndim == 3 and array.shape[2] == 3:
+            height, width, _ = array.shape
+            bytes_per_line = 3 * width
+            if array.dtype != np.uint8:
+                array = ((array - array.min()) / (array.max() - array.min()) * 255).astype(np.uint8)
+            return QImage(array.data, width, height, bytes_per_line, QImage.Format_RGB888)
+        else:
+            raise ValueError("Unsupported array shape for conversion to QImage")
+
+    def switch_slice(self, item):
+        if item is None:
+            return
+
+        self.save_current_annotations()
+
+        slice_name = item.text()
+        for name, qimage in self.slices:
+            if name == slice_name:
+                self.current_image = qimage
+                self.current_slice = name
+                self.display_image()
+                self.load_image_annotations()
+                self.update_annotation_list()
+                self.clear_highlighted_annotation()
+                self.image_label.reset_annotation_state()
+                self.image_label.clear_current_annotation()
+                break
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Up or event.key() == Qt.Key_Down:
+            current_row = self.slice_list.currentRow()
+            if event.key() == Qt.Key_Up and current_row > 0:
+                self.slice_list.setCurrentRow(current_row - 1)
+            elif event.key() == Qt.Key_Down and current_row < self.slice_list.count() - 1:
+                self.slice_list.setCurrentRow(current_row + 1)
+            self.switch_slice(self.slice_list.currentItem())
+        else:
+            super().keyPressEvent(event)
+
+    def save_annotations(self):
+        file_name, _ = QFileDialog.getSaveFileName(self, "Save Annotations", "", "JSON Files (*.json)")
+        if file_name:
+            self.save_current_annotations()
+    
+            coco_format = {
+                "images": [],
+                "categories": [{"id": id, "name": name} for name, id in self.class_mapping.items()],
+                "annotations": []
+            }
+            
+            annotation_id = 1
+            image_id = 1
+    
+            # Handle all images and slices
+            for image_name, annotations in self.all_annotations.items():
+                is_slice = any(image_name == slice_name for slice_name, _ in self.slices)
+                
+                if is_slice:
+                    slice_index = next(i for i, (slice_name, _) in enumerate(self.slices) if slice_name == image_name)
+                    qimage = self.slices[slice_index][1]
+                    file_name_img = f"{image_name}.png"
+                else:
+                    image_path = self.image_paths.get(image_name)
+                    if not image_path:
+                        continue
+                    qimage = QImage(image_path)
+                    file_name_img = image_name
+    
+                image_info = {
+                    "file_name": file_name_img,
+                    "height": qimage.height(),
+                    "width": qimage.width(),
+                    "id": image_id
+                }
+                coco_format["images"].append(image_info)
+                
+                for class_name, class_annotations in annotations.items():
+                    for ann in class_annotations:
+                        coco_ann = self.create_coco_annotation(ann, image_id, annotation_id)
+                        coco_format["annotations"].append(coco_ann)
+                        annotation_id += 1
+                
+                image_id += 1
+    
+            # Save JSON file
+            with open(file_name, 'w') as f:
+                json.dump(coco_format, f, indent=2)
+    
+            # Save slice PNGs
+            save_dir = os.path.dirname(file_name)
+            self.save_slices(save_dir)
+    
+            QMessageBox.information(self, "Save Complete", "Annotations and slice images have been saved successfully.")
+    
+    def save_slices(self, directory):
+        slices_saved = False
+        for image_slices in self.image_slices.values():
+            for slice_name, qimage in image_slices:
+                if slice_name in self.all_annotations:
+                    file_path = os.path.join(directory, f"{slice_name}.png")
+                    qimage.save(file_path, "PNG")
+                    slices_saved = True
+        
+        if slices_saved:
+            QMessageBox.information(self, "Slices Saved", "Annotated slices have been saved as separate PNG files.")
+        else:
+            QMessageBox.information(self, "No Slices Saved", "No annotated slices were found to save.")
+            
+    def create_coco_annotation(self, ann, image_id, annotation_id):
+        coco_ann = {
+            "id": annotation_id,
+            "image_id": image_id,
+            "category_id": ann["category_id"],
+            "area": calculate_area(ann),
+            "iscrowd": 0
+        }
+        
+        if "segmentation" in ann:
+            coco_ann["segmentation"] = [ann["segmentation"]]
+            coco_ann["bbox"] = calculate_bbox(ann["segmentation"])
+        elif "bbox" in ann:
+            coco_ann["bbox"] = ann["bbox"]
+        
+        return coco_ann
 
 
+    def update_annotation_list(self):
+        self.annotation_list.clear()
+        annotations = self.all_annotations.get(self.current_slice or self.image_file_name, {})
+        for class_name, class_annotations in annotations.items():
+            color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
+            for i, annotation in enumerate(class_annotations, start=1):
+                item_text = f"{class_name} - {i}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, annotation)
+                item.setForeground(color)
+                self.annotation_list.addItem(item)
+                
+    def update_slice_list(self):
+        self.slice_list.clear()
+        for slice_name, _ in self.slices:
+            item = QListWidgetItem(slice_name)
+            if slice_name in self.all_annotations:
+                item.setForeground(QColor(Qt.green))
+            else:
+                item.setForeground(QColor(Qt.black))
+            self.slice_list.addItem(item)
+                
+    def update_annotation_list_colors(self, class_name, color):
+            for i in range(self.annotation_list.count()):
+                item = self.annotation_list.item(i)
+                annotation = item.data(Qt.UserRole)
+                if annotation['category_name'] == class_name:
+                    item.setForeground(color)
+
+    def load_image_annotations(self):
+        self.image_label.annotations.clear()
+        current_name = self.current_slice or self.image_file_name
+        if current_name in self.all_annotations:
+            self.image_label.annotations = self.all_annotations[current_name].copy()
+        self.image_label.update()
+
+    def save_current_annotations(self):
+        current_name = self.current_slice or self.image_file_name
+        if current_name:
+            if self.image_label.annotations:
+                self.all_annotations[current_name] = self.image_label.annotations.copy()
+            elif current_name in self.all_annotations:
+                del self.all_annotations[current_name]
+
+        if self.current_slice and self.slices:
+            items = self.slice_list.findItems(self.current_slice, Qt.MatchExactly)
+            if items:
+                item = items[0]
+                if self.current_slice in self.all_annotations:
+                    item.setForeground(QColor(Qt.green))
+                else:
+                    item.setForeground(QColor(Qt.black))
+                
     def setup_class_list(self):
         """Set up the class list widget."""
         self.class_list = QListWidget()
@@ -192,36 +586,13 @@ class ImageAnnotator(QMainWindow):
         self.help_window = HelpWindow()
         self.help_window.show()
 
-    def open_images(self):
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Open Images", "", "Image Files (*.png *.jpg *.bmp)")
-        if file_names:
-            self.image_list.clear()
-            self.image_paths.clear()
-            self.all_images.clear()
-            self.add_images_to_list(file_names)
+
             
     def add_images(self):
-        file_names, _ = QFileDialog.getOpenFileNames(self, "Add Images", "", "Image Files (*.png *.jpg *.bmp)")
+        file_names, _ = QFileDialog.getOpenFileNames(self, "Add Images", "", "Image Files (*.png *.jpg *.bmp *.tif *.tiff *.czi)")
         if file_names:
             self.add_images_to_list(file_names)
             
-    def add_images_to_list(self, file_names):
-        for file_name in file_names:
-            base_name = os.path.basename(file_name)
-            if base_name not in self.image_paths:
-                image_info = {
-                    "file_name": base_name,
-                    "height": 0,  # Will be set when the image is loaded
-                    "width": 0,   # Will be set when the image is loaded
-                    "id": len(self.all_images) + 1
-                }
-                self.all_images.append(image_info)
-                self.image_list.addItem(base_name)
-                self.image_paths[base_name] = file_name
-
-        # Load the first image if no image is currently loaded
-        if not self.current_image and self.all_images:
-            self.switch_image(self.image_list.item(0))
             
     def clear_all(self):
         reply = self.show_question('Clear All',
@@ -246,9 +617,17 @@ class ImageAnnotator(QMainWindow):
             self.class_list.clear()
             self.image_label.class_colors.clear()
             self.class_mapping.clear()
-    
+        
+            # Clear slices
+            self.image_slices.clear()
+            self.slices = []
+            self.slice_list.clear()
+            self.current_slice = None
+            self.current_stack = None
+            
             # Update UI
             self.image_label.update()
+            self.update_image_info()
             self.show_info("Clear All", "All images and annotations have been cleared.")
             
             
@@ -258,14 +637,16 @@ class ImageAnnotator(QMainWindow):
     def show_info(self, title, message):
         QMessageBox.information(self, title, message)
         
-    def update_image_info(self):
-        """Update and display image information."""
-        if self.image_label.original_pixmap:
-            width = self.image_label.original_pixmap.width()
-            height = self.image_label.original_pixmap.height()
-            bit_depth = self.image_label.bit_depth
-            info = f"Image: {width}x{height}, {bit_depth} bits"
+    def update_image_info(self, additional_info=None):
+        if self.current_image:
+            width = self.current_image.width()
+            height = self.current_image.height()
+            info = f"Image: {width}x{height}"
+            if additional_info:
+                info += f", {additional_info}"
             self.image_info_label.setText(info)
+        else:
+            self.image_info_label.setText("No image loaded")
     
     def show_question(self, title, message):
         return QMessageBox.question(self, title, message,
@@ -395,40 +776,7 @@ class ImageAnnotator(QMainWindow):
                 self.switch_image(self.image_list.item(0))
 
 
-    def switch_image(self, item):
-        if item is None:
-            return
-    
-        # Save annotations of the current image before switching
-        if self.current_image:
-            self.save_current_annotations()
-    
-        file_name = item.text()
-        image_info = next((img for img in self.all_images if img["file_name"] == file_name), None)
-        
-        if image_info:
-            image_path = self.image_paths.get(file_name)
-            if image_path and os.path.exists(image_path):
-                self.current_image = QImage(image_path)
-                self.image_file_name = file_name
-                self.image_label.image_path = image_path  # Set the image path
-                
-                # Update image info with actual dimensions
-                image_info["height"] = self.current_image.height()
-                image_info["width"] = self.current_image.width()
-    
-                self.display_image()
-                self.load_image_annotations()
-                self.update_annotation_list()
-                self.clear_highlighted_annotation()
-                self.image_label.reset_annotation_state()
-                self.image_label.clear_current_annotation()
-            else:
-                self.current_image = None
-                self.image_label.clear()
-        else:
-            self.current_image = None
-            self.image_label.clear()
+
 
     def clear_highlighted_annotation(self):
         self.image_label.highlighted_annotation = None
@@ -459,37 +807,7 @@ class ImageAnnotator(QMainWindow):
             self.image_label.update()
 
         
-    def load_image_annotations(self):
-        self.image_label.annotations.clear()
-        if self.image_file_name in self.all_annotations:
-            self.image_label.annotations = self.all_annotations[self.image_file_name].copy()
-        self.image_label.update()
-        
-    def update_annotation_list_colors(self, class_name, color):
-            for i in range(self.annotation_list.count()):
-                item = self.annotation_list.item(i)
-                annotation = item.data(Qt.UserRole)
-                if annotation['category_name'] == class_name:
-                    item.setForeground(color)
 
-    def update_annotation_list(self):
-        self.annotation_list.clear()
-        for class_name, annotations in self.image_label.annotations.items():
-            color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
-            for i, annotation in enumerate(annotations, start=1):
-                item_text = f"{class_name} - {i}"
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.UserRole, annotation)
-                item.setForeground(color)
-                self.annotation_list.addItem(item)
-                               
-
-    def save_current_annotations(self):
-        if self.image_file_name:
-            if self.image_label.annotations:
-                self.all_annotations[self.image_file_name] = self.image_label.annotations.copy()
-            elif self.image_file_name in self.all_annotations:
-                del self.all_annotations[self.image_file_name]
 
     def display_image(self):
         if self.current_image:
@@ -583,30 +901,30 @@ class ImageAnnotator(QMainWindow):
                 old_id = self.class_mapping[old_name]
                 self.class_mapping[new_name] = old_id
                 del self.class_mapping[old_name]
-
+    
                 # Update class colors
                 self.image_label.class_colors[new_name] = self.image_label.class_colors.pop(old_name)
-
+    
                 # Update annotations for all images
                 for image_annotations in self.all_annotations.values():
                     if old_name in image_annotations:
                         image_annotations[new_name] = image_annotations.pop(old_name)
                         for annotation in image_annotations[new_name]:
                             annotation['category_name'] = new_name
-
+    
                 # Update current image annotations
                 if old_name in self.image_label.annotations:
                     self.image_label.annotations[new_name] = self.image_label.annotations.pop(old_name)
                     for annotation in self.image_label.annotations[new_name]:
                         annotation['category_name'] = new_name
-
+    
                 # Update current class if it's the renamed one
                 if self.current_class == old_name:
                     self.current_class = new_name
-
+    
                 # Update annotation list
                 self.update_annotation_list()
-
+    
                 # Update class list
                 current_item.setText(new_name)
                 self.image_label.update()
@@ -679,45 +997,7 @@ class ImageAnnotator(QMainWindow):
         item.setForeground(color)
         self.annotation_list.addItem(item)
         
-        
-
-
-    def save_annotations(self):
-        file_name, _ = QFileDialog.getSaveFileName(self, "Save Annotations", "", "JSON Files (*.json)")
-        if file_name:
-            # Save current annotations before creating the final JSON
-            self.save_current_annotations()
     
-            coco_format = {
-                "images": [{**img, "bit_depth": self.image_label.bit_depth} for img in self.all_images],
-                "categories": [{"id": id, "name": name} for name, id in self.class_mapping.items()],
-                "annotations": []
-            }
-            
-            annotation_id = 1
-            for image_info in self.all_images:
-                image_annotations = self.all_annotations.get(image_info["file_name"], {})
-                for class_name, annotations in image_annotations.items():
-                    for ann in annotations:
-                        coco_ann = {
-                            "id": annotation_id,
-                            "image_id": image_info["id"],
-                            "category_id": ann["category_id"],
-                            "area": calculate_area(ann),  # Use the imported calculate_area function
-                            "iscrowd": 0
-                        }
-                        
-                        if "segmentation" in ann:
-                            coco_ann["segmentation"] = [ann["segmentation"]]
-                            coco_ann["bbox"] = calculate_bbox(ann["segmentation"])
-                        elif "bbox" in ann:
-                            coco_ann["bbox"] = ann["bbox"]
-                        
-                        coco_format["annotations"].append(coco_ann)
-                        annotation_id += 1
-    
-            with open(file_name, 'w') as f:
-                json.dump(coco_format, f, indent=2)
 
 
     def zoom_in(self):
@@ -783,9 +1063,3 @@ class ImageAnnotator(QMainWindow):
         self.update_annotation_list()
         self.image_label.update()
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Delete:
-            self.delete_selected_annotations()
-        elif event.key() == Qt.Key_Escape and self.editing_mode:
-            self.exit_edit_mode()
-        super().keyPressEvent(event)

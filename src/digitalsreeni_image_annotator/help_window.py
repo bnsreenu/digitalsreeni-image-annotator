@@ -18,7 +18,7 @@ HELP_TEXT = """
 
 ## Overview
 
-Image Annotator is a user-friendly GUI tool designed for generating masks for image segmentation and object detection. It allows users to create, edit, and save annotations in COCO-style JSON format, including both polygon (segmentation) and bounding box information.
+Image Annotator is a user-friendly GUI tool designed for generating masks for image segmentation and object detection. It allows users to create, edit, and save annotations in COCO-style JSON format, including both polygon (segmentation) and bounding box information. The tool now supports multi-dimensional images such as TIFF stacks and CZI files.
 
 ## Key Features
 
@@ -26,16 +26,18 @@ Image Annotator is a user-friendly GUI tool designed for generating masks for im
 - Support for polygon and rectangle annotations
 - COCO-style JSON output with segmentation and bounding box data
 - Ability to load and continue previous annotation work
-- Support for multiple image formats (png, jpg, bmp)
+- Support for multiple image formats (png, jpg, bmp, tif, tiff, czi)
 - Multi-class annotation support with customizable colors
+- Handling of multi-dimensional images (TIFF stacks and CZI files)
 
 ## Getting Started
 
 ### Starting a New Project
 
-1. Click "Open New Image Set" to import multiple images you want to annotate.
-2. Use "Add Class" to define classes of interest.
-3. Start annotating by selecting a class and using the Polygon or Rectangle Tool.
+1. Click "Open New Image Set" to import multiple images you want to annotate, including TIFF stacks and CZI files.
+2. For multi-dimensional images, you'll be prompted to assign dimensions (e.g., T for time, Z for depth, C for channels).
+3. Use "Add Class" to define classes of interest.
+4. Start annotating by selecting a class and using the Polygon or Rectangle Tool.
 
 ### Continuing a Previous Project
 
@@ -57,6 +59,14 @@ Image Annotator is a user-friendly GUI tool designed for generating masks for im
 - **Zoom**: Use the slider at the bottom of the image, or hold Ctrl and use the mouse wheel.
 - **Pan**: Hold Ctrl, click the left mouse button, and move the mouse.
 - **Switch Images**: Click on an image name in the image list on the right.
+- **Navigate Slices**: For multi-dimensional images, use the slice list on the right or use the up/down arrow keys to move through slices.
+
+## Handling Multi-dimensional Images
+
+- When opening a TIFF stack or CZI file, you'll be prompted to assign dimensions (e.g., T, Z, S, C, H, W).
+- The slice list on the right will show all available slices for the current image.
+- Annotations are specific to each slice and will be saved accordingly.
+- Slices with annotations will be highlighted in green in the slice list.
 
 ## Editing Annotations
 
@@ -85,21 +95,23 @@ Image Annotator is a user-friendly GUI tool designed for generating masks for im
 ## Saving Your Work
 
 - Click "Save Annotations" to save your work as a COCO-style JSON file.
+- For multi-dimensional images, annotated slices will be saved as separate PNG files along with the JSON file.
 - You can close the program after saving and continue your work later by importing the saved annotations.
 
 ## Supported Formats
 
 - Supports common image formats: PNG, JPG, BMP
-- Does not currently support TIFF or other proprietary formats
+- Now supports multi-dimensional formats: TIFF (.tif, .tiff) and CZI (.czi)
 
 ## Known Issues
 
-- There is a minor bug where annotations may not display for the first image if images are opened before importing annotations. We're working on fixing this issue.
+- When working with multiple images of different types (e.g., single images and image stacks), ensure you've selected the correct image before saving annotations to avoid any potential issues with slice saving.
 
 ## Getting Help
 
 If you encounter any issues or have suggestions for improvement, please open an issue on our GitHub repository or contact the development team.
 """
+
 
 class HelpWindow(QWidget):
     def __init__(self):

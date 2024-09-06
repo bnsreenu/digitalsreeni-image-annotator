@@ -1,8 +1,12 @@
 """
 Basic usage example for the Image Annotator package.
-
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
+
+Note: Once the package is installed, you can run the application directly from the command line by typing:
+    digitalsreeni-image-annotator
+
+This script demonstrates how to launch the application programmatically if needed.
 """
 
 from digitalsreeni_image_annotator import ImageAnnotator

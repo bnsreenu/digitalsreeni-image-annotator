@@ -56,10 +56,10 @@ class ImageLabel(QLabel):
 
     def setPixmap(self, pixmap):
         """Set the pixmap and update the scaled version."""
+        if isinstance(pixmap, QImage):
+            pixmap = QPixmap.fromImage(pixmap)
         self.original_pixmap = pixmap
         self.update_scaled_pixmap()
-        if self.image_path:
-            self.detect_bit_depth()
         
     def detect_bit_depth(self):
         """Detect and store the actual image bit depth using PIL."""
@@ -169,7 +169,7 @@ class ImageLabel(QLabel):
             painter.setPen(QPen(Qt.red, 2 / self.zoom_factor, Qt.SolidLine))
             points = [QPointF(float(x), float(y)) for x, y in self.current_annotation]
             if len(points) > 1:
-                painter.drawPolyline(QPolygonF(points))  # Changed QPolygon to QPolygonF
+                painter.drawPolyline(QPolygonF(points))  # Changed QPolygon to QPolygonF - Sreeni
             for point in points:
                 painter.drawEllipse(point, 5 / self.zoom_factor, 5 / self.zoom_factor)
             if self.temp_point:
@@ -214,7 +214,7 @@ class ImageLabel(QLabel):
         
         painter.setPen(QPen(color, 2 / self.zoom_factor, Qt.SolidLine))
         painter.setBrush(QBrush(fill_color))
-        painter.drawPolygon(QPolygonF(points))  # Changed QPolygon to QPolygonF
+        painter.drawPolygon(QPolygonF(points))  # Changed QPolygon to QPolygonF - Sreeni
 
         for i, point in enumerate(points):
             if i == self.hover_point_index:
@@ -454,5 +454,5 @@ class ImageLabel(QLabel):
         d1 = ImageLabel.distance(p, start)
         d2 = ImageLabel.distance(p, end)
         line_length = ImageLabel.distance(start, end)
-        buffer = 0.1  # You can adjust this value for more or less strict "on-line" detection
+        buffer = 0.1  # Adjust this value for more or less strict "on-line" detection
         return abs(d1 + d2 - line_length) < buffer
