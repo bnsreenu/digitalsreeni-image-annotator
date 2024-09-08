@@ -48,11 +48,16 @@ class ImageLabel(QLabel):
         self.current_rectangle = None
         self.bit_depth = None
         self.image_path = None
+        self.dark_mode = False
 
 
     def set_main_window(self, main_window):
         """Set the main window reference."""
         self.main_window = main_window
+        
+    def set_dark_mode(self, is_dark):
+        self.dark_mode = is_dark
+        self.update()
 
     def setPixmap(self, pixmap):
         """Set the pixmap and update the scaled version."""
@@ -117,7 +122,6 @@ class ImageLabel(QLabel):
         self.update_offset()
 
     def paintEvent(self, event):
-        """Handle paint events."""
         super().paintEvent(event)
         if self.scaled_pixmap:
             painter = QPainter(self)
@@ -149,6 +153,8 @@ class ImageLabel(QLabel):
                 
                 fill_color.setAlphaF(self.fill_opacity)
                 
+                text_color = Qt.white if self.dark_mode else Qt.black
+                painter.setPen(QPen(text_color, 2 / self.zoom_factor, Qt.SolidLine))
                 painter.setPen(QPen(border_color, 2 / self.zoom_factor, Qt.SolidLine))
                 painter.setBrush(QBrush(fill_color))
 

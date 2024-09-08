@@ -14,13 +14,15 @@ Dr. Sreenivas Bhattiprolu
 
 ## Features
 
+- Handling of multi-dimensional images (TIFF stacks and CZI files)
 - Load and annotate images with polygons and rectangles
 - Save annotations in COCO-compatible JSON format
 - Edit existing annotations
+- Ability to load and continue previous annotation work
 - Zoom and pan functionality for detailed annotations
 - Support for multiple classes with customizable colors
 - Import and export annotations
-- User-friendly interface with intuitive controls
+- User-friendly interface with intuitive controls and dark mode
 
 ## Installation
 
