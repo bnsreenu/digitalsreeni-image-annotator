@@ -1,6 +1,8 @@
 PyQt5>=5.15.7
 Pillow>=9.0.0
 numpy>=1.21.0
-Pillow>=9.0.0
 tifffile>=2023.3.15
 czifile>=2019.7.2
+opencv-python >=4.10.0
+torch >=2.3.1
+torchvision>=0.18.1

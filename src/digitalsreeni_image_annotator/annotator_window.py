@@ -4,25 +4,30 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QFileDialog, QListWidget, QInputDialog, 
                              QLabel, QButtonGroup, QListWidgetItem, QScrollArea, 
                              QSlider, QMenu, QMessageBox, QColorDialog, QDialog,
-                             QGridLayout, QComboBox, QAbstractItemView)
-from PyQt5.QtGui import QPixmap, QColor, QIcon, QImage, QPalette, QFont
-from PyQt5.QtCore import Qt, QSize
+                             QGridLayout, QComboBox, QAbstractItemView, QProgressDialog,
+                             QApplication)
+from PyQt5.QtGui import QPixmap, QColor, QIcon, QImage, QFont
+from PyQt5.QtCore import Qt
 import numpy as np
 from tifffile import TiffFile
 from czifile import CziFile
-from PIL import Image
+
 
 from .image_label import ImageLabel
 from .utils import calculate_area, calculate_bbox
 from .help_window import HelpWindow
 
-from PyQt5.QtWidgets import QStyleFactory
 from .soft_dark_stylesheet import soft_dark_stylesheet
 from .default_stylesheet import default_stylesheet
 
+import importlib
+
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
 
 class DimensionDialog(QDialog):
-    def __init__(self, shape, file_name, parent=None):
+    def __init__(self, shape, file_name, parent=None, default_dimensions=None):
         super().__init__(parent)
         self.setWindowTitle("Assign Dimensions")
         layout = QVBoxLayout(self)
@@ -37,11 +42,13 @@ class DimensionDialog(QDialog):
         dim_layout = QGridLayout(dim_widget)
         self.combos = []
         self.shape = shape
-        dimensions = ['T', 'S', 'Z', 'C', 'H', 'W']
+        dimensions = ['T', 'Z', 'C', 'S', 'H', 'W']
         for i, dim in enumerate(shape):
             dim_layout.addWidget(QLabel(f"Dimension {i} (size {dim}):"), i, 0)
             combo = QComboBox()
             combo.addItems(dimensions)
+            if default_dimensions and i < len(default_dimensions):
+                combo.setCurrentText(default_dimensions[i])
             dim_layout.addWidget(combo, i, 1)
             self.combos.append(combo)
         layout.addWidget(dim_widget)
@@ -64,6 +71,10 @@ class ImageAnnotator(QMainWindow):
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         self.layout = QHBoxLayout(self.central_widget)
+        
+        # Initialize image_label early
+        self.image_label = ImageLabel()
+        self.image_label.set_main_window(self)
     
         # Initialize attributes
         self.current_image = None
@@ -80,6 +91,13 @@ class ImageAnnotator(QMainWindow):
         self.current_stack = None
         self.image_dimensions = {}
         self.image_slices = {}
+        # SAM2
+    # SAM2
+        self.sam2_model = None
+        self.sam2_predictor = None
+        self.sam2_available = self.check_sam2_availability()
+        self.sam2_model_filename = None
+        
         
         # Font size control
         self.font_sizes = {"Small": 8, "Medium": 10, "Large": 12}
@@ -93,13 +111,273 @@ class ImageAnnotator(QMainWindow):
         
         # Apply theme and font (this includes stylesheet and font size application)
         self.apply_theme_and_font()
+        
+        # Initialize SAM2 if available, or show disabled message
+        if self.sam2_available:
+            self.initialize_sam2()
+        else:
+            self.disable_sam2_features(show_message=True)
+                
 
+    
     def setup_ui(self):
         self.setup_sidebar()
         self.setup_image_area()
         self.setup_image_list()
         self.setup_slice_list()
+        self.update_ui_for_current_tool()  
+        
+    def check_sam2_availability(self):
+        try:
+            importlib.import_module('torch')
+            importlib.import_module('sam2')
+            return True
+        except ImportError:
+            return False
+        
+    def initialize_sam2(self):
+        if not self.sam2_available:
+            self.disable_sam2_features(show_message=True)
+            return
+    
+        try:
+            import torch
+            from sam2.build_sam import build_sam2
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
+            
+            self.sam2_model = None
+            self.sam2_predictor = None
+            self.sam_magic_wand_button.setEnabled(False)
+            self.sam_magic_wand_button.setToolTip("Load SAM2 model to enable this feature")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "SAM2 Model Error", f"Failed to initialize SAM2 libraries: {str(e)}. SAM2 features will be disabled.")
+            self.disable_sam2_features(show_message=False)
+            
+    def disable_sam2_features(self, show_message=True):
+        self.sam2_available = False
+        self.sam2_model = None
+        self.sam2_predictor = None
+        self.sam2_model_filename = None
+        if hasattr(self, 'sam_magic_wand_button'):
+            self.sam_magic_wand_button.setEnabled(False)
+            self.sam_magic_wand_button.setToolTip("SAM2 features are not available. Please check your installation.")
+        
+        self.update_image_info()
+        
+        if show_message:
+            QMessageBox.warning(self, "SAM2 Not Available", 
+                                "SAM2 features (including Magic Wand) have been disabled due to missing libraries or model files. "
+                                "You can still use the program without SAM-assisted annotation.")
+            
+    def load_sam2_model(self):
+        model_cfg_path, _ = QFileDialog.getOpenFileName(self, "Select SAM2 Config File", "", "YAML Files (*.yaml)")
+        if not model_cfg_path:
+            return
+    
+        sam2_checkpoint, _ = QFileDialog.getOpenFileName(self, "Select SAM2 Model Checkpoint", "", "Checkpoint Files (*.pt)")
+        if not sam2_checkpoint:
+            return
+    
+        try:
+            import torch
+            from sam2.build_sam import build_sam2
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
+    
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            
+            self.sam2_model = build_sam2(model_cfg_path, sam2_checkpoint, device=device)
+            self.sam2_predictor = SAM2ImagePredictor(self.sam2_model)
+            
+            self.sam_magic_wand_button.setEnabled(True)
+            self.sam_magic_wand_button.setToolTip("Use SAM2 Magic Wand for automated segmentation")
+            
+            # Store the model filename and update the image info
+            self.sam2_model_filename = os.path.basename(sam2_checkpoint)
+            self.update_image_info()
+            
+            device_name = "GPU" if device.type == "cuda" else "CPU"
+            QMessageBox.information(self, "SAM2 Model Loaded", f"SAM2 model '{self.sam2_model_filename}' loaded successfully using {device_name}.")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "SAM2 Model Error", f"Failed to load SAM2 model: {str(e)}. SAM2 features will be disabled.")
+            self.disable_sam2_features(show_message=False)
+            self.sam2_model_filename = None
+            self.update_image_info()
+        
+    def toggle_sam_magic_wand(self):
+        if self.sam_magic_wand_button.isChecked():
+            if self.current_class is None:
+                QMessageBox.warning(self, "No Class Selected", "Please select a class before using SAM2 Magic Wand.")
+                self.sam_magic_wand_button.setChecked(False)
+                return
+            self.image_label.setCursor(Qt.CrossCursor)
+            self.image_label.sam_magic_wand_active = True
+        else:
+            self.image_label.setCursor(Qt.ArrowCursor)
+            self.image_label.sam_magic_wand_active = False
+            self.image_label.sam_bbox = None
+        
+        self.image_label.clear_temp_sam_prediction()  # Clear temporary prediction
+    
+    def generate_sam2_prediction(self, bbox):
+        if not self.sam2_available:
+            QMessageBox.warning(self, "SAM2 Not Available", "SAM2 features are not available. Please check your installation.")
+            return None, 0
 
+        if self.current_image is None or self.sam2_predictor is None:
+            print("Current image or SAM2 predictor is None")
+            return None, 0
+    
+        print(f"Current image format: {self.current_image.format()}")
+        image = self.qimage_to_numpy(self.current_image)
+        print(f"Numpy image shape: {image.shape}, dtype: {image.dtype}")
+    
+        # Ensure the image is RGB
+        if image.ndim == 2:
+            image = np.stack((image,) * 3, axis=-1)
+        elif image.shape[2] == 1:
+            image = np.repeat(image, 3, axis=2)
+            
+        print(f"Numpy image shape after RGB conversion: {image.shape}, dtype: {image.dtype}")
+    
+        self.sam2_predictor.set_image(image)
+    
+        masks, scores, _ = self.sam2_predictor.predict(
+            point_coords=None,
+            point_labels=None,
+            box=np.array([bbox]),
+            multimask_output=True
+        )
+        
+        print(f"SAM2 prediction generated {len(masks)} masks")
+        
+        if len(masks) > 0:
+            best_mask_index = np.argmax(scores)
+            return masks[best_mask_index], scores[best_mask_index]
+        else:
+            print("No masks generated by SAM2")
+            return None, 0
+    
+    def qimage_to_numpy(self, qimage):
+        width = qimage.width()
+        height = qimage.height()
+        fmt = qimage.format()
+    
+        if fmt == QImage.Format_Grayscale8:
+            # Handle grayscale format
+            buffer = qimage.constBits().asarray(height * width)
+            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width))
+            # Convert grayscale to RGB
+            return np.stack((image,) * 3, axis=-1)
+        
+        elif fmt in [QImage.Format_RGB32, QImage.Format_ARGB32, QImage.Format_ARGB32_Premultiplied]:
+            # Handle RGB32 and ARGB32 formats
+            buffer = qimage.constBits().asarray(height * width * 4)
+            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
+            return image[:, :, :3]  # Return only RGB channels
+        
+        elif fmt == QImage.Format_RGB888:
+            # Handle RGB888 format (no alpha channel, 3 bytes per pixel)
+            buffer = qimage.constBits().asarray(height * width * 3)
+            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 3))
+            return image  # Already RGB
+        
+        elif fmt == QImage.Format_Indexed8:
+            # Handle Indexed8 format (palette-based)
+            buffer = qimage.constBits().asarray(height * width)
+            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width))
+            # Convert palette-based to RGB using the color table
+            color_table = qimage.colorTable()
+            rgb_image = np.zeros((height, width, 3), dtype=np.uint8)
+            for y in range(height):
+                for x in range(width):
+                    rgb_image[y, x] = QColor(color_table[image[y, x]]).getRgb()[:3]
+            return rgb_image
+    
+        elif fmt == QImage.Format_RGB16:
+            # Handle RGB16 format (16-bit RGB)
+            buffer = qimage.constBits().asarray(height * width * 2)
+            image = np.frombuffer(buffer, dtype=np.uint16).reshape((height, width))
+            # Convert 16-bit to 8-bit
+            image = (image / 256).astype(np.uint8)
+            # Convert to RGB
+            return np.stack((image,) * 3, axis=-1)
+        
+        else:
+            # For any other format, convert to RGB32 first
+            converted_image = qimage.convertToFormat(QImage.Format_RGB32)
+            buffer = converted_image.constBits().asarray(height * width * 4)
+            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
+            return image[:, :, :3]  # Return only RGB channels
+
+        
+    def apply_sam2_prediction(self):
+        if self.image_label.sam_bbox is None:
+            print("SAM bbox is None")
+            return
+    
+        x1, y1, x2, y2 = self.image_label.sam_bbox
+        bbox = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+        print(f"Applying SAM2 prediction with bbox: {bbox}")
+        
+        try:
+            mask, score = self.generate_sam2_prediction(bbox)
+            print(f"SAM2 prediction generated with score: {score}")
+            
+            if mask is not None:
+                print(f"Mask shape: {mask.shape}, Mask sum: {mask.sum()}")
+                contours = self.mask_to_polygon(mask)
+                print(f"Contours generated: {len(contours)} contour(s)")
+                
+                if not contours:
+                    print("No valid contours found")
+                    return
+                
+                temp_annotation = {
+                    "segmentation": contours[0],  # Take the first contour
+                    "category_id": self.class_mapping[self.current_class],
+                    "category_name": self.current_class,
+                    "score": score
+                }
+                print(f"Temporary annotation: {temp_annotation}")
+                
+                self.image_label.temp_sam_prediction = temp_annotation
+                self.image_label.update()
+            else:
+                print("Failed to generate mask")
+        except Exception as e:
+            print(f"Error in applying SAM2 prediction: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+        # Reset SAM bounding box
+        self.image_label.sam_bbox = None
+        self.image_label.update()
+    
+    def mask_to_polygon(self, mask):
+        import cv2
+        contours, _ = cv2.findContours((mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        polygons = []
+        for contour in contours:
+            if cv2.contourArea(contour) > 10:  # Filter out very small contours
+                polygon = contour.flatten().tolist()
+                if len(polygon) >= 6:  # Ensure the polygon has at least 3 points
+                    polygons.append(polygon)
+        print(f"Generated {len(polygons)} valid polygons")
+        return polygons
+    
+    def accept_sam_prediction(self):
+        if self.image_label.temp_sam_prediction:
+            new_annotation = self.image_label.temp_sam_prediction
+            self.image_label.annotations.setdefault(new_annotation["category_name"], []).append(new_annotation)
+            self.add_annotation_to_list(new_annotation)
+            self.save_current_annotations()
+            self.update_slice_list_colors()
+            self.image_label.temp_sam_prediction = None
+            self.image_label.update()
+            print("SAM prediction accepted and added to annotations.")
+    
     def setup_slice_list(self):
         self.slice_list = QListWidget()
         self.slice_list.itemClicked.connect(self.switch_slice)
@@ -117,6 +395,25 @@ class ImageAnnotator(QMainWindow):
             self.current_stack = None
             self.current_slice = None
             self.add_images_to_list(file_names)
+            
+            
+    def convert_to_8bit_rgb(self, image_array):
+        if image_array.ndim == 2:
+            # Grayscale image
+            image_8bit = self.normalize_array(image_array)
+            return np.stack((image_8bit,) * 3, axis=-1)
+        elif image_array.ndim == 3:
+            if image_array.shape[2] == 3:
+                # Already RGB, just normalize
+                return self.normalize_array(image_array)
+            elif image_array.shape[2] > 3:
+                # Multi-channel image, use first three channels
+                rgb_array = image_array[:, :, :3]
+                return self.normalize_array(rgb_array)
+        
+        raise ValueError(f"Unsupported image shape: {image_array.shape}")
+            
+            
 
     def add_images_to_list(self, file_names):
         for file_name in file_names:
@@ -141,6 +438,7 @@ class ImageAnnotator(QMainWindow):
             return
     
         self.save_current_annotations()
+        self.image_label.clear_temp_sam_prediction()
     
         slice_name = item.text()
         for name, qimage in self.slices:
@@ -166,6 +464,7 @@ class ImageAnnotator(QMainWindow):
     
         #print(f"Switching image to: {item.text()}")
         self.save_current_annotations()
+        self.image_label.clear_temp_sam_prediction()
     
         file_name = item.text()
         image_info = next((img for img in self.all_images if img["file_name"] == file_name), None)
@@ -251,108 +550,192 @@ class ImageAnnotator(QMainWindow):
             self.load_regular_image(image_path)
 
 
-    def load_tiff(self, image_path):
-        with TiffFile(image_path) as tif:
-            image_array = tif.asarray()
-        self.process_multidimensional_image(image_array, image_path)
 
-    def load_czi(self, image_path):
+    def load_tiff(self, image_path, force_dimension_dialog=False):
+        #print(f"Loading TIFF file: {image_path}")
+        with TiffFile(image_path) as tif:
+           # print(f"TIFF tags: {tif.pages[0].tags}")
+            
+            # Try to access metadata if available
+            try:
+                metadata = tif.pages[0].tags['ImageDescription'].value
+                print(f"TIFF metadata: {metadata}")
+            except KeyError:
+                print("No ImageDescription metadata found")
+            
+            # Check if it's a multi-page TIFF
+            if len(tif.pages) > 1:
+                print(f"Multi-page TIFF detected. Number of pages: {len(tif.pages)}")
+                # Read all pages into a 3D array
+                image_array = tif.asarray()
+            else:
+                print("Single-page TIFF detected.")
+                image_array = tif.pages[0].asarray()
+            
+            print(f"Image array shape: {image_array.shape}")
+            print(f"Image array dtype: {image_array.dtype}")
+            print(f"Image min: {image_array.min()}, max: {image_array.max()}")
+    
+            # Print additional information about the TIFF structure
+            #print(f"TIFF structure: {tif.series}")
+            #for i, page in enumerate(tif.pages):
+               # print(f"Page {i}: shape={page.shape}, dtype={page.dtype}")
+    
+        self.process_multidimensional_image(image_array, image_path, force_dimension_dialog)
+    
+    def load_czi(self, image_path, force_dimension_dialog=False):
+        print(f"Loading CZI file: {image_path}")
         with CziFile(image_path) as czi:
             image_array = czi.asarray()
-        self.process_multidimensional_image(image_array, image_path)
+            print(f"CZI array shape: {image_array.shape}")
+            print(f"CZI array dtype: {image_array.dtype}")
+            print(f"CZI array min: {image_array.min()}, max: {image_array.max()}")
+            
+            # Print information about each channel
+            # if len(image_array.shape) > 2:
+            #     for c in range(image_array.shape[-3]):  # Assuming channel is the third-to-last dimension
+            #         channel = image_array[..., c, :, :]
+                   # print(f"Channel {c} - min: {channel.min()}, max: {channel.max()}, mean: {channel.mean()}")
+        
+        self.process_multidimensional_image(image_array, image_path, force_dimension_dialog)
+    
     
     def load_regular_image(self, image_path):
         self.current_image = QImage(image_path)
         self.slices = []
         self.slice_list.clear()
         self.current_slice = None
-
-    def process_multidimensional_image(self, image_array, image_path):
+    
+    def process_multidimensional_image(self, image_array, image_path, force_dimension_dialog=False):
         file_name = os.path.basename(image_path)
-        if file_name not in self.image_dimensions:
+       # print(f"Processing file: {file_name}")
+       # print(f"Image array shape: {image_array.shape}")
+       # print(f"Image array dtype: {image_array.dtype}")
+    
+        if force_dimension_dialog or file_name not in self.image_dimensions:
             if image_array.ndim > 2:
+                default_dimensions = ['Z', 'H', 'W'] if image_array.ndim == 3 else ['T', 'Z', 'H', 'W']
+                default_dimensions = default_dimensions[-image_array.ndim:]
+                
+                # Show a progress dialog
+                progress = QProgressDialog("Assigning dimensions...", "Cancel", 0, 100, self)
+                progress.setWindowModality(Qt.WindowModal)
+                progress.setMinimumDuration(0)
+                progress.setValue(10)
+                QApplication.processEvents()
+    
                 while True:
-                    dialog = DimensionDialog(image_array.shape, file_name, self)
+                    dialog = DimensionDialog(image_array.shape, file_name, self, default_dimensions)
                     dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+                    progress.setValue(50)
+                    QApplication.processEvents()
                     if dialog.exec_():
                         dimensions = dialog.get_dimensions()
+                        print(f"Assigned dimensions: {dimensions}")
                         if 'H' in dimensions and 'W' in dimensions:
                             self.image_dimensions[file_name] = dimensions
                             break
                         else:
-                            QMessageBox.warning(self, "Invalid Dimensions", "You must assign both Height (H) and Width (W) dimensions.")
+                            QMessageBox.warning(self, "Invalid Dimensions", "You must assign both H and W dimensions.")
                     else:
-                        # User cancelled, so we should not proceed with this image
+                        progress.close()
                         return
+                progress.setValue(100)
+                progress.close()
             else:
                 self.image_dimensions[file_name] = ['H', 'W']
+
+
+    
+        print(f"Final assigned dimensions: {self.image_dimensions[file_name]}")
     
         if self.image_dimensions[file_name]:
             self.create_slices(image_array, self.image_dimensions[file_name], image_path)
         else:
-            self.current_image = self.array_to_qimage(image_array)
+            rgb_image = self.convert_to_8bit_rgb(image_array)
+            self.current_image = self.array_to_qimage(rgb_image)
             self.slices = []
             self.slice_list.clear()
-            
-            
+    
         if self.slices:
             self.current_image = self.slices[0][1]
             self.current_slice = self.slices[0][0]
             self.slice_list.setCurrentRow(0)
-            self.load_image_annotations()  # Add this line to load annotations for the first slice
-            self.image_label.update()  # Add this line to update the image label
+            self.load_image_annotations()
+            self.image_label.update()
     
-        
         self.update_image_info()
 
-
+    
     def create_slices(self, image_array, dimensions, image_path):
-        #print(f"Creating slices for {image_path}")
         base_name = os.path.splitext(os.path.basename(image_path))[0]
         slices = []
         self.slice_list.clear()
     
-        height_index = dimensions.index('H')
-        width_index = dimensions.index('W')
+        print(f"Creating slices for {base_name}")
+        print(f"Dimensions: {dimensions}")
+        print(f"Image array shape: {image_array.shape}")
     
-        slice_indices = [i for i, dim in enumerate(dimensions) if dim not in ['H', 'W']]
-        total_slices = np.prod([image_array.shape[i] for i in slice_indices])
+        # Create and show progress dialog
+        progress = QProgressDialog("Loading slices...", "Cancel", 0, 100, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)  # Show immediately
     
-        for idx in np.ndindex(tuple(image_array.shape[i] for i in slice_indices)):
-            full_idx = list(image_array.shape)
-            for i, val in zip(slice_indices, idx):
-                full_idx[i] = val
-            full_idx[height_index] = slice(None)
-            full_idx[width_index] = slice(None)
-            
-            slice_array = image_array[tuple(full_idx)]
-            qimage = self.array_to_qimage(slice_array)
-            
-            slice_name = f"{base_name}_{'_'.join([f'{dimensions[i]}{val+1}' for i, val in zip(slice_indices, idx)])}"
+        # Handle 2D images
+        if image_array.ndim == 2:
+            progress.setValue(50)  # Update progress
+            QApplication.processEvents()  # Allow GUI to update
+            normalized_array = self.normalize_array(image_array)
+            qimage = self.array_to_qimage(normalized_array)
+            slice_name = f"{base_name}"
             slices.append((slice_name, qimage))
-            
-            item = QListWidgetItem(slice_name)
-            if slice_name in self.all_annotations:
-                item.setForeground(QColor(Qt.green))
-            else:
-                item.setForeground(QColor(Qt.black))
-            self.slice_list.addItem(item)
+            self.slice_list.addItem(QListWidgetItem(slice_name))
+        else:
+            # For 3D or higher dimensional arrays
+            #height_index = dimensions.index('H')
+            #width_index = dimensions.index('W')
+            slice_indices = [i for i, dim in enumerate(dimensions) if dim not in ['H', 'W']]
+    
+            total_slices = np.prod([image_array.shape[i] for i in slice_indices])
+            for idx, _ in enumerate(np.ndindex(tuple(image_array.shape[i] for i in slice_indices))):
+                if progress.wasCanceled():
+                    break
+    
+                full_idx = [slice(None)] * len(dimensions)
+                for i, val in zip(slice_indices, _):
+                    full_idx[i] = val
+                
+                slice_array = image_array[tuple(full_idx)]
+                rgb_slice = self.convert_to_8bit_rgb(slice_array)
+                qimage = self.array_to_qimage(rgb_slice)
+                
+                slice_name = f"{base_name}_{'_'.join([f'{dimensions[i]}{val+1}' for i, val in zip(slice_indices, _)])}"
+                slices.append((slice_name, qimage))
+                
+                item = QListWidgetItem(slice_name)
+                if slice_name in self.all_annotations:
+                    item.setForeground(QColor(Qt.green))
+                else:
+                    item.setForeground(QColor(Qt.black))
+                self.slice_list.addItem(item)
+    
+                # Update progress
+                progress_value = int((idx + 1) / total_slices * 100)
+                progress.setValue(progress_value)
+                QApplication.processEvents()  # Allow GUI to update
+    
+        progress.setValue(100)  # Ensure progress reaches 100%
     
         self.image_slices[base_name] = slices
         self.slices = slices
-    
-        #print(f"Total slices created: {len(slices)}")
     
         if slices:
             self.current_image = slices[0][1]
             self.current_slice = slices[0][0]
             self.slice_list.setCurrentRow(0)
             
-            #print(f"First slice created: {self.current_slice}")
-            # Activate the first slice
             self.activate_slice(self.current_slice)
     
-            # Update image info
             slice_info = f"Total slices: {len(slices)}"
             for dim, size in zip(dimensions, image_array.shape):
                 if dim not in ['H', 'W']:
@@ -362,12 +745,43 @@ class ImageAnnotator(QMainWindow):
             print("No slices were created")
     
         return slices
+    
+    
+    def normalize_array(self, array):
+       # print(f"Normalizing array. Shape: {array.shape}, dtype: {array.dtype}")
+       # print(f"Array min: {array.min()}, max: {array.max()}, mean: {array.mean()}")
+        
+        array_float = array.astype(np.float32)
+        
+        if array.dtype == np.uint16:
+            array_normalized = (array_float - array.min()) / (array.max() - array.min())
+        elif array.dtype == np.uint8:
+            # For 8-bit images, use a simple contrast stretching
+            p_low, p_high = np.percentile(array_float, (0, 100)) #Change these to 1, 99 or something to stretch the contrast for visualizing 8 bit images
+            array_normalized = np.clip(array_float, p_low, p_high)
+            array_normalized = (array_normalized - p_low) / (p_high - p_low)
+        else:
+            array_normalized = (array_float - array.min()) / (array.max() - array.min())
+        
+        # Apply gamma correction
+        gamma = 1.0  # Adjust this value to fine-tune brightness (> 1 for darker, < 1 for brighter)
+        array_normalized = np.power(array_normalized, gamma)
+        
+        return (array_normalized * 255).astype(np.uint8)
             
+    def adjust_contrast(self, image, low_percentile=1, high_percentile=99):
+        if image.dtype != np.uint8:
+            p_low, p_high = np.percentile(image, (low_percentile, high_percentile))
+            image_adjusted = np.clip(image, p_low, p_high)
+            image_adjusted = (image_adjusted - p_low) / (p_high - p_low)
+            return (image_adjusted * 255).astype(np.uint8)
+        return image
+
             
     def activate_slice(self, slice_name):
         #print(f"Activating slice: {slice_name}")
         self.current_slice = slice_name
-        self.image_file_name = slice_name  # Add this line
+        self.image_file_name = slice_name  
         self.load_image_annotations()
         self.update_annotation_list()
         self.image_label.update()
@@ -386,18 +800,13 @@ class ImageAnnotator(QMainWindow):
     def array_to_qimage(self, array):
         if array.ndim == 2:
             height, width = array.shape
-            bytes_per_line = width
-            if array.dtype != np.uint8:
-                array = ((array - array.min()) / (array.max() - array.min()) * 255).astype(np.uint8)
-            return QImage(array.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
+            return QImage(array.data, width, height, width, QImage.Format_Grayscale8)
         elif array.ndim == 3 and array.shape[2] == 3:
             height, width, _ = array.shape
             bytes_per_line = 3 * width
-            if array.dtype != np.uint8:
-                array = ((array - array.min()) / (array.max() - array.min()) * 255).astype(np.uint8)
             return QImage(array.data, width, height, bytes_per_line, QImage.Format_RGB888)
         else:
-            raise ValueError("Unsupported array shape for conversion to QImage")
+            raise ValueError(f"Unsupported array shape {array.shape} for conversion to QImage")
 
     def update_slice_list(self):
         self.slice_list.clear()
@@ -412,6 +821,7 @@ class ImageAnnotator(QMainWindow):
             # Highlight the current slice
             if slice_name == self.current_slice:
                 self.slice_list.setCurrentItem(item)
+                       
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Up or event.key() == Qt.Key_Down:
@@ -570,15 +980,7 @@ class ImageAnnotator(QMainWindow):
                 item.setForeground(color)
                 self.annotation_list.addItem(item)
                 
-    def update_slice_list(self):
-        self.slice_list.clear()
-        for slice_name, _ in self.slices:
-            item = QListWidgetItem(slice_name)
-            if slice_name in self.all_annotations:
-                item.setForeground(QColor(Qt.green))
-            else:
-                item.setForeground(QColor(Qt.black))
-            self.slice_list.addItem(item)
+
             
     def update_slice_list_colors(self):
         for i in range(self.slice_list.count()):
@@ -589,14 +991,7 @@ class ImageAnnotator(QMainWindow):
             else:
                 item.setForeground(QColor(Qt.black) if not self.dark_mode else QColor(Qt.white))
                 
-    # def update_annotation_list_colors(self):
-    #     for i in range(self.annotation_list.count()):
-    #         item = self.annotation_list.item(i)
-    #         annotation = item.data(Qt.UserRole)
-    #         class_name = annotation['category_name']
-    #         color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
-    #         item.setForeground(color)
-            
+
     def update_annotation_list_colors(self, class_name=None, color=None):
         for i in range(self.annotation_list.count()):
             item = self.annotation_list.item(i)
@@ -654,73 +1049,206 @@ class ImageAnnotator(QMainWindow):
         self.sidebar_layout.addWidget(self.add_class_button)
 
     def setup_tool_buttons(self):
-        """Set up the tool buttons."""
+        """Set up the tool buttons with grouped manual and automated tools."""
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(False)
-        self.polygon_button = QPushButton("Polygon Tool")
+    
+        # Create a widget for manual tools
+        manual_tools_widget = QWidget()
+        manual_layout = QVBoxLayout(manual_tools_widget)
+        manual_layout.setSpacing(5)
+    
+        manual_label = QLabel("Manual Tools")
+        manual_label.setAlignment(Qt.AlignCenter)
+        manual_layout.addWidget(manual_label)
+    
+        manual_buttons_layout = QHBoxLayout()
+        self.polygon_button = QPushButton("Polygon")
         self.polygon_button.setCheckable(True)
-        self.rectangle_button = QPushButton("Rectangle Tool")
+        self.rectangle_button = QPushButton("Rectangle")
         self.rectangle_button.setCheckable(True)
+        manual_buttons_layout.addWidget(self.polygon_button)
+        manual_buttons_layout.addWidget(self.rectangle_button)
+        manual_layout.addLayout(manual_buttons_layout)
+    
         self.tool_group.addButton(self.polygon_button)
         self.tool_group.addButton(self.rectangle_button)
-        self.sidebar_layout.addWidget(self.polygon_button)
-        self.sidebar_layout.addWidget(self.rectangle_button)
         self.polygon_button.clicked.connect(self.toggle_tool)
         self.rectangle_button.clicked.connect(self.toggle_tool)
-
-        self.finish_polygon_button = QPushButton("Finish Polygon")
-        self.finish_polygon_button.clicked.connect(self.finish_polygon)
-        self.finish_polygon_button.setEnabled(False)
-        self.sidebar_layout.addWidget(self.finish_polygon_button)
+    
+        # Create a widget for automated tools
+        automated_tools_widget = QWidget()
+        automated_layout = QVBoxLayout(automated_tools_widget)
+        automated_layout.setSpacing(5)
+    
+        automated_label = QLabel("Automated Tools")
+        automated_label.setAlignment(Qt.AlignCenter)
+        automated_layout.addWidget(automated_label)
+    
+        automated_buttons_layout = QHBoxLayout()
+        self.load_sam2_button = QPushButton("Load SAM2")
+        self.load_sam2_button.clicked.connect(self.load_sam2_model)
+        self.sam_magic_wand_button = QPushButton("Magic Wand")
+        self.sam_magic_wand_button.setCheckable(True)
+        automated_buttons_layout.addWidget(self.load_sam2_button)
+        automated_buttons_layout.addWidget(self.sam_magic_wand_button)
+        automated_layout.addLayout(automated_buttons_layout)
+    
+        self.tool_group.addButton(self.sam_magic_wand_button)
+        self.sam_magic_wand_button.clicked.connect(self.toggle_tool)
+    
+        # Add the grouped tools to the sidebar layout
+        self.sidebar_layout.addWidget(manual_tools_widget)
+        self.sidebar_layout.addWidget(automated_tools_widget)
+    
+        if not self.sam2_available:
+            self.sam_magic_wand_button.setEnabled(False)
+            self.sam_magic_wand_button.setToolTip("SAM2 features are not available. Please check your installation.")
+            self.load_sam2_button.setEnabled(False)
+            self.load_sam2_button.setToolTip("SAM2 features are not available. Please check your installation.")
+        else:
+            self.sam_magic_wand_button.setEnabled(False)
+            self.sam_magic_wand_button.setToolTip("Load SAM2 model to enable this feature")
+    
+        # Set a fixed size for all buttons to make them smaller
+        for button in [self.polygon_button, self.rectangle_button, self.load_sam2_button, self.sam_magic_wand_button]:
+            button.setFixedSize(100, 30)  # Adjust the size as needed
 
     def setup_annotation_list(self):
         """Set up the annotation list widget."""
         self.annotation_list = QListWidget()
         self.annotation_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.annotation_list.itemSelectionChanged.connect(self.update_highlighted_annotations)
-        self.sidebar_layout.addWidget(QLabel("Annotations:"))
-        self.sidebar_layout.addWidget(self.annotation_list)
-
-        self.delete_button = QPushButton("Delete Selected Annotations")
-        self.delete_button.clicked.connect(self.delete_selected_annotations)
-        self.sidebar_layout.addWidget(self.delete_button)
 
     def setup_sidebar(self):
         self.sidebar = QWidget()
         self.sidebar_layout = QVBoxLayout(self.sidebar)
         self.layout.addWidget(self.sidebar, 1)
-
-        # Add existing buttons and widgets
+    
+        # Helper function to create section headers
+        def create_section_header(text):
+            label = QLabel(text)
+            label.setProperty("class", "section-header")
+            label.setAlignment(Qt.AlignLeft)
+            return label
+            
+        # Imports section
+        self.sidebar_layout.addWidget(create_section_header("Imports"))
+        imports_widget = QWidget()
+        imports_layout = QVBoxLayout(imports_widget)
+    
         self.load_annotations_button = QPushButton("Import Saved Annotations")
         self.load_annotations_button.clicked.connect(self.load_annotations)
-        self.sidebar_layout.addWidget(self.load_annotations_button)
-
+        imports_layout.addWidget(self.load_annotations_button)
+    
         self.open_button = QPushButton("Open New Image Set")
         self.open_button.clicked.connect(self.open_images)
-        self.sidebar_layout.addWidget(self.open_button)
-
+        imports_layout.addWidget(self.open_button)
+    
         self.add_images_button = QPushButton("Add More Images")
         self.add_images_button.clicked.connect(self.add_images)
-        self.sidebar_layout.addWidget(self.add_images_button)
-
-        self.setup_class_list()
-        self.setup_tool_buttons()
-        self.setup_annotation_list()
-
+        imports_layout.addWidget(self.add_images_button)
+    
+        self.sidebar_layout.addWidget(imports_widget)
+    
+        # Classes section
+        self.sidebar_layout.addWidget(create_section_header("Classes"))
+        classes_widget = QWidget()
+        classes_layout = QVBoxLayout(classes_widget)
+    
+        self.class_list = QListWidget()
+        self.class_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.class_list.customContextMenuRequested.connect(self.show_class_context_menu)
+        self.class_list.itemClicked.connect(self.on_class_selected)
+        classes_layout.addWidget(self.class_list)
+    
+        self.add_class_button = QPushButton("Add Class")
+        self.add_class_button.clicked.connect(self.add_class)
+        classes_layout.addWidget(self.add_class_button)
+    
+        self.sidebar_layout.addWidget(classes_widget)
+    
+        # Annotation section
+        self.sidebar_layout.addWidget(create_section_header("Annotation"))
+        annotation_widget = QWidget()
+        annotation_layout = QVBoxLayout(annotation_widget)
+    
+        # Manual tools subsection
+        manual_widget = QWidget()
+        manual_layout = QVBoxLayout(manual_widget)
+        manual_layout.addWidget(QLabel("Manual"))
+    
+        self.polygon_button = QPushButton("Polygon Tool")
+        self.polygon_button.setCheckable(True)
+        self.rectangle_button = QPushButton("Rectangle Tool")
+        self.rectangle_button.setCheckable(True)
+        manual_layout.addWidget(self.polygon_button)
+        manual_layout.addWidget(self.rectangle_button)
+    
+        annotation_layout.addWidget(manual_widget)
+    
+        # SAM-Assisted tools subsection
+        sam_widget = QWidget()
+        sam_layout = QVBoxLayout(sam_widget)
+        sam_layout.addWidget(QLabel("SAM-Assisted"))
+    
+        self.load_sam2_button = QPushButton("Load SAM2 Model")
+        self.load_sam2_button.clicked.connect(self.load_sam2_model)
+        self.sam_magic_wand_button = QPushButton("SAM2 Magic Wand")
+        self.sam_magic_wand_button.setCheckable(True)
+        sam_layout.addWidget(self.load_sam2_button)
+        sam_layout.addWidget(self.sam_magic_wand_button)
+    
+        annotation_layout.addWidget(sam_widget)
+    
+        # Setup tool group
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(False)
+        self.tool_group.addButton(self.polygon_button)
+        self.tool_group.addButton(self.rectangle_button)
+        self.tool_group.addButton(self.sam_magic_wand_button)
+    
+        self.polygon_button.clicked.connect(self.toggle_tool)
+        self.rectangle_button.clicked.connect(self.toggle_tool)
+        self.sam_magic_wand_button.clicked.connect(self.toggle_tool)
+    
+        if not self.sam2_available:
+            self.sam_magic_wand_button.setEnabled(False)
+            self.sam_magic_wand_button.setToolTip("SAM2 features are not available. Please check your installation.")
+            self.load_sam2_button.setEnabled(False)
+            self.load_sam2_button.setToolTip("SAM2 features are not available. Please check your installation.")
+        else:
+            self.sam_magic_wand_button.setEnabled(False)
+            self.sam_magic_wand_button.setToolTip("Load SAM2 model to enable this feature")
+    
+        # Annotations list subsection
+        annotation_layout.addWidget(QLabel("Annotations"))
+        self.annotation_list = QListWidget()
+        self.annotation_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.annotation_list.itemSelectionChanged.connect(self.update_highlighted_annotations)
+        annotation_layout.addWidget(self.annotation_list)
+    
+        self.delete_button = QPushButton("Delete Selected Annotations")
+        self.delete_button.clicked.connect(self.delete_selected_annotations)
+        annotation_layout.addWidget(self.delete_button)
+    
         self.save_button = QPushButton("Save Annotations")
         self.save_button.clicked.connect(self.save_annotations)
-        self.sidebar_layout.addWidget(self.save_button)
-
+        annotation_layout.addWidget(self.save_button)
+    
+        # Add the annotation widget to the sidebar
+        self.sidebar_layout.addWidget(annotation_widget)
+    
         self.sidebar_layout.addStretch(1)
-
+    
         # Add font size selector
         self.setup_font_size_selector()
-
+    
         # Dark mode toggle
         self.dark_mode_button = QPushButton("Toggle Dark Mode")
         self.dark_mode_button.clicked.connect(self.toggle_dark_mode)
         self.sidebar_layout.addWidget(self.dark_mode_button)
-
+    
         # Help button
         self.help_button = QPushButton("Help")
         self.help_button.clicked.connect(self.show_help)
@@ -741,25 +1269,15 @@ class ImageAnnotator(QMainWindow):
         self.current_font_size = size
         self.apply_theme_and_font()
         
-    # def apply_font_size(self):
-    #     font_size = self.font_sizes[self.current_font_size]
-    #     self.setStyleSheet(f"QWidget {{ font-size: {font_size}pt; }}")
+
         
-    #     for widget in self.findChildren(QWidget):
-    #         font = widget.font()
-    #         font.setPointSize(font_size)
-    #         widget.setFont(font)
-        
-    #     self.image_label.setFont(QFont("Arial", font_size))
-    #     self.update()
-    
     def apply_theme_and_font(self):
         font_size = self.font_sizes[self.current_font_size]
         if self.dark_mode:
             style = soft_dark_stylesheet
         else:
-            style = default_stylesheet
-        
+            style = default_stylesheet  # Make sure to import or define this
+    
         # Combine the theme stylesheet with font size
         combined_style = f"{style}\nQWidget {{ font-size: {font_size}pt; }}"
         self.setStyleSheet(combined_style)
@@ -771,7 +1289,6 @@ class ImageAnnotator(QMainWindow):
             widget.setFont(font)
         
         self.image_label.setFont(QFont("Arial", font_size))
-        self.update_ui_colors()  # Ensure custom colors are reapplied
         self.update()
 
         
@@ -801,13 +1318,13 @@ class ImageAnnotator(QMainWindow):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        self.image_label = ImageLabel()
-        self.image_label.set_main_window(self)
+        
+        # Use the already initialized image_label
         self.image_label.setAlignment(Qt.AlignCenter)
         self.scroll_area.setWidget(self.image_label)
-
+        
         self.image_layout.addWidget(self.scroll_area)
+
 
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setMinimum(10)
@@ -840,7 +1357,7 @@ class ImageAnnotator(QMainWindow):
         self.image_list_layout.addWidget(self.clear_all_button)
 
 
-    # In the ImageAnnotator class, update the show_help method:
+    # update the show_help method:
     def show_help(self):
         self.help_window = HelpWindow(dark_mode=self.dark_mode, font_size=self.font_sizes[self.current_font_size])
         self.help_window.show()
@@ -851,7 +1368,7 @@ class ImageAnnotator(QMainWindow):
         if file_names:
             self.add_images_to_list(file_names)
             
-            
+                
     def clear_all(self):
         reply = self.show_question('Clear All',
                                    "Are you sure you want to clear all images and annotations? This action cannot be undone.")
@@ -863,13 +1380,18 @@ class ImageAnnotator(QMainWindow):
             self.all_images.clear()
             self.current_image = None
             self.image_file_name = ""
+            
+            # Clear the image display
             self.image_label.clear()
+            self.image_label.setPixmap(QPixmap())  # Set an empty pixmap
+            self.image_label.original_pixmap = None
+            self.image_label.scaled_pixmap = None
     
             # Clear annotations
             self.all_annotations.clear()
             self.annotation_list.clear()
             self.image_label.annotations.clear()
-            self.clear_highlighted_annotation()
+            self.image_label.highlighted_annotations.clear()  # Changed from clear_highlighted_annotation()
     
             # Reset class-related data
             self.class_list.clear()
@@ -883,11 +1405,18 @@ class ImageAnnotator(QMainWindow):
             self.current_slice = None
             self.current_stack = None
             
+            # Reset zoom
+            self.image_label.zoom_factor = 1.0
+            self.zoom_slider.setValue(100)
+            
             # Update UI
             self.image_label.update()
             self.update_image_info()
             self.show_info("Clear All", "All images and annotations have been cleared.")
             
+            # Force a repaint of the main window
+            self.repaint()
+                
             
     def show_warning(self, title, message):
         QMessageBox.warning(self, title, message)
@@ -902,9 +1431,17 @@ class ImageAnnotator(QMainWindow):
             info = f"Image: {width}x{height}"
             if additional_info:
                 info += f", {additional_info}"
+            
+            # Add SAM model information
+            if self.sam2_model_filename:
+                info += f" | SAM Model: {self.sam2_model_filename}"
+            else:
+                info += " | No SAM model loaded"
+            
             self.image_info_label.setText(info)
         else:
             self.image_info_label.setText("No image loaded")
+        
     
     def show_question(self, title, message):
         return QMessageBox.question(self, title, message,
@@ -914,11 +1451,60 @@ class ImageAnnotator(QMainWindow):
     def show_image_context_menu(self, position):
         menu = QMenu()
         delete_action = menu.addAction("Remove Image")
-
+        redefine_dimensions_action = None
+    
+        current_item = self.image_list.itemAt(position)
+        if current_item:
+            file_name = current_item.text()
+            file_path = self.image_paths.get(file_name)
+            if file_path and file_path.lower().endswith(('.tif', '.tiff', '.czi')):
+                redefine_dimensions_action = menu.addAction("Redefine Dimensions")
+    
         action = menu.exec_(self.image_list.mapToGlobal(position))
         
         if action == delete_action:
             self.remove_image()
+        elif action == redefine_dimensions_action:
+            self.redefine_dimensions(file_name)
+            
+    def redefine_dimensions(self, file_name):
+        reply = QMessageBox.warning(self, "Redefine Dimensions",
+                                    "Redefining dimensions will cause all associated annotations to be lost. "
+                                    "Do you want to continue?",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            file_path = self.image_paths.get(file_name)
+            if file_path:
+                # Remove existing annotations for this file
+                base_name = os.path.splitext(os.path.basename(file_path))[0]
+                for key in list(self.all_annotations.keys()):
+                    if key.startswith(base_name):
+                        del self.all_annotations[key]
+                
+                # Remove existing slices
+                if base_name in self.image_slices:
+                    del self.image_slices[base_name]
+                
+                # Clear current image if it's the one being redefined
+                if self.image_file_name == file_name:
+                    self.current_image = None
+                    self.image_label.clear()
+                
+                # Reload the image with new dimension dialog
+                if file_path.lower().endswith(('.tif', '.tiff')):
+                    self.load_tiff(file_path, force_dimension_dialog=True)
+                elif file_path.lower().endswith('.czi'):
+                    self.load_czi(file_path, force_dimension_dialog=True)
+                
+                # Update UI
+                self.update_slice_list()
+                self.update_annotation_list()
+                self.image_label.update()
+                
+                QMessageBox.information(self, "Dimensions Redefined", 
+                                        "The dimensions have been redefined and the image reloaded. "
+                                        "All previous annotations for this image have been removed.")
     
     def remove_image(self):
         current_item = self.image_list.currentItem()
@@ -1109,12 +1695,26 @@ class ImageAnnotator(QMainWindow):
 
     def toggle_tool(self):
         sender = self.sender()
-        other_button = self.rectangle_button if sender == self.polygon_button else self.polygon_button
-
+        other_buttons = [btn for btn in self.tool_group.buttons() if btn != sender]
+    
         if sender.isChecked():
-            other_button.setChecked(False)
-            self.image_label.current_tool = "polygon" if sender == self.polygon_button else "rectangle"
+            # Uncheck all other buttons
+            for btn in other_buttons:
+                btn.setChecked(False)
             
+            # Set the current tool based on the checked button
+            if sender == self.polygon_button:
+                self.image_label.current_tool = "polygon"
+            elif sender == self.rectangle_button:
+                self.image_label.current_tool = "rectangle"
+            elif sender == self.sam_magic_wand_button:
+                if self.sam2_model is None:
+                    QMessageBox.warning(self, "SAM2 Model Not Loaded", "Please load the SAM2 model before using the Magic Wand tool.")
+                    sender.setChecked(False)
+                    return
+                self.image_label.current_tool = "sam_magic_wand"
+            
+            # If a class is not selected, select the first one (if available)
             if self.current_class is None and self.class_list.count() > 0:
                 self.class_list.setCurrentRow(0)
                 self.current_class = self.class_list.currentItem().text()
@@ -1124,10 +1724,23 @@ class ImageAnnotator(QMainWindow):
                 self.image_label.current_tool = None
         else:
             self.image_label.current_tool = None
-
-        self.finish_polygon_button.setEnabled(self.image_label.current_tool in ["polygon", "rectangle"])
-
-
+    
+        # Update SAM magic wand state
+        self.image_label.sam_magic_wand_active = (self.image_label.current_tool == "sam_magic_wand")
+        self.image_label.setCursor(Qt.CrossCursor if self.image_label.sam_magic_wand_active else Qt.ArrowCursor)
+    
+        # Update UI based on the current tool
+        self.update_ui_for_current_tool()
+        
+    def update_ui_for_current_tool(self):
+        # Disable finish_polygon_button if it still exists in your code
+        if hasattr(self, 'finish_polygon_button'):
+            self.finish_polygon_button.setEnabled(self.image_label.current_tool in ["polygon", "rectangle"])
+    
+        # Update button states
+        self.polygon_button.setChecked(self.image_label.current_tool == "polygon")
+        self.rectangle_button.setChecked(self.image_label.current_tool == "rectangle")
+        self.sam_magic_wand_button.setChecked(self.image_label.current_tool == "sam_magic_wand")        
 
     def on_class_selected(self):
         selected_item = self.class_list.currentItem()
@@ -1237,7 +1850,7 @@ class ImageAnnotator(QMainWindow):
             self.image_label.update()
 
     def finish_polygon(self):
-        if not self.editing_mode and self.image_label.current_tool in ["polygon", "rectangle"] and len(self.image_label.current_annotation) > 2:
+        if self.image_label.current_tool == "polygon" and len(self.image_label.current_annotation) > 2:
             if self.current_class is None:
                 QMessageBox.warning(self, "No Class Selected", "Please select a class before finishing the annotation.")
                 return
@@ -1251,7 +1864,6 @@ class ImageAnnotator(QMainWindow):
             self.add_annotation_to_list(new_annotation)
             self.image_label.clear_current_annotation()
             self.image_label.reset_annotation_state()
-            self.finish_polygon_button.setEnabled(False)
             self.image_label.update()
             
             # Save the current annotations
@@ -1307,7 +1919,7 @@ class ImageAnnotator(QMainWindow):
     def disable_tools(self):
         self.polygon_button.setEnabled(False)
         self.rectangle_button.setEnabled(False)
-        self.finish_polygon_button.setEnabled(False)
+        #self.finish_polygon_button.setEnabled(False)
 
     def enable_tools(self):
         self.polygon_button.setEnabled(True)
@@ -1338,19 +1950,13 @@ class ImageAnnotator(QMainWindow):
     def enter_edit_mode(self, annotation):
         self.editing_mode = True
         self.disable_tools()
-        self.finish_polygon_button.setText("Finish Editing")
-        self.finish_polygon_button.setEnabled(True)
-        self.finish_polygon_button.clicked.disconnect()
-        self.finish_polygon_button.clicked.connect(self.exit_edit_mode)
+
         QMessageBox.information(self, "Edit Mode", "You are now in edit mode. Click and drag points to move them, Shift+Click to delete points, or click on edges to add new points.")
 
     def exit_edit_mode(self):
         self.editing_mode = False
         self.enable_tools()
-        self.finish_polygon_button.setText("Finish Polygon")
-        self.finish_polygon_button.setEnabled(False)
-        self.finish_polygon_button.clicked.disconnect()
-        self.finish_polygon_button.clicked.connect(self.finish_polygon)
+
         self.image_label.editing_polygon = None
         self.image_label.editing_point_index = None
         self.image_label.hover_point_index = None

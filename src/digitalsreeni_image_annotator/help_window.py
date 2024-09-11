@@ -34,17 +34,24 @@ class HelpWindow(QDialog):
         <h1>Image Annotator Help Guide</h1>
 
         <h2>Overview</h2>
-        <p>Image Annotator is a user-friendly GUI tool designed for generating masks for image segmentation and object detection. It allows users to create, edit, and save annotations in COCO-style JSON format, including both polygon (segmentation) and bounding box information. The tool now supports multi-dimensional images such as TIFF stacks and CZI files.</p>
+        <p>Image Annotator is a user-friendly GUI tool designed for generating masks for image segmentation and object detection. It allows users to create, edit, and save annotations in COCO-style JSON format, including both polygon (segmentation) and bounding box information. Annotations can be defined using manual tools like the polygon tool or in a semi-automated way with the assistance of the Segment Anything Model (SAM-2) pre-trained model. The tool now supports multi-dimensional images such as TIFF stacks and CZI files and also provides dark mode and adjustable application font sizes for enhanced GUI experience.</p>
 
         <h2>Key Features</h2>
         <ul>
-            <li>Easy-to-use graphical interface</li>
-            <li>Support for polygon and rectangle annotations</li>
-            <li>COCO-style JSON output with segmentation and bounding box data</li>
-            <li>Ability to load and continue previous annotation work</li>
-            <li>Support for multiple image formats (png, jpg, bmp, tif, tiff, czi)</li>
-            <li>Multi-class annotation support with customizable colors</li>
-            <li>Handling of multi-dimensional images (TIFF stacks and CZI files)</li>
+            <li>Semi-automated annotations with SAM-2 assistance (Segment Anything Model) — Because who doesn't love a helpful AI sidekick?</li>
+            <li>Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge</li>
+            <li>Save annotations in COCO-compatible JSON format</li>
+            <li>Edit existing annotations</li>
+            <li>Load and continue previous annotation work</li>
+            <li>Handle multi-dimensional images (TIFF stacks and CZI files)</li>
+            <li>Zoom and pan for detailed annotations</li>
+            <li>Support for multiple classes with customizable colors</li>
+            <li>Import and export annotations</li>
+            <li>User-friendly interface with intuitive controls</li>
+            <li>Change the application font size on the fly — Make your annotations as big or small as your caffeine level requires</li>
+            <li>Dark mode for those late-night annotation marathons — Who needs sleep when you have dark mode?</li>
+            <li>Support for common image formats (PNG, JPG, BMP) and multi-dimensional formats (TIFF, CZI)</li>
+            <li>Load custom SAM2 pre-trained models for flexible and improved semi-automated annotations</li>
         </ul>
 
         <h2>Getting Started</h2>
@@ -53,7 +60,7 @@ class HelpWindow(QDialog):
             <li>Click "Open New Image Set" to import multiple images you want to annotate, including TIFF stacks and CZI files.</li>
             <li>For multi-dimensional images, you'll be prompted to assign dimensions (e.g., T for time, Z for depth, C for channels).</li>
             <li>Use "Add Class" to define classes of interest.</li>
-            <li>Start annotating by selecting a class and using the Polygon or Rectangle Tool.</li>
+            <li>Start annotating by selecting a class and using the Polygon, Rectangle Tool, or SAM2 Magic Wand.</li>
         </ol>
 
         <h3>Continuing a Previous Project</h3>
@@ -63,17 +70,34 @@ class HelpWindow(QDialog):
             <li>If needed, use "Add More Images" to include additional images for annotation.</li>
         </ol>
 
+        <h2>Loading SAM2 Pre-trained Models</h2>
+        <ol>
+            <li>Download the desired SAM2 model file (.pt) and its corresponding config file (.yaml) from the <a href="https://github.com/facebookresearch/segment-anything-2">Segment Anything 2 GitHub repository</a>.</li>
+            <li>For the model file, navigate to the main repository page and download the desired .pt file.</li>
+            <li>For the config file, go to the <a href="https://github.com/facebookresearch/segment-anything-2/tree/main/sam2_configs">sam2_configs folder</a> and download the corresponding .yaml file.</li>
+            <li>Ensure you download matching pairs, for example:
+                <ul>
+                    <li>For sam2_hiera_small.pt model, download sam2_hiera_s.yaml config file</li>
+                    <li>For sam2_hiera_tiny.pt model, download sam2_hiera_t.yaml config file</li>
+                </ul>
+            </li>
+            <li>In the Image Annotator, click the "Load SAM2 Model" button in the Automated Tools section.</li>
+            <li>First, select the config file (.yaml) when prompted.</li>
+            <li>Then, select the corresponding model file (.pt) when prompted.</li>
+            <li>Once loaded successfully, the SAM2 Magic Wand button will become active for use.</li>
+        </ol>
+
         <h2>Annotation Process</h2>
         <ol>
             <li><strong>Select a Class:</strong> Choose the class you want to annotate from the class list.</li>
-            <li><strong>Choose a Tool:</strong> Select either the Polygon Tool (recommended for better control) or Rectangle Tool.</li>
+            <li><strong>Choose a Tool:</strong> Select either the Polygon Tool, Rectangle Tool, or SAM2 Magic Wand.</li>
             <li><strong>Create Annotation:</strong>
                 <ul>
                     <li>For Polygon Tool: Click around the object to define its boundary. Press Enter or click "Finish Polygon" when done.</li>
                     <li>For Rectangle Tool: Click and drag to create a bounding box.</li>
+                    <li>For SAM2 Magic Wand: Ensure a SAM2 model is loaded. Click the SAM2 Magic Wand button to activate assisted annotation. Click and drag around an object, and SAM2 will display the segmented mask. Press Enter to accept the annotation, continue drawing to refine it, or press Escape to exit SAM-assisted annotation.</li>
                 </ul>
             </li>
-            <li><strong>Finish Annotation:</strong> Hit Enter or click "Finish Polygon" to complete the annotation.</li>
         </ol>
 
         <h2>Navigation and Viewing</h2>
@@ -81,7 +105,7 @@ class HelpWindow(QDialog):
             <li><strong>Zoom:</strong> Use the slider at the bottom of the image, or hold Ctrl and use the mouse wheel.</li>
             <li><strong>Pan:</strong> Hold Ctrl, click the left mouse button, and move the mouse.</li>
             <li><strong>Switch Images:</strong> Click on an image name in the image list on the right.</li>
-            <li><strong>Navigate Slices:</strong> For multi-dimensional images, use the slice list on the right or use the up/down arrow keys to move through slices.</li>
+            <li><strong>Navigate Slices:</strong> For multi-dimensional images, use the slice list on the right to click through slices.</li>
         </ul>
 
         <h2>Handling Multi-dimensional Images</h2>
@@ -90,6 +114,7 @@ class HelpWindow(QDialog):
             <li>The slice list on the right will show all available slices for the current image.</li>
             <li>Annotations are specific to each slice and will be saved accordingly.</li>
             <li>Slices with annotations will be highlighted in green in the slice list.</li>
+            <li>You can reassign dimensions after import by right-clicking on the image name. Note that all annotations for that image will be lost when dimensions are changed after importing and annotating.</li>
         </ul>
 
         <h2>Editing Annotations</h2>
@@ -129,24 +154,24 @@ class HelpWindow(QDialog):
             <li>You can close the program after saving and continue your work later by importing the saved annotations.</li>
         </ul>
 
-        <h2>Supported Formats</h2>
+        <h2>Customization</h2>
         <ul>
-            <li>Supports common image formats: PNG, JPG, BMP</li>
-            <li>Now supports multi-dimensional formats: TIFF (.tif, .tiff) and CZI (.czi)</li>
+            <li><strong>Dark Mode:</strong> Click the "Toggle Dark Mode" button to switch between light and dark themes for comfortable viewing in different lighting conditions.</li>
+            <li><strong>Font Size:</strong> Use the Font Size drop-down selector to adjust the application's font size to your comfort level. Make your annotations as big or small as your caffeine level requires!</li>
         </ul>
-
-        <h2>Known Issues</h2>
-        <p>When working with multiple images of different types (e.g., single images and image stacks), ensure you've selected the correct image before saving annotations to avoid any potential issues with slice saving.</p>
-
-        <h2>Getting Help</h2>
-        <p>If you encounter any issues or have suggestions for improvement, please open an issue on our GitHub repository or contact the development team.</p>
 
         <h2>Keyboard Shortcuts</h2>
         <ul>
             <li><strong>Ctrl + Wheel:</strong> Zoom in/out</li>
-            <li><strong>Esc:</strong> Cancel current annotation or exit edit mode</li>
-            <li><strong>Enter:</strong> Finish current annotation or exit edit mode</li>
+            <li><strong>Esc:</strong> Cancel current annotation, exit edit mode, or exit SAM-assisted annotation</li>
+            <li><strong>Enter:</strong> Finish current annotation, exit edit mode, or accept SAM-generated mask</li>
             <li><strong>Up/Down Arrow Keys:</strong> Navigate through slices in multi-dimensional images</li>
         </ul>
+
+       <h2>Known Issues</h2>
+       <p>When opening images before loading saved annotations, the annotations may not display correctly for the first image. To avoid this issue, it is recommended to load saved annotations first, followed by opening the corresponding images.</p>
+
+        <h2>Getting Help</h2>
+        <p>If you encounter any issues or have suggestions for improvement, please open an issue on our GitHub repository or contact the development team.</p>
         """
         self.text_browser.setHtml(help_text)

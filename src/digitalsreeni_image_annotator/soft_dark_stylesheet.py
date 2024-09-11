@@ -53,6 +53,13 @@ QLabel {
     color: #E0E0E0;
 }
 
+QLabel.section-header {
+    font-weight: bold;
+    font-size: 14px;
+    padding: 5px 0;
+    color: #FFFFFF;  /* Bright white color for better visibility in dark mode */
+}
+
 QLineEdit, QTextEdit, QPlainTextEdit {
     background-color: #3A3A3A;
     border: 1px solid #4A4A4A;

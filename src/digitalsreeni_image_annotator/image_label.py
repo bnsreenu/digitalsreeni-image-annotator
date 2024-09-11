@@ -14,6 +14,9 @@ from PyQt5.QtGui import (QPainter, QPen, QColor, QFont, QPolygonF, QBrush, QPoly
 from PyQt5.QtCore import Qt, QPoint, QPointF, QRectF, QSize
 from PIL import Image
 import os
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+
 
 
 class ImageLabel(QLabel):
@@ -49,12 +52,18 @@ class ImageLabel(QLabel):
         self.bit_depth = None
         self.image_path = None
         self.dark_mode = False
-
-
-    def set_main_window(self, main_window):
-        """Set the main window reference."""
-        self.main_window = main_window
         
+        #SAM2
+        self.sam_magic_wand_active = False
+        self.sam_bbox = None
+        self.drawing_sam_bbox = False
+        self.temp_sam_prediction = None
+
+
+        
+    def set_main_window(self, main_window):
+        self.main_window = main_window
+    
     def set_dark_mode(self, is_dark):
         self.dark_mode = is_dark
         self.update()
@@ -87,8 +96,7 @@ class ImageLabel(QLabel):
                     self.main_window.update_image_info()
 
     def update_scaled_pixmap(self):
-        """Update the scaled pixmap based on the zoom factor."""
-        if self.original_pixmap:
+        if self.original_pixmap and not self.original_pixmap.isNull():
             scaled_size = self.original_pixmap.size() * self.zoom_factor
             self.scaled_pixmap = self.original_pixmap.scaled(
                 scaled_size.width(),
@@ -99,12 +107,16 @@ class ImageLabel(QLabel):
             super().setPixmap(self.scaled_pixmap)
             self.setMinimumSize(self.scaled_pixmap.size())
             self.update_offset()
+        else:
+            self.scaled_pixmap = None
+            super().setPixmap(QPixmap())
+            self.setMinimumSize(QSize(0, 0))
 
     def update_offset(self):
         """Update the offset for centered image display."""
         if self.scaled_pixmap:
-            self.offset_x = (self.width() - self.scaled_pixmap.width()) / 2
-            self.offset_y = (self.height() - self.scaled_pixmap.height()) / 2
+            self.offset_x = int((self.width() - self.scaled_pixmap.width()) / 2)
+            self.offset_y = int((self.height() - self.scaled_pixmap.height()) / 2)
             
     def reset_annotation_state(self):
         """Reset the annotation state."""
@@ -126,11 +138,52 @@ class ImageLabel(QLabel):
         if self.scaled_pixmap:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing)
+            
+            # Draw the image
+            painter.drawPixmap(int(self.offset_x), int(self.offset_y), self.scaled_pixmap)
+            
+            # Draw annotations
             self.draw_annotations(painter)
             if self.editing_polygon:
                 self.draw_editing_polygon(painter)
             if self.drawing_rectangle and self.current_rectangle:
                 self.draw_current_rectangle(painter)
+            if self.sam_magic_wand_active and self.sam_bbox:
+                self.draw_sam_bbox(painter)
+
+    def draw_sam_bbox(self, painter):
+        painter.save()
+        painter.translate(self.offset_x, self.offset_y)
+        painter.scale(self.zoom_factor, self.zoom_factor)
+        painter.setPen(QPen(Qt.red, 2 / self.zoom_factor, Qt.SolidLine))
+        x1, y1, x2, y2 = self.sam_bbox
+        painter.drawRect(QRectF(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1)))
+        painter.restore()
+        
+    def clear_temp_sam_prediction(self):
+        self.temp_sam_prediction = None
+        self.update()
+        
+        
+    def clear(self):
+        super().clear()
+        self.annotations.clear()
+        self.current_annotation.clear()
+        self.temp_point = None
+        self.current_tool = None
+        self.start_point = None
+        self.end_point = None
+        self.highlighted_annotations.clear()
+        self.original_pixmap = None
+        self.scaled_pixmap = None
+        self.editing_polygon = None
+        self.editing_point_index = None
+        self.hover_point_index = None
+        self.current_rectangle = None
+        self.sam_bbox = None
+        self.temp_sam_prediction = None
+        self.update()
+
 
     def draw_annotations(self, painter):
         """Draw all annotations on the image."""
@@ -159,13 +212,24 @@ class ImageLabel(QLabel):
                 painter.setBrush(QBrush(fill_color))
 
                 if "segmentation" in annotation:
-                    points = [QPointF(float(x), float(y)) 
-                              for x, y in zip(annotation["segmentation"][0::2], annotation["segmentation"][1::2])]
-                    polygon = QPolygonF(points)
-                    painter.drawPolygon(polygon)
-                    centroid = self.calculate_centroid(points)
-                    painter.setFont(QFont("Arial", int(12 / self.zoom_factor)))
-                    painter.drawText(centroid, str(i))
+                    segmentation = annotation["segmentation"]
+                    if isinstance(segmentation, list) and len(segmentation) > 0:
+                        if isinstance(segmentation[0], list):  # Multiple polygons
+                            for polygon in segmentation:
+                                points = [QPointF(float(x), float(y)) for x, y in zip(polygon[0::2], polygon[1::2])]
+                                if points:
+                                    painter.drawPolygon(QPolygonF(points))
+                        else:  # Single polygon
+                            points = [QPointF(float(x), float(y)) for x, y in zip(segmentation[0::2], segmentation[1::2])]
+                            if points:
+                                painter.drawPolygon(QPolygonF(points))
+                        
+                        # Draw centroid and label
+                        if points:
+                            centroid = self.calculate_centroid(points)
+                            if centroid:
+                                painter.setFont(QFont("Arial", int(12 / self.zoom_factor)))
+                                painter.drawText(centroid, str(i))
                 elif "bbox" in annotation:
                     x, y, width, height = annotation["bbox"]
                     painter.drawRect(QRectF(x, y, width, height))
@@ -180,6 +244,21 @@ class ImageLabel(QLabel):
                 painter.drawEllipse(point, 5 / self.zoom_factor, 5 / self.zoom_factor)
             if self.temp_point:
                 painter.drawLine(points[-1], QPointF(float(self.temp_point[0]), float(self.temp_point[1])))
+                
+                # Draw temporary SAM prediction
+        if self.temp_sam_prediction:
+            temp_color = QColor(255, 165, 0, 128)  # Semi-transparent orange
+            painter.setPen(QPen(temp_color, 2 / self.zoom_factor, Qt.DashLine))
+            painter.setBrush(QBrush(temp_color))
+            
+            segmentation = self.temp_sam_prediction["segmentation"]
+            points = [QPointF(float(x), float(y)) for x, y in zip(segmentation[0::2], segmentation[1::2])]
+            if points:
+                painter.drawPolygon(QPolygonF(points))
+                centroid = self.calculate_centroid(points)
+                if centroid:
+                    painter.setFont(QFont("Arial", int(12 / self.zoom_factor)))
+                    painter.drawText(centroid, f"SAM: {self.temp_sam_prediction['score']:.2f}")
 
         painter.restore()
 
@@ -233,11 +312,13 @@ class ImageLabel(QLabel):
 
     def calculate_centroid(self, points):
         """Calculate the centroid of a polygon."""
+        if not points:
+            return None
         x_coords = [point.x() for point in points]
         y_coords = [point.y() for point in points]
         centroid_x = sum(x_coords) / len(points)
         centroid_y = sum(y_coords) / len(points)
-        return QPoint(int(centroid_x), int(centroid_y))
+        return QPointF(centroid_x, centroid_y)
 
     def set_zoom(self, zoom_factor):
         """Set the zoom factor and update the display."""
@@ -258,7 +339,6 @@ class ImageLabel(QLabel):
             super().wheelEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent):
-        """Handle mouse press events."""
         if not self.original_pixmap:
             return
         if event.modifiers() == Qt.ControlModifier and event.button() == Qt.LeftButton:
@@ -268,11 +348,14 @@ class ImageLabel(QLabel):
         else:
             pos = self.get_image_coordinates(event.pos())
             if event.button() == Qt.LeftButton:
-                if self.editing_polygon:
+                if self.sam_magic_wand_active:
+                    self.sam_bbox = [pos[0], pos[1], pos[0], pos[1]]
+                    self.drawing_sam_bbox = True
+                elif self.editing_polygon:
                     self.handle_editing_click(pos, event)
                 elif self.current_tool == "polygon":
                     self.current_annotation.append(pos)
-                    self.main_window.finish_polygon_button.setEnabled(True)
+                    #self.main_window.finish_polygon_button.setEnabled(True)
                 elif self.current_tool == "rectangle":
                     self.start_point = pos
                     self.end_point = pos
@@ -281,7 +364,6 @@ class ImageLabel(QLabel):
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
-        """Handle mouse move events."""
         if not self.original_pixmap:
             return
         if event.modifiers() == Qt.ControlModifier and event.buttons() == Qt.LeftButton:
@@ -295,7 +377,10 @@ class ImageLabel(QLabel):
             event.accept()
         else:
             pos = self.get_image_coordinates(event.pos())
-            if self.editing_polygon:
+            if self.sam_magic_wand_active and self.drawing_sam_bbox:
+                self.sam_bbox[2] = pos[0]
+                self.sam_bbox[3] = pos[1]
+            elif self.editing_polygon:
                 self.handle_editing_move(pos)
             elif self.current_tool == "polygon" and self.current_annotation:
                 self.temp_point = pos
@@ -305,7 +390,6 @@ class ImageLabel(QLabel):
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        """Handle mouse release events."""
         if not self.original_pixmap:
             return
         if event.modifiers() == Qt.ControlModifier and event.button() == Qt.LeftButton:
@@ -313,14 +397,21 @@ class ImageLabel(QLabel):
             self.setCursor(Qt.ArrowCursor)
             event.accept()
         else:
+            pos = self.get_image_coordinates(event.pos())
             if event.button() == Qt.LeftButton:
-                if self.editing_polygon:
+                if self.sam_magic_wand_active and self.drawing_sam_bbox:
+                    self.sam_bbox[2] = pos[0]
+                    self.sam_bbox[3] = pos[1]
+                    self.drawing_sam_bbox = False
+                    self.main_window.apply_sam2_prediction()
+                elif self.editing_polygon:
                     self.editing_point_index = None
                 elif self.current_tool == "rectangle" and self.drawing_rectangle:
                     self.drawing_rectangle = False
                     if self.current_rectangle:
                         self.main_window.finish_rectangle()
             self.update()
+            
 
     def mouseDoubleClickEvent(self, event):
         """Handle mouse double click events."""
@@ -332,33 +423,43 @@ class ImageLabel(QLabel):
         self.update()
 
     def get_image_coordinates(self, pos):
-        """Convert screen coordinates to image coordinates."""
-        if not self.original_pixmap:
+        if not self.scaled_pixmap:
             return (0, 0)
         x = (pos.x() - self.offset_x) / self.zoom_factor
         y = (pos.y() - self.offset_y) / self.zoom_factor
         return (int(x), int(y))
 
     def keyPressEvent(self, event: QKeyEvent):
-        """Handle key press events."""
-        if event.key() == Qt.Key_Escape:
-            if self.editing_polygon:
+        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            if self.temp_sam_prediction:
+                self.main_window.accept_sam_prediction()
+            elif self.editing_polygon:
+                self.editing_polygon = None
+                self.editing_point_index = None
+                self.hover_point_index = None
+                self.main_window.enable_tools()
+                self.main_window.update_annotation_list()
+            elif self.current_tool == "polygon":
+                self.main_window.finish_polygon()
+            else:
+                self.finish_current_annotation()
+        elif event.key() == Qt.Key_Escape:
+            if self.sam_magic_wand_active:
+                self.sam_magic_wand_active = False
+                self.sam_bbox = None
+                self.clear_temp_sam_prediction()  # Use the new method
+                self.setCursor(Qt.ArrowCursor)
+                if self.main_window:
+                    self.main_window.sam_magic_wand_button.setChecked(False)
+            elif self.editing_polygon:
                 self.editing_polygon = None
                 self.editing_point_index = None
                 self.hover_point_index = None
                 self.main_window.enable_tools()
             else:
                 self.cancel_current_annotation()
-        elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-            if self.editing_polygon:
-                self.editing_polygon = None
-                self.editing_point_index = None
-                self.hover_point_index = None
-                self.main_window.enable_tools()
-                self.main_window.update_annotation_list()
-            else:
-                self.finish_current_annotation()
         self.update()
+
 
     def cancel_current_annotation(self):
         """Cancel the current annotation being created."""
@@ -366,8 +467,7 @@ class ImageLabel(QLabel):
             self.current_annotation = []
             self.temp_point = None
             self.update()
-            if self.main_window:
-                self.main_window.finish_polygon_button.setEnabled(False)
+ 
 
     def finish_current_annotation(self):
         """Finish the current annotation being created."""
