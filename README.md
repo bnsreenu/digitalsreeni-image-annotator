@@ -1,6 +1,6 @@
 # DigitalSreeni Image Annotator
 
-![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)
+![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![PyPI version](https://img.shields.io/pypi/v/digitalsreeni-image-annotator.svg?style=flat-square)
 
