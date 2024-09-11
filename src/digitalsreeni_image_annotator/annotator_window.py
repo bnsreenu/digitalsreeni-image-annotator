@@ -457,12 +457,14 @@ class ImageAnnotator(QMainWindow):
         # Ensure the UI is updated
         self.image_label.update()
         self.update_slice_list_colors()
+        
+        # Reset zoom level to default (1.0)
+        self.set_zoom(1.0)
 
     def switch_image(self, item):
         if item is None:
             return
     
-        #print(f"Switching image to: {item.text()}")
         self.save_current_annotations()
         self.image_label.clear_temp_sam_prediction()
     
@@ -476,13 +478,11 @@ class ImageAnnotator(QMainWindow):
                 base_name = os.path.splitext(os.path.basename(image_path))[0]
                 
                 if base_name in self.image_slices:
-                    #print(f"Image has slices: {len(self.image_slices[base_name])}")
                     self.slices = self.image_slices[base_name]
                     self.update_slice_list()
                     
                     if self.slices:
                         first_slice = self.slices[0][0]
-                        #print(f"Activating first slice: {first_slice}")
                         self.current_slice = first_slice
                         self.current_image = self.slices[0][1]
                         self.activate_slice(first_slice)
@@ -507,6 +507,9 @@ class ImageAnnotator(QMainWindow):
                 self.image_label.clear_current_annotation()
                 self.update_image_info()
                 self.update_slice_list_colors()
+                
+                # Reset zoom level to default (1.0)
+                self.set_zoom(1.0)
             else:
                 print(f"Image path not found: {image_path}")
                 self.current_image = None
@@ -519,9 +522,6 @@ class ImageAnnotator(QMainWindow):
             self.current_slice = None
             self.image_label.clear()
             self.update_image_info()
-    
-        #print(f"After switch_image - Current slice: {self.current_slice}")
-        #print(f"After switch_image - Current image_file_name: {self.image_file_name}")
             
             
     def activate_current_slice(self):
@@ -1911,6 +1911,7 @@ class ImageAnnotator(QMainWindow):
     def set_zoom(self, zoom_factor):
         self.image_label.set_zoom(zoom_factor)
         self.zoom_slider.setValue(int(zoom_factor * 100))
+        self.image_label.update()  
 
     def zoom_image(self):
         zoom_factor = self.zoom_slider.value() / 100
