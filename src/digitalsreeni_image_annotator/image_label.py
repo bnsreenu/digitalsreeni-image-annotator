@@ -150,6 +150,8 @@ class ImageLabel(QLabel):
                 self.draw_current_rectangle(painter)
             if self.sam_magic_wand_active and self.sam_bbox:
                 self.draw_sam_bbox(painter)
+    
+
 
     def draw_sam_bbox(self, painter):
         painter.save()

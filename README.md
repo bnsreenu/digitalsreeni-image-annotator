@@ -4,7 +4,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![PyPI version](https://img.shields.io/pypi/v/digitalsreeni-image-annotator.svg?style=flat-square)
 
-A powerful and user-friendly tool for annotating images with polygons and rectangles, built with PyQt5.
+A powerful and user-friendly tool for annotating images using manual and automated tools, built with PyQt5.
 
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
@@ -16,17 +16,16 @@ Dr. Sreenivas Bhattiprolu
 
 - Semi-automated annotations with SAM-2 assistance (Segment Anything Model) — Because who doesn't love a helpful AI sidekick?
 - Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge.
-- Save annotations in COCO-compatible JSON format.
-- Edit existing annotations.
-- Load and continue previous annotation work.
+- Save and load projects for continued work.
+- Import existing COCO JSON annotations with images.
+- Export annotations to various formats (COCO JSON, YOLO v8, Labeled images, Semantic labels, Pascal VOC).
 - Handle multi-dimensional images (TIFF stacks and CZI files).
 - Zoom and pan for detailed annotations.
 - Support for multiple classes with customizable colors.
-- Import and export annotations.
 - User-friendly interface with intuitive controls.
 - Change the application font size on the fly — Make your annotations as big or small as your caffeine level requires.
 - Dark mode for those late-night annotation marathons — Who needs sleep when you have dark mode?
-- NEW: Load custom SAM2 pre-trained models for flexible and improved semi-automated annotations.
+- Load custom SAM2 pre-trained models for flexible and improved semi-automated annotations.
 
 ## Installation
 
@@ -91,6 +90,19 @@ To use the Segment Anything Model (SAM-2) assisted annotations feature, you need
 
 Your system is now ready to use SAM-2 for semi-automated annotations.
 
+### Loading SAM2 Pre-trained Models
+
+To use SAM2 for semi-automated annotations, you need to download the model and config files:
+
+1. Download the desired SAM2 model file (.pt) and its corresponding config file (.yaml) from the [Segment Anything 2 GitHub repository](https://github.com/facebookresearch/segment-anything-2).
+2. For the model file, navigate to the main repository page and download the desired .pt file.
+3. For the config file, go to the [sam2_configs folder](https://github.com/facebookresearch/segment-anything-2/tree/main/sam2_configs) and download the corresponding .yaml file.
+4. Ensure you download matching pairs, for example:
+   - For sam2_hiera_small.pt model, download sam2_hiera_s.yaml config file
+   - For sam2_hiera_tiny.pt model, download sam2_hiera_t.yaml config file
+
+Once you have downloaded these files, you can load them in the DigitalSreeni Image Annotator application to use SAM2 for semi-automated annotations.
+
 ## Usage
 
 1. Run the DigitalSreeni Image Annotator application:
@@ -107,24 +119,32 @@ Your system is now ready to use SAM-2 for semi-automated annotations.
    ```
 
 2. Using the application:
-   - Click "Open New Image Set" to load a new set of images from your computer.
-   - Use "Add More Images" to append images to the current set.
-   - Add classes using the "Add Class" button.
+   - Click "New Project" or use Ctrl+N to start a new project.
+   - Use "Add New Images" to import images, including TIFF stacks and CZI files.
+   - Add classes using the "Add Classes" button.
    - Select a class and use the Polygon or Rectangle tool to create manual annotations.
    - To use SAM2 Magic Wand:
-     - Click "Load SAM2 Model" and select the config (.yaml) and model (.pt) files.
+     - Click "Load SAM2 Model" and select the config (.yaml) and model (.pt) files you downloaded earlier.
      - Select the SAM2 Magic Wand button and draw a rectangle around your object of interest for automated annotation.
    - Edit existing annotations by double-clicking on them.
-   - Save your annotations using the "Save Annotations" button.
-   - Use "Import Saved Annotations" to load previously created annotations.
-   - Access the help documentation by clicking the "Help" button.
+   - Save your project using "Save Project" or Ctrl+S.
+   - Use "Open Project" or Ctrl+O to load a previously saved project.
+   - Click "Import Annotations with Images" to load existing COCO JSON annotations along with their images.
+   - Use "Export Annotations" to save annotations in various formats (COCO JSON, YOLO v8, Labeled images, Semantic labels, Pascal VOC).
+   - Access the help documentation by clicking the "Help" button or pressing F1.
    - Explore the interface – you might stumble upon some hidden gems and secret features!
 
 3. Keyboard shortcuts:
-   - Use the mouse wheel or trackpad to zoom in/out
-   - Hold Ctrl and drag to pan the image
-   - Press 'Esc' to cancel the current annotation
-   - Press 'Enter' to finish the current polygon annotation or accept a SAM2-generated mask
+   - Ctrl + N: Create a new project
+   - Ctrl + O: Open an existing project
+   - Ctrl + S: Save the current project
+   - Ctrl + W: Close the current project
+   - F1: Open the help window
+   - Ctrl + Wheel: Zoom in/out
+   - Hold Ctrl and drag: Pan the image
+   - Esc: Cancel current annotation, exit edit mode, or exit SAM-assisted annotation
+   - Enter: Finish current annotation, exit edit mode, or accept SAM-generated mask
+   - Up/Down Arrow Keys: Navigate through slices in multi-dimensional images
 
 ## Development
 

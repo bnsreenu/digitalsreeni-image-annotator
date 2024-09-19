@@ -2,19 +2,18 @@
 
 ## Overview
 
-Image Annotator is a user-friendly GUI tool designed for generating masks for image segmentation and object detection. It allows users to create, edit, and save annotations in COCO-style JSON format, including both polygon (segmentation) and bounding box information. Annotations can be defined using manual tools like the polygon tool or in a semi-automated way with the assistance of the Segment Anything Model (SAM-2) pre-trained model. The tool now supports multi-dimensional images such as TIFF stacks and CZI files and also provides dark mode and adjustable application font sizes for enhanced GUI experience.
+Image Annotator is a user-friendly GUI tool designed for generating masks for image segmentation and object detection. It allows users to create, edit, and save annotations in various formats, including COCO-style JSON, YOLO v8, and Pascal VOC. Annotations can be defined using manual tools like the polygon tool or in a semi-automated way with the assistance of the Segment Anything Model (SAM-2) pre-trained model. The tool supports multi-dimensional images such as TIFF stacks and CZI files and provides dark mode and adjustable application font sizes for enhanced GUI experience.
 
 ## Key Features
 
 - Semi-automated annotations with SAM-2 assistance (Segment Anything Model) — Because who doesn't love a helpful AI sidekick?
 - Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge
-- Save annotations in COCO-compatible JSON format
-- Edit existing annotations
-- Load and continue previous annotation work
+- Save and load projects for continued work
+- Import existing COCO JSON annotations with images
+- Export annotations to various formats (COCO JSON, YOLO v8, Labeled images, Semantic labels, Pascal VOC)
 - Handle multi-dimensional images (TIFF stacks and CZI files)
 - Zoom and pan for detailed annotations
 - Support for multiple classes with customizable colors
-- Import and export annotations
 - User-friendly interface with intuitive controls
 - Change the application font size on the fly — Make your annotations as big or small as your caffeine level requires
 - Dark mode for those late-night annotation marathons — Who needs sleep when you have dark mode?
@@ -25,16 +24,23 @@ Image Annotator is a user-friendly GUI tool designed for generating masks for im
 
 ### Starting a New Project
 
-1. Click "Open New Image Set" to import multiple images you want to annotate, including TIFF stacks and CZI files.
-2. For multi-dimensional images, you'll be prompted to assign dimensions (e.g., T for time, Z for depth, C for channels).
-3. Use "Add Class" to define classes of interest.
-4. Start annotating by selecting a class and using the Polygon, Rectangle Tool, or SAM2 Magic Wand.
+1. Click "New Project" or use Ctrl+N to start a new project.
+2. Click "Add New Images" to import multiple images you want to annotate, including TIFF stacks and CZI files.
+3. For multi-dimensional images, you'll be prompted to assign dimensions (e.g., T for time, Z for depth, C for channels).
+4. Use "Add Classes" to define classes of interest.
+5. Start annotating by selecting a class and using the Polygon, Rectangle Tool, or SAM2 Magic Wand.
 
-### Continuing a Previous Project
+### Opening an Existing Project
 
-1. Click "Import Saved Annotations" to load your previous work.
-2. Use "Open New Image Set" to load the corresponding images.
-3. If needed, use "Add More Images" to include additional images for annotation.
+1. Click "Open Project" or use Ctrl+O to load a previously saved project.
+2. If there are any missing images, you'll be prompted to locate them on your drive. Located images will be automatically copied to the project directory.
+3. If you choose not to locate missing images, the annotations for those images will be removed.
+
+### Importing Existing Annotations
+
+1. Click "Import Annotations with Images" to load existing COCO JSON annotations along with their corresponding images.
+2. Select the COCO JSON file. The images should be in the same directory as the JSON file.
+3. The annotations and images will be loaded into your current project.
 
 ## Loading SAM2 Pre-trained Models
 
@@ -57,7 +63,18 @@ Image Annotator is a user-friendly GUI tool designed for generating masks for im
    - For Polygon Tool: Click around the object to define its boundary. Press Enter or click "Finish Polygon" when done.
    - For Rectangle Tool: Click and drag to create a bounding box.
    - For SAM2 Magic Wand: Ensure a SAM2 model is loaded. Click the SAM2 Magic Wand button to activate assisted annotation. Click and drag around an object, and SAM2 will display the segmented mask. Press Enter to accept the annotation, continue drawing to refine it, or press Escape to exit SAM-assisted annotation.
-4. **Finish Annotation:** Hit Enter or click "Finish Polygon" to complete the annotation.
+
+## Exporting Annotations
+
+1. Click "Export Annotations" to open the export dialog.
+2. Select the desired export format from the dropdown menu:
+   - **COCO JSON:** Exports a JSON file in COCO format. Save it in the same directory as the images for easy reimport.
+   - **YOLO v8:** Exports txt files for each image with annotations, along with a yaml file, saved in a 'labels' directory.
+   - **Labeled images:** Saves labeled images for each class in separate directories.
+   - **Semantic labels:** Exports semantic label images where each class is represented by a unique pixel value.
+   - **Pascal VOC BBox:** Exports XML files with bounding box annotations in Pascal VOC format.
+   - **Pascal VOC BBox + Segmentation:** Exports XML files with both bounding box and segmentation annotations in Pascal VOC format.
+3. Choose the export location and confirm to save the annotations in the selected format.
 
 ## Navigation and Viewing
 
@@ -86,7 +103,7 @@ Image Annotator is a user-friendly GUI tool designed for generating masks for im
 
 ## Managing Classes
 
-- **Add Class:** Click the "Add Class" button.
+- **Add Class:** Click the "Add Classes" button.
 - **Change Class Color:** Right-click a class, select "Change Color", and choose from the palette.
 - **Rename Class:** Right-click a class and select "Rename Class".
 - **Delete Class:** Right-click a class and select "Delete Class".
@@ -100,9 +117,8 @@ Image Annotator is a user-friendly GUI tool designed for generating masks for im
 
 ## Saving Your Work
 
-- Click "Save Annotations" to save your work as a COCO-style JSON file.
-- For multi-dimensional images, annotated slices will be saved as separate PNG files along with the JSON file.
-- You can close the program after saving and continue your work later by importing the saved annotations.
+- Click "Save Project" or use Ctrl+S to save your current project.
+- You can close the program after saving and continue your work later by opening the saved project.
 
 ## Customization
 
@@ -111,6 +127,11 @@ Image Annotator is a user-friendly GUI tool designed for generating masks for im
 
 ## Keyboard Shortcuts
 
+- **Ctrl + N:** Create a new project
+- **Ctrl + O:** Open an existing project
+- **Ctrl + S:** Save the current project
+- **Ctrl + W:** Close the current project
+- **F1:** Open the help window
 - **Ctrl + Wheel:** Zoom in/out
 - **Esc:** Cancel current annotation, exit edit mode, or exit SAM-assisted annotation
 - **Enter:** Finish current annotation, exit edit mode, or accept SAM-generated mask

@@ -10,10 +10,10 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="digitalsreeni-image-annotator",
-    version="0.3.1",  # Updated version number
+    version="0.4.5",  # Updated version number
     author="Dr. Sreenivas Bhattiprolu",
     author_email="digitalsreeni@gmail.com",
-    description="A tool for annotating images with polygons and rectangles, supporting multi-dimensional images and SAM2-assisted annotations",
+    description="A tool for annotating images using manual and automated tools, supporting multi-dimensional images and SAM2-assisted annotations",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/bnsreenu/digitalsreeni-image-annotator",
@@ -37,6 +37,8 @@ setup(
         "opencv-python>=4.10.0",
         "torch>=2.3.1",
         "torchvision>=0.18.1",
+        "pyyaml>=6.0.2",
+        "scikit-image>=0.24.0",
     ],
     extras_require={
         "sam2": ["segment-anything-2"],
