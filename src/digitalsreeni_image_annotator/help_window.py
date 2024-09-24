@@ -50,7 +50,8 @@ class HelpWindow(QDialog):
             <li>Adjustable application font size</li>
             <li>Dark mode for comfortable viewing</li>
             <li>Support for common image formats (PNG, JPG, BMP) and multi-dimensional formats (TIFF, CZI)</li>
-            <li>Load custom SAM2 pre-trained models for flexible and improved semi-automated annotations</li>
+            <li>Pick appropriate pre-trained SAM2 model for flexible and improved semi-automated annotations</li>
+            <li>Additional tools for dataset management and image processing</li>
         </ul>
 
         <h2>Getting Started</h2>
@@ -60,7 +61,7 @@ class HelpWindow(QDialog):
             <li>Click "Add New Images" to import multiple images you want to annotate, including TIFF stacks and CZI files.</li>
             <li>For multi-dimensional images, you'll be prompted to assign dimensions (e.g., T for time, Z for depth, C for channels).</li>
             <li>Use "Add Classes" to define classes of interest.</li>
-            <li>Start annotating by selecting a class and using the Polygon, Rectangle Tool, or SAM2 Magic Wand.</li>
+            <li>Start annotating by selecting a class and using the Polygon, Rectangle Tool, or SAM-Assisted tool.</li>
         </ol>
 
         <h3>Opening an Existing Project</h3>
@@ -80,12 +81,22 @@ class HelpWindow(QDialog):
         <h2>Annotation Process</h2>
         <ol>
             <li><strong>Select a Class:</strong> Choose the class you want to annotate from the class list.</li>
-            <li><strong>Choose a Tool:</strong> Select either the Polygon Tool, Rectangle Tool, or SAM2 Magic Wand.</li>
+            <li><strong>Choose a Tool:</strong> Select either the Polygon Tool, Rectangle Tool, or SAM-Assisted tool.</li>
             <li><strong>Create Annotation:</strong>
                 <ul>
                     <li>For Polygon Tool: Click around the object to define its boundary. Press Enter or click "Finish Polygon" when done.</li>
                     <li>For Rectangle Tool: Click and drag to create a bounding box.</li>
-                    <li>For SAM2 Magic Wand: Ensure a SAM2 model is loaded. Click the SAM2 Magic Wand button to activate assisted annotation. Click and drag around an object, and SAM2 will display the segmented mask. Press Enter to accept the annotation, continue drawing to refine it, or press Escape to exit SAM-assisted annotation.</li>
+                    <li>For SAM-Assisted tool: 
+                        <ol>
+                            <li>Select a SAM model from the "Pick a SAM Model" dropdown. It's recommended to use smaller models like SAM2 tiny or SAM2 small for better performance.</li>
+                            <li>Note: When you select a model for the first time, the application needs to download it. This process may take a few seconds to a minute, depending on your internet connection speed. Subsequent uses of the same model will be faster as it will already be cached locally, in your working directory.</li>
+                            <li>Click the "SAM-Assisted" button to activate the tool.</li>
+                            <li>Draw a rectangle around objects of interest to allow SAM2 to automatically detect objects.</li>
+                            <li>SAM2 will provide various outputs with different scores, and only the top-scoring region will be displayed.</li>
+                            <li>If the desired result isn't achieved on the first try, draw again.</li>
+                            <li>For low-quality images where SAM2 may not auto-detect objects, manual tools may be necessary.</li>
+                        </ol>
+                    </li>
                 </ul>
             </li>
         </ol>
@@ -93,15 +104,7 @@ class HelpWindow(QDialog):
         <h2>Exporting Annotations</h2>
         <ol>
             <li>Click "Export Annotations" to open the export dialog.</li>
-            <li>Select the desired export format from the dropdown menu:</li>
-            <ul>
-                <li><strong>COCO JSON:</strong> Exports a JSON file in COCO format. Save it in the same directory as the images for easy reimport.</li>
-                <li><strong>YOLO v8:</strong> Exports txt files for each image with annotations, along with a yaml file, saved in a 'labels' directory.</li>
-                <li><strong>Labeled images:</strong> Saves labeled images for each class in separate directories.</li>
-                <li><strong>Semantic labels:</strong> Exports semantic label images where each class is represented by a unique pixel value.</li>
-                <li><strong>Pascal VOC BBox:</strong> Exports XML files with bounding box annotations in Pascal VOC format.</li>
-                <li><strong>Pascal VOC BBox + Segmentation:</strong> Exports XML files with both bounding box and segmentation annotations in Pascal VOC format.</li>
-            </ul>
+            <li>Select the desired export format from the dropdown menu.</li>
             <li>Choose the export location and confirm to save the annotations in the selected format.</li>
         </ol>
 
@@ -113,21 +116,30 @@ class HelpWindow(QDialog):
             <li><strong>Navigate Slices:</strong> For multi-dimensional images, use the slice list on the right to click through slices.</li>
         </ul>
 
+        <h2>Tools Menu</h2>
+        <p>The Tools menu provides access to various useful tools for dataset management and image processing. Each tool opens an intuitive GUI to guide you through the process:</p>
+        <ul>
+            <li><strong>Annotation Statistics:</strong> Provides statistical information about your annotations.</li>
+            <li><strong>COCO JSON Combiner:</strong> Allows you to combine multiple COCO JSON annotation files.</li>
+            <li><strong>Dataset Splitter:</strong> Helps you split your dataset into train, validation, and test sets.</li>
+            <li><strong>Stack to Slices:</strong> Converts multi-dimensional image stacks into individual 2D slices.</li>
+            <li><strong>Image Patcher:</strong> Splits large images into smaller patches with or without overlap.</li>
+            <li><strong>Image Augmenter:</strong> Applies various transformations to augment your image dataset.</li>
+        </ul>
+
         <h2>Keyboard Shortcuts</h2>
         <ul>
             <li><strong>Ctrl + N:</strong> Create a new project</li>
             <li><strong>Ctrl + O:</strong> Open an existing project</li>
             <li><strong>Ctrl + S:</strong> Save the current project</li>
             <li><strong>Ctrl + W:</strong> Close the current project</li>
+            <li><strong>Ctrl + Shift + S:</strong> Open Annotation Statistics</li>
             <li><strong>F1:</strong> Open this help window</li>
             <li><strong>Ctrl + Wheel:</strong> Zoom in/out</li>
             <li><strong>Esc:</strong> Cancel current annotation, exit edit mode, or exit SAM-assisted annotation</li>
             <li><strong>Enter:</strong> Finish current annotation, exit edit mode, or accept SAM-generated mask</li>
             <li><strong>Up/Down Arrow Keys:</strong> Navigate through slices in multi-dimensional images</li>
         </ul>
-
-        <h2>Known Issues</h2>
-        <p>When opening images before loading saved annotations, the annotations may not display correctly for the first image. To avoid this issue, it is recommended to load saved annotations first, followed by opening the corresponding images.</p>
 
         <h2>Getting Help</h2>
         <p>If you encounter any issues or have suggestions for improvement, please open an issue on our GitHub repository or contact the development team.</p>

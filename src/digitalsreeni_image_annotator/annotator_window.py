@@ -20,6 +20,13 @@ from .help_window import HelpWindow
 from .soft_dark_stylesheet import soft_dark_stylesheet
 from .default_stylesheet import default_stylesheet
 
+from .dataset_splitter import DatasetSplitterTool
+from .annotation_statistics import show_annotation_statistics
+from .coco_json_combiner import show_coco_json_combiner
+from .stack_to_slices import show_stack_to_slices
+from .image_patcher import show_image_patcher
+from .image_augmenter import show_image_augmenter
+
 from .export_formats import (
     export_coco_json, export_yolo_v8, export_labeled_images, 
     export_semantic_labels, export_pascal_voc_bbox, export_pascal_voc_both
@@ -27,9 +34,9 @@ from .export_formats import (
 
 from .import_formats import import_coco_json
 
-import importlib
 import shutil 
 import copy
+from ultralytics import SAM
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -103,16 +110,27 @@ class ImageAnnotator(QMainWindow):
         self.image_dimensions = {}
         self.image_slices = {}
         self.image_shapes = {}
-        # SAM2
-    # SAM2
-        self.sam2_model = None
-        self.sam2_predictor = None
-        self.sam2_available = self.check_sam2_availability()
-        self.sam2_model_filename = None
-        
-        
+    
+        # Initialize SAM model
+        self.sam_models = {
+            "SAM 2 tiny": "sam2_t.pt",
+            "SAM 2 small": "sam2_s.pt",
+            "SAM 2 base": "sam2_b.pt",
+            "SAM 2 large": "sam2_l.pt"
+        }
+        self.current_sam_model = None
+        self.sam_model = None
+    
+        # Create sam_magic_wand_button
+        self.sam_magic_wand_button = QPushButton("Magic Wand")
+        self.sam_magic_wand_button.setCheckable(True)
+    
+        # Initialize tool group
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(False)
+    
         # Font size control
-        self.font_sizes = {"Small": 8, "Medium": 10, "Large": 12}
+        self.font_sizes = {"Small": 8, "Medium": 10, "Large": 12, "XL": 14, "XXL": 16}   #Also, add the otions in create_menu_bar method
         self.current_font_size = "Medium"
     
         # Dark mode control
@@ -123,22 +141,30 @@ class ImageAnnotator(QMainWindow):
         
         # Apply theme and font (this includes stylesheet and font size application)
         self.apply_theme_and_font()
-        
-        # Initialize SAM2 if available, or show disabled message
-        if self.sam2_available:
-            self.initialize_sam2()
-        else:
-            self.disable_sam2_features(show_message=True)
-                
-
     
+        # Connect sam_magic_wand_button
+        self.sam_magic_wand_button.clicked.connect(self.toggle_tool)
+
+
     def setup_ui(self):
+        # Initialize the main layout
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QHBoxLayout(self.central_widget)
+    
+        # Initialize tool group
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(False)
+    
+        # Setup UI components
         self.setup_sidebar()
         self.setup_image_area()
         self.setup_image_list()
         self.setup_slice_list()
-        self.update_ui_for_current_tool()  
-        
+        self.update_ui_for_current_tool()    
+
+
+
     def update_window_title(self):
         base_title = "Image Annotator"
         if hasattr(self, 'current_project_file'):
@@ -311,8 +337,8 @@ class ImageAnnotator(QMainWindow):
                     if not any(img['file_name'] == file_name for img in self.all_images):
                         self.all_images.append({
                             "file_name": file_name,
-                            "height": 0,  # You might want to get the actual height
-                            "width": 0,   # You might want to get the actual width
+                            "height": 0,  
+                            "width": 0,   
                             "id": len(self.all_images) + 1,
                             "is_multi_slice": False
                         })
@@ -375,7 +401,7 @@ class ImageAnnotator(QMainWindow):
                                      f"Are you sure you want to delete the class '{class_name}'?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
-            self.delete_class(class_name)  # Implement this method to handle class deletion
+            self.delete_class(class_name)  # Sreeni note: Implement this method to handle class deletion
         
     def check_missing_images(self):
         missing_images = [img['file_name'] for img in self.all_images if img['file_name'] not in self.image_paths or not os.path.exists(self.image_paths[img['file_name']])]
@@ -460,48 +486,7 @@ class ImageAnnotator(QMainWindow):
         if show_message:
             self.show_info("Project Saved", f"Project saved to {self.current_project_file}")
         
-    def check_sam2_availability(self):
-        try:
-            importlib.import_module('torch')
-            importlib.import_module('sam2')
-            return True
-        except ImportError:
-            return False
-        
-    def initialize_sam2(self):
-        if not self.sam2_available:
-            self.disable_sam2_features(show_message=True)
-            return
-    
-        try:
-            import torch
-            from sam2.build_sam import build_sam2
-            from sam2.sam2_image_predictor import SAM2ImagePredictor
-            
-            self.sam2_model = None
-            self.sam2_predictor = None
-            self.sam_magic_wand_button.setEnabled(False)
-            self.sam_magic_wand_button.setToolTip("Load SAM2 model to enable this feature")
-            
-        except Exception as e:
-            QMessageBox.warning(self, "SAM2 Model Error", f"Failed to initialize SAM2 libraries: {str(e)}. SAM2 features will be disabled.")
-            self.disable_sam2_features(show_message=False)
-            
-    def disable_sam2_features(self, show_message=True):
-        self.sam2_available = False
-        self.sam2_model = None
-        self.sam2_predictor = None
-        self.sam2_model_filename = None
-        if hasattr(self, 'sam_magic_wand_button'):
-            self.sam_magic_wand_button.setEnabled(False)
-            self.sam_magic_wand_button.setToolTip("SAM2 features are not available. Please check your installation.")
-        
-        self.update_image_info()
-        
-        if show_message:
-            QMessageBox.warning(self, "SAM2 Not Available", 
-                                "SAM2 features (including Magic Wand) have been disabled due to missing libraries or model files. "
-                                "You can still use the program without SAM-assisted annotation.")
+
             
     def load_multi_slice_image(self, image_path, dimensions=None, shape=None):
         
@@ -549,45 +534,7 @@ class ImageAnnotator(QMainWindow):
         
        # print(f"Loaded slices: {[slice_name for slice_name, _ in self.slices]}")
         
-            
-            
-    def load_sam2_model(self):
-        model_cfg_path, _ = QFileDialog.getOpenFileName(self, "Select SAM2 Config File", "", "YAML Files (*.yaml)")
-        if not model_cfg_path:
-            return
-    
-        sam2_checkpoint, _ = QFileDialog.getOpenFileName(self, "Select SAM2 Model Checkpoint", "", "Checkpoint Files (*.pt)")
-        if not sam2_checkpoint:
-            return
-    
-        try:
-            import torch
-            from sam2.build_sam import build_sam2
-            from sam2.sam2_image_predictor import SAM2ImagePredictor
-    
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            
-            self.sam2_model = build_sam2(model_cfg_path, sam2_checkpoint, device=device)
-            self.sam2_predictor = SAM2ImagePredictor(self.sam2_model)
-            
-            self.sam_magic_wand_button.setEnabled(True)
-            self.sam_magic_wand_button.setToolTip("Use SAM2 Magic Wand for automated segmentation")
-            
-            # Store the model filename and update the image info
-            self.sam2_model_filename = os.path.splitext(os.path.basename(sam2_checkpoint))[0]
-            self.update_image_info()
-            
-            device_name = "GPU" if device.type == "cuda" else "CPU"
-            QMessageBox.information(self, "SAM2 Model Loaded", f"SAM2 model '{self.sam2_model_filename}' loaded successfully using {device_name}.")
-            
-            # Automatically activate the SAM2 Magic Wand tool
-            self.activate_sam_magic_wand()
-    
-        except Exception as e:
-            QMessageBox.warning(self, "SAM2 Model Error", f"Failed to load SAM2 model: {str(e)}. SAM2 features will be disabled.")
-            self.disable_sam2_features(show_message=False)
-            self.sam2_model_filename = None
-            self.update_image_info()
+
             
     def activate_sam_magic_wand(self):
         # Uncheck all other tools
@@ -595,10 +542,10 @@ class ImageAnnotator(QMainWindow):
             if button != self.sam_magic_wand_button:
                 button.setChecked(False)
         
-        # Check the SAM2 Magic Wand button
+        # Check the SAM Magic Wand button
         self.sam_magic_wand_button.setChecked(True)
         
-        # Explicitly set the current tool
+        # Set the current tool
         self.image_label.current_tool = "sam_magic_wand"
         self.image_label.sam_magic_wand_active = True
         self.image_label.setCursor(Qt.CrossCursor)
@@ -617,11 +564,17 @@ class ImageAnnotator(QMainWindow):
             self.image_label.sam_magic_wand_active = False
             self.image_label.setCursor(Qt.ArrowCursor)
             self.update_ui_for_current_tool()
-                
-    def toggle_sam_magic_wand(self):
+            
+    def toggle_sam_assisted(self):
+        if not self.current_sam_model:
+            QMessageBox.warning(self, "No SAM Model Selected", "Please pick a SAM model before using the SAM-Assisted tool.")
+            self.sam_magic_wand_button.setChecked(False)
+            return
+
+        # Existing toggle logic
         if self.sam_magic_wand_button.isChecked():
             if self.current_class is None:
-                QMessageBox.warning(self, "No Class Selected", "Please select a class before using SAM2 Magic Wand.")
+                QMessageBox.warning(self, "No Class Selected", "Please select a class before using SAM-Assisted tool.")
                 self.sam_magic_wand_button.setChecked(False)
                 return
             self.image_label.setCursor(Qt.CrossCursor)
@@ -632,45 +585,22 @@ class ImageAnnotator(QMainWindow):
             self.image_label.sam_bbox = None
         
         self.image_label.clear_temp_sam_prediction()  # Clear temporary prediction
-    
-    def generate_sam2_prediction(self, bbox):
-        if not self.sam2_available:
-            QMessageBox.warning(self, "SAM2 Not Available", "SAM2 features are not available. Please check your installation.")
-            return None, 0
-
-        if self.current_image is None or self.sam2_predictor is None:
-            print("Current image or SAM2 predictor is None")
-            return None, 0
-    
-        print(f"Current image format: {self.current_image.format()}")
-        image = self.qimage_to_numpy(self.current_image)
-        print(f"Numpy image shape: {image.shape}, dtype: {image.dtype}")
-    
-        # Ensure the image is RGB
-        if image.ndim == 2:
-            image = np.stack((image,) * 3, axis=-1)
-        elif image.shape[2] == 1:
-            image = np.repeat(image, 3, axis=2)
+                    
+        def toggle_sam_magic_wand(self):
+            if self.sam_magic_wand_button.isChecked():
+                if self.current_class is None:
+                    QMessageBox.warning(self, "No Class Selected", "Please select a class before using SAM2 Magic Wand.")
+                    self.sam_magic_wand_button.setChecked(False)
+                    return
+                self.image_label.setCursor(Qt.CrossCursor)
+                self.image_label.sam_magic_wand_active = True
+            else:
+                self.image_label.setCursor(Qt.ArrowCursor)
+                self.image_label.sam_magic_wand_active = False
+                self.image_label.sam_bbox = None
             
-        print(f"Numpy image shape after RGB conversion: {image.shape}, dtype: {image.dtype}")
+            self.image_label.clear_temp_sam_prediction()  # Clear temporary prediction
     
-        self.sam2_predictor.set_image(image)
-    
-        masks, scores, _ = self.sam2_predictor.predict(
-            point_coords=None,
-            point_labels=None,
-            box=np.array([bbox]),
-            multimask_output=True
-        )
-        
-        print(f"SAM2 prediction generated {len(masks)} masks")
-        
-        if len(masks) > 0:
-            best_mask_index = np.argmax(scores)
-            return masks[best_mask_index], scores[best_mask_index]
-        else:
-            print("No masks generated by SAM2")
-            return None, 0
     
     def qimage_to_numpy(self, qimage):
         width = qimage.width()
@@ -725,48 +655,52 @@ class ImageAnnotator(QMainWindow):
             return image[:, :, :3]  # Return only RGB channels
 
         
-    def apply_sam2_prediction(self):
+    def apply_sam_prediction(self):
         if self.image_label.sam_bbox is None:
             print("SAM bbox is None")
             return
     
         x1, y1, x2, y2 = self.image_label.sam_bbox
         bbox = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
-        print(f"Applying SAM2 prediction with bbox: {bbox}")
-        
+        print(f"Applying SAM prediction with bbox: {bbox}")
+    
         try:
-            mask, score = self.generate_sam2_prediction(bbox)
-            print(f"SAM2 prediction generated with score: {score}")
-            
+            # Convert QImage to numpy array
+            image = self.qimage_to_numpy(self.current_image)
+    
+            # Run SAM prediction
+            results = self.sam_model(image, bboxes=[bbox])
+            mask = results[0].masks.data[0].cpu().numpy()
+    
             if mask is not None:
                 print(f"Mask shape: {mask.shape}, Mask sum: {mask.sum()}")
                 contours = self.mask_to_polygon(mask)
                 print(f"Contours generated: {len(contours)} contour(s)")
-                
+    
                 if not contours:
                     print("No valid contours found")
                     return
-                
+    
                 temp_annotation = {
                     "segmentation": contours[0],  # Take the first contour
                     "category_id": self.class_mapping[self.current_class],
                     "category_name": self.current_class,
-                    "score": score
+                    "score": float(results[0].boxes.conf[0])  # Convert tensor to float
                 }
-                #print(f"Temporary annotation: {temp_annotation}")
-                
+    
                 self.image_label.temp_sam_prediction = temp_annotation
                 self.image_label.update()
             else:
                 print("Failed to generate mask")
         except Exception as e:
-            print(f"Error in applying SAM2 prediction: {str(e)}")
+            print(f"Error in applying SAM prediction: {str(e)}")
             import traceback
             traceback.print_exc()
     
         # Reset SAM bounding box
         self.image_label.sam_bbox = None
         self.image_label.update()
+    
     
     def mask_to_polygon(self, mask):
         import cv2
@@ -1259,32 +1193,7 @@ class ImageAnnotator(QMainWindow):
             return (image_adjusted * 255).astype(np.uint8)
         return image
 
-            
-    # def activate_slice(self, slice_name):
-    #     print(f"Activating slice: {slice_name}")
-    #     self.current_slice = slice_name
-    #     self.image_file_name = slice_name  # This line might be unnecessary, consider removing if it causes issues
-    #     self.load_image_annotations()
-    #     self.update_annotation_list()
-        
-    #     # Find and display the correct slice image
-    #     for name, qimage in self.slices:
-    #         if name == slice_name:
-    #             self.current_image = qimage
-    #             self.display_image()
-    #             break
-        
-    #     self.image_label.update()
-        
-    #     items = self.slice_list.findItems(slice_name, Qt.MatchExactly)
-    #     if items:
-    #         self.slice_list.setCurrentItem(items[0])
-    #         print(f"Slice {slice_name} selected in list")
-    #     else:
-    #         print(f"Slice {slice_name} not found in list")
-        
-    #     print(f"Current slice after activation: {self.current_slice}")
-    #     print(f"Current image_file_name after activation: {self.image_file_name}")
+
     
     def activate_slice(self, slice_name):
         self.current_slice = slice_name
@@ -1654,11 +1563,8 @@ class ImageAnnotator(QMainWindow):
         automated_layout.addWidget(automated_label)
     
         automated_buttons_layout = QHBoxLayout()
-        self.load_sam2_button = QPushButton("Load SAM2")
-        self.load_sam2_button.clicked.connect(self.load_sam2_model)
         self.sam_magic_wand_button = QPushButton("Magic Wand")
         self.sam_magic_wand_button.setCheckable(True)
-        automated_buttons_layout.addWidget(self.load_sam2_button)
         automated_buttons_layout.addWidget(self.sam_magic_wand_button)
         automated_layout.addLayout(automated_buttons_layout)
     
@@ -1669,18 +1575,11 @@ class ImageAnnotator(QMainWindow):
         self.sidebar_layout.addWidget(manual_tools_widget)
         self.sidebar_layout.addWidget(automated_tools_widget)
     
-        if not self.sam2_available:
-            self.sam_magic_wand_button.setEnabled(False)
-            self.sam_magic_wand_button.setToolTip("SAM2 features are not available. Please check your installation.")
-            self.load_sam2_button.setEnabled(False)
-            self.load_sam2_button.setToolTip("SAM2 features are not available. Please check your installation.")
-        else:
-            self.sam_magic_wand_button.setEnabled(False)
-            self.sam_magic_wand_button.setToolTip("Load SAM2 model to enable this feature")
+
     
         # Set a fixed size for all buttons to make them smaller
         for button in [self.polygon_button, self.rectangle_button, self.load_sam2_button, self.sam_magic_wand_button]:
-            button.setFixedSize(100, 30)  # Adjust the size as needed
+            button.setFixedSize(100, 30)  
 
     def setup_annotation_list(self):
         """Set up the annotation list widget."""
@@ -1729,7 +1628,7 @@ class ImageAnnotator(QMainWindow):
         settings_menu = menu_bar.addMenu("&Settings")
         
         font_size_menu = settings_menu.addMenu("&Font Size")
-        for size in ["Small", "Medium", "Large"]:
+        for size in ["Small", "Medium", "Large", "XL", "XXL"]:
             action = QAction(size, self)
             action.triggered.connect(lambda checked, s=size: self.change_font_size(s))
             font_size_menu.addAction(action)
@@ -1738,6 +1637,38 @@ class ImageAnnotator(QMainWindow):
         toggle_dark_mode_action.setShortcut(QKeySequence("Ctrl+D"))
         toggle_dark_mode_action.triggered.connect(self.toggle_dark_mode)
         settings_menu.addAction(toggle_dark_mode_action)
+        
+        
+        # Tools Menu
+        tools_menu = menu_bar.addMenu("&Tools")
+        
+        annotation_stats_action = QAction("Annotation Statistics", self)
+        annotation_stats_action.triggered.connect(self.show_annotation_statistics)
+        annotation_stats_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        tools_menu.addAction(annotation_stats_action)      
+        
+        coco_json_combiner_action = QAction("COCO JSON Combiner", self)
+        coco_json_combiner_action.triggered.connect(self.show_coco_json_combiner)
+        tools_menu.addAction(coco_json_combiner_action)
+        
+
+        dataset_splitter_action = QAction("Dataset Splitter", self)
+        dataset_splitter_action.triggered.connect(self.open_dataset_splitter)
+        tools_menu.addAction(dataset_splitter_action)     
+        
+        stack_to_slices_action = QAction("Stack to Slices", self)
+        stack_to_slices_action.triggered.connect(self.show_stack_to_slices)
+        tools_menu.addAction(stack_to_slices_action)
+        
+        image_patcher_action = QAction("Image Patcher", self)
+        image_patcher_action.triggered.connect(self.show_image_patcher)
+        tools_menu.addAction(image_patcher_action)
+        
+        image_augmenter_action = QAction("Image Augmenter", self)
+        image_augmenter_action.triggered.connect(self.show_image_augmenter)
+        tools_menu.addAction(image_augmenter_action)
+        
+
     
         # Help Menu (moved out of Settings)
         help_menu = menu_bar.addMenu("&Help")
@@ -1765,26 +1696,7 @@ class ImageAnnotator(QMainWindow):
             label.setProperty("class", "section-header")
             label.setAlignment(Qt.AlignLeft)
             return label
-        
-        
-        #Project related
-        #project_widget = QWidget()
-        #project_layout = QHBoxLayout(project_widget)
-        
-        # self.new_project_button = QPushButton("New Project")
-        # self.new_project_button.clicked.connect(self.new_project)
-        # project_layout.addWidget(self.new_project_button)
-        
-        # self.open_project_button = QPushButton("Open Project")
-        # self.open_project_button.clicked.connect(self.open_project)
-        # project_layout.addWidget(self.open_project_button)
-        
-        # self.save_project_button = QPushButton("Save Project")
-        # self.save_project_button.clicked.connect(self.save_project)
-        # project_layout.addWidget(self.save_project_button)
-        
-        # self.sidebar_layout.addWidget(project_widget)
-        
+    
         # New code for import functionality
         self.import_button = QPushButton("Import Annotations with Images")
         self.import_button.clicked.connect(self.import_annotations)
@@ -1794,34 +1706,10 @@ class ImageAnnotator(QMainWindow):
         self.import_format_selector.addItem("COCO JSON")
         # Add more import formats here as they are implemented
         self.sidebar_layout.addWidget(self.import_format_selector)
-        #           
+        
         # Add spacing
         self.sidebar_layout.addSpacing(20) 
-
-        
-        # self.add_images_button = QPushButton("Add Images")
-        # self.add_images_button.clicked.connect(self.add_images)
-        # self.sidebar_layout.addWidget(self.add_images_button)
-
     
-        # # Classes section
-        # self.sidebar_layout.addWidget(create_section_header("Classes"))
-        # classes_widget = QWidget()
-        # classes_layout = QVBoxLayout(classes_widget)
-    
-        # self.class_list = QListWidget()
-        # self.class_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        # self.class_list.customContextMenuRequested.connect(self.show_class_context_menu)
-        # self.class_list.itemClicked.connect(self.on_class_selected)
-        # classes_layout.addWidget(self.class_list)
-    
-        # self.add_class_button = QPushButton("Add Class")
-        # self.add_class_button.clicked.connect(lambda: self.add_class())
-        # self.sidebar_layout.addWidget(self.add_class_button)
-
-        # self.sidebar_layout.addWidget(classes_widget)
-        
-        
         self.add_images_button = QPushButton("Add New Images")
         self.add_images_button.clicked.connect(self.add_images)
         self.sidebar_layout.addWidget(self.add_images_button)
@@ -1837,7 +1725,6 @@ class ImageAnnotator(QMainWindow):
         self.class_list.itemClicked.connect(self.on_class_selected)
         self.sidebar_layout.addWidget(self.class_list)
         
-    
         # Annotation section
         self.sidebar_layout.addWidget(create_section_header("Annotation"))
         annotation_widget = QWidget()
@@ -1847,28 +1734,33 @@ class ImageAnnotator(QMainWindow):
         manual_widget = QWidget()
         manual_layout = QVBoxLayout(manual_widget)
         manual_layout.addWidget(QLabel("Manual"))
-    
+
         self.polygon_button = QPushButton("Polygon Tool")
         self.polygon_button.setCheckable(True)
         self.rectangle_button = QPushButton("Rectangle Tool")
         self.rectangle_button.setCheckable(True)
         manual_layout.addWidget(self.polygon_button)
         manual_layout.addWidget(self.rectangle_button)
-    
+
         annotation_layout.addWidget(manual_widget)
-    
+
         # SAM-Assisted tools subsection
         sam_widget = QWidget()
         sam_layout = QVBoxLayout(sam_widget)
-        sam_layout.addWidget(QLabel("SAM-Assisted"))
-    
-        self.load_sam2_button = QPushButton("Load SAM2 Model")
-        self.load_sam2_button.clicked.connect(self.load_sam2_model)
-        self.sam_magic_wand_button = QPushButton("SAM2 Magic Wand")
+
+        # SAM-Assisted button on top
+        self.sam_magic_wand_button = QPushButton("SAM-Assisted")
         self.sam_magic_wand_button.setCheckable(True)
-        sam_layout.addWidget(self.load_sam2_button)
+        self.sam_magic_wand_button.clicked.connect(self.toggle_sam_assisted)
         sam_layout.addWidget(self.sam_magic_wand_button)
-    
+
+        # Add SAM model selector
+        self.sam_model_selector = QComboBox()
+        self.sam_model_selector.addItem("Pick a SAM Model")
+        self.sam_model_selector.addItems(list(self.sam_models.keys()))
+        self.sam_model_selector.currentTextChanged.connect(self.change_sam_model)
+        sam_layout.addWidget(self.sam_model_selector)
+
         annotation_layout.addWidget(sam_widget)
     
         # Setup tool group
@@ -1882,15 +1774,6 @@ class ImageAnnotator(QMainWindow):
         self.rectangle_button.clicked.connect(self.toggle_tool)
         self.sam_magic_wand_button.clicked.connect(self.toggle_tool)
     
-        if not self.sam2_available:
-            self.sam_magic_wand_button.setEnabled(False)
-            self.sam_magic_wand_button.setToolTip("SAM2 features are not available. Please check your installation.")
-            self.load_sam2_button.setEnabled(False)
-            self.load_sam2_button.setToolTip("SAM2 features are not available. Please check your installation.")
-        else:
-            self.sam_magic_wand_button.setEnabled(False)
-            self.sam_magic_wand_button.setToolTip("Load SAM2 model to enable this feature")
-    
         # Annotations list subsection
         annotation_layout.addWidget(QLabel("Annotations"))
         self.annotation_list = QListWidget()
@@ -1898,25 +1781,11 @@ class ImageAnnotator(QMainWindow):
         self.annotation_list.itemSelectionChanged.connect(self.update_highlighted_annotations)
         annotation_layout.addWidget(self.annotation_list)
         
-        
         self.delete_button = QPushButton("Delete Selected Annotations")
         self.delete_button.clicked.connect(self.delete_selected_annotations)
-        annotation_layout.addWidget(self.delete_button) #################################################################
-        
-        # # Add import format selector
-        # self.import_format_selector = QComboBox()
-        # self.import_format_selector.addItem("COCO JSON")
-        # # Add more import formats here as they are implemented
-        
-        # self.import_button = QPushButton("Import Annotations")
-        # self.import_button.clicked.connect(self.import_annotations)
-        
-        # # Add these widgets to your sidebar layout
-        # self.sidebar_layout.addWidget(QLabel("Import Format:"))
-        # self.sidebar_layout.addWidget(self.import_format_selector)
-        # self.sidebar_layout.addWidget(self.import_button)
+        annotation_layout.addWidget(self.delete_button)
     
-        # Add export format selector just above the Save Annotations button
+        # Add export format selector 
         self.export_format_selector = QComboBox()
         self.export_format_selector.addItem("COCO JSON")
         self.export_format_selector.addItem("YOLO v8")
@@ -1924,7 +1793,6 @@ class ImageAnnotator(QMainWindow):
         self.export_format_selector.addItem("Semantic Labels")
         self.export_format_selector.addItem("Pascal VOC (BBox)")
         self.export_format_selector.addItem("Pascal VOC (BBox + Segmentation)")
-        
         
         annotation_layout.addWidget(QLabel("Export Format:"))
         annotation_layout.addWidget(self.export_format_selector)
@@ -1935,21 +1803,16 @@ class ImageAnnotator(QMainWindow):
     
         # Add the annotation widget to the sidebar
         self.sidebar_layout.addWidget(annotation_widget)
-    
-        #self.sidebar_layout.addStretch(1)
-    
-        # # Add font size selector
-        # self.setup_font_size_selector()
-    
-        # # Dark mode toggle
-        # self.dark_mode_button = QPushButton("Toggle Dark Mode")
-        # self.dark_mode_button.clicked.connect(self.toggle_dark_mode)
-        # self.sidebar_layout.addWidget(self.dark_mode_button)
-    
-        # # Help button
-        # self.help_button = QPushButton("Help")
-        # self.help_button.clicked.connect(self.show_help)
-        # self.sidebar_layout.addWidget(self.help_button)
+        
+    def change_sam_model(self, model_name):
+        if model_name != "Pick a SAM Model":
+            self.current_sam_model = model_name
+            self.sam_model = SAM(self.sam_models[self.current_sam_model])
+            print(f"Changed SAM model to: {model_name}")
+        else:
+            self.current_sam_model = None
+            self.sam_model = None
+            print("SAM model unset")
         
         
     def setup_font_size_selector(self):
@@ -1973,7 +1836,7 @@ class ImageAnnotator(QMainWindow):
         if self.dark_mode:
             style = soft_dark_stylesheet
         else:
-            style = default_stylesheet  # Make sure to import or define this
+            style = default_stylesheet  
     
         # Combine the theme stylesheet with font size
         combined_style = f"{style}\nQWidget {{ font-size: {font_size}pt; }}"
@@ -2053,6 +1916,38 @@ class ImageAnnotator(QMainWindow):
         self.clear_all_button.clicked.connect(self.clear_all)
         self.image_list_layout.addWidget(self.clear_all_button)
 
+##########    ### Tools  ########## I love useful image processing tools :)
+    def open_dataset_splitter(self):
+        self.dataset_splitter = DatasetSplitterTool(self)
+        self.dataset_splitter.setWindowModality(Qt.ApplicationModal)
+        self.dataset_splitter.show_centered(self)
+        
+    def show_annotation_statistics(self):
+        if not self.all_annotations:
+            QMessageBox.warning(self, "No Annotations", "There are no annotations to analyze.")
+            return
+        try:
+            self.annotation_stats_dialog = show_annotation_statistics(self, self.all_annotations)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred while showing annotation statistics: {str(e)}")
+
+            
+    def show_coco_json_combiner(self):
+        self.coco_json_combiner_dialog = show_coco_json_combiner(self)
+        
+    def show_stack_to_slices(self):
+        self.stack_to_slices_dialog = show_stack_to_slices(self)
+        
+
+    def show_image_patcher(self):
+        self.image_patcher_dialog = show_image_patcher(self)    
+        
+    def show_image_augmenter(self):
+        self.image_augmenter_dialog = show_image_augmenter(self)
+
+        
+
+###################################################################
 
     # update the show_help method:
     def show_help(self):
@@ -2148,13 +2043,6 @@ class ImageAnnotator(QMainWindow):
             info = f"Image: {width}x{height}"
             if additional_info:
                 info += f", {additional_info}"
-            
-            # Add SAM model information
-            if self.sam2_model_filename:
-                info += f" | SAM Model: {self.sam2_model_filename}"
-            else:
-                info += " | No SAM model loaded"
-            
             self.image_info_label.setText(info)
         else:
             self.image_info_label.setText("No image loaded")
@@ -2527,11 +2415,8 @@ class ImageAnnotator(QMainWindow):
             elif sender == self.rectangle_button:
                 self.image_label.current_tool = "rectangle"
             elif sender == self.sam_magic_wand_button:
-                if self.sam2_model is None:
-                    QMessageBox.warning(self, "SAM2 Model Not Loaded", "Please load the SAM2 model before using the Magic Wand tool.")
-                    sender.setChecked(False)
-                    return
                 self.image_label.current_tool = "sam_magic_wand"
+                self.image_label.sam_magic_wand_active = True
             
             # If a class is not selected, select the first one (if available)
             if self.current_class is None and self.class_list.count() > 0:

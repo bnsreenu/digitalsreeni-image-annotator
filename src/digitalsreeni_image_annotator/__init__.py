@@ -11,7 +11,7 @@ supporting polygon and rectangle annotations in a COCO-compatible format.
 Dr. Sreenivas Bhattiprolu
 """
 
-__version__ = "0.2.1"
+__version__ = "0.5.6"
 __author__ = "Dr. Sreenivas Bhattiprolu"
 
 from .annotator_window import ImageAnnotator

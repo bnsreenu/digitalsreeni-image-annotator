@@ -53,7 +53,7 @@ class ImageLabel(QLabel):
         self.image_path = None
         self.dark_mode = False
         
-        #SAM2
+        #SAM
         self.sam_magic_wand_active = False
         self.sam_bbox = None
         self.drawing_sam_bbox = False
@@ -405,7 +405,7 @@ class ImageLabel(QLabel):
                     self.sam_bbox[2] = pos[0]
                     self.sam_bbox[3] = pos[1]
                     self.drawing_sam_bbox = False
-                    self.main_window.apply_sam2_prediction()
+                    self.main_window.apply_sam_prediction()
                 elif self.editing_polygon:
                     self.editing_point_index = None
                 elif self.current_tool == "rectangle" and self.drawing_rectangle:

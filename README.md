@@ -1,10 +1,10 @@
-# DigitalSreeni Image Annotator
+# DigitalSreeni Image Annotator and Toolkit
 
 ![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![PyPI version](https://img.shields.io/pypi/v/digitalsreeni-image-annotator.svg?style=flat-square)
 
-A powerful and user-friendly tool for annotating images using manual and automated tools, built with PyQt5.
+A powerful and user-friendly tool for annotating images with polygons and rectangles, built with PyQt5. Now with additional supporting tools for comprehensive image processing and dataset management.
 
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
@@ -25,7 +25,14 @@ Dr. Sreenivas Bhattiprolu
 - User-friendly interface with intuitive controls.
 - Change the application font size on the fly — Make your annotations as big or small as your caffeine level requires.
 - Dark mode for those late-night annotation marathons — Who needs sleep when you have dark mode?
-- Load custom SAM2 pre-trained models for flexible and improved semi-automated annotations.
+- Pick appropriate pre-trained SAM2 model for flexible and improved semi-automated annotations.
+- Additional supporting tools:
+  - Annotation statistics for current annotations
+  - COCO JSON combiner
+  - Dataset splitter
+  - Stack to slices converter
+  - Image patcher
+  - Image augmenter
 
 ## Installation
 
@@ -35,73 +42,7 @@ You can install the DigitalSreeni Image Annotator directly from PyPI:
 pip install digitalsreeni-image-annotator
 ```
 
-### Important: PyQt5 Requirement
-
-This application requires PyQt5 version 5.15.7 or higher. If you encounter any issues related to PyQt5, you may need to install or upgrade it separately:
-
-```bash
-pip install PyQt5>=5.15.7
-```
-
-If you're using an older version of PyQt5, please upgrade to ensure compatibility:
-
-```bash
-pip install --upgrade PyQt5>=5.15.7
-```
-
-On some systems, especially Linux, you might need to install additional system packages. For example, on Ubuntu or Debian:
-
-```bash
-sudo apt-get install python3-pyqt5
-```
-
-Note that the system package manager might not always provide the latest version. In such cases, using pip as shown above is recommended.
-
-For other operating systems or if you encounter any issues, please refer to the [PyQt5 documentation](https://www.riverbankcomputing.com/static/Docs/PyQt5/installation.html).
-
-### SAM-2 Installation for Semi-Automated Annotations
-
-To use the Segment Anything Model (SAM-2) assisted annotations feature, you need to install PyTorch and SAM-2 libraries. Follow these steps:
-
-1. Install PyTorch:
-   - For CPU-only installation: `pip install torch torchvision`
-   - For full installation instructions, visit: https://pytorch.org/get-started/locally/
-
-2. Install SAM-2:
-   - Visit the SAM-2 repository: https://github.com/facebookresearch/segment-anything-2
-   - Follow these key steps:
-     a. Open a console (command prompt). We recommend using Anaconda Prompt for easy environment management.
-     b. Ensure you're in the right environment. If needed, create a new environment with the specified Python version and activate it.
-     c. Change directory to where you want to download the repository (e.g., your Downloads folder).
-     d. Clone the SAM-2 repository:
-        ```bash
-        git clone https://github.com/facebookresearch/segment-anything-2.git
-        ```
-        (This assumes you have Git installed. On Windows, you can use Git for Windows: https://gitforwindows.org/)
-     e. Change to the repository directory:
-        ```bash
-        cd segment-anything-2
-        ```
-     f. Install SAM-2:
-        ```bash
-        pip install .
-        ```
-        (Note: Do not use `pip install -e .` if you intend to delete the downloaded repository after installation)
-
-Your system is now ready to use SAM-2 for semi-automated annotations.
-
-### Loading SAM2 Pre-trained Models
-
-To use SAM2 for semi-automated annotations, you need to download the model and config files:
-
-1. Download the desired SAM2 model file (.pt) and its corresponding config file (.yaml) from the [Segment Anything 2 GitHub repository](https://github.com/facebookresearch/segment-anything-2).
-2. For the model file, navigate to the main repository page and download the desired .pt file.
-3. For the config file, go to the [sam2_configs folder](https://github.com/facebookresearch/segment-anything-2/tree/main/sam2_configs) and download the corresponding .yaml file.
-4. Ensure you download matching pairs, for example:
-   - For sam2_hiera_small.pt model, download sam2_hiera_s.yaml config file
-   - For sam2_hiera_tiny.pt model, download sam2_hiera_t.yaml config file
-
-Once you have downloaded these files, you can load them in the DigitalSreeni Image Annotator application to use SAM2 for semi-automated annotations.
+The application uses the Ultralytics library, so there's no need to separately install SAM2 or PyTorch, or download SAM2 models manually.
 
 ## Usage
 
@@ -123,14 +64,26 @@ Once you have downloaded these files, you can load them in the DigitalSreeni Ima
    - Use "Add New Images" to import images, including TIFF stacks and CZI files.
    - Add classes using the "Add Classes" button.
    - Select a class and use the Polygon or Rectangle tool to create manual annotations.
-   - To use SAM2 Magic Wand:
-     - Click "Load SAM2 Model" and select the config (.yaml) and model (.pt) files you downloaded earlier.
-     - Select the SAM2 Magic Wand button and draw a rectangle around your object of interest for automated annotation.
+   - To use SAM2-assisted annotation:
+     - Select a model from the "Pick a SAM Model" dropdown. It's recommended to use smaller models like SAM2 tiny or SAM2 small. SAM2 large is not recommended as it may crash the application on systems with limited resources.  
+     - Note: When you select a model for the first time, the application needs to download it. This process may take a few seconds to a minute, depending on your internet connection speed. Subsequent uses of the same model will be faster as it will already be cached locally, in your working directory.
+     - Click the "SAM-Assisted" button to activate the tool.
+     - Draw a rectangle around objects of interest to allow SAM2 to automatically detect objects.
+     - Note that SAM2 provides various outputs with different scores, and only the top-scoring region will be displayed. If the desired result isn't achieved on the first try, draw again.
+     - For low-quality images where SAM2 may not auto-detect objects, manual tools may be necessary.
    - Edit existing annotations by double-clicking on them.
    - Save your project using "Save Project" or Ctrl+S.
    - Use "Open Project" or Ctrl+O to load a previously saved project.
    - Click "Import Annotations with Images" to load existing COCO JSON annotations along with their images.
    - Use "Export Annotations" to save annotations in various formats (COCO JSON, YOLO v8, Labeled images, Semantic labels, Pascal VOC).
+   - Access additional tools under the Tools menu bar:
+     - Annotation Statistics
+     - COCO JSON Combiner
+     - Dataset Splitter
+     - Stack to Slices Converter
+     - Image Patcher
+     - Image Augmenter
+   - Each tool opens a separate UI to guide you through the respective task.
    - Access the help documentation by clicking the "Help" button or pressing F1.
    - Explore the interface – you might stumble upon some hidden gems and secret features!
 
@@ -139,6 +92,7 @@ Once you have downloaded these files, you can load them in the DigitalSreeni Ima
    - Ctrl + O: Open an existing project
    - Ctrl + S: Save the current project
    - Ctrl + W: Close the current project
+   - Ctrl + Shift + S: Open Annotation Statistics
    - F1: Open the help window
    - Ctrl + Wheel: Zoom in/out
    - Hold Ctrl and drag: Pan the image

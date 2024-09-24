@@ -1,5 +1,4 @@
-# import_formats.py
-
+# 
 import json
 from PyQt5.QtCore import QRectF
 from PyQt5.QtGui import QColor
