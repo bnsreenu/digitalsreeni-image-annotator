@@ -1,0 +1,13 @@
+What's New in Version 0.5.7 (Compared to 0.5.6)
+
+Image Augmenter Tool Enhancements:
+
+The tool now supports augmentation of both images and their corresponding annotations (COCO JSON format). Users can load a directory containing images and a COCO JSON annotation file, apply various transformations, and export the augmented dataset. The augmented images and annotations are stored in a designated directory.
+
+Bug Fixes:
+
+Histogram Equalization: Now works correctly on 16-bit images. Previously, the application would crash when processing these images.
+SAM-Assisted Annotation: Supports 16-bit PNG images, which previously caused crashes. It continues to work with 16-bit TIFF and other formats.
+Save Project Window: Fixed an issue where the application would crash if the user opened the "Save Project" window, exited without saving, and then attempted to save the project again.
+Project Save with Imported Annotations: Resolved a bug where the project would crash if saved without an "images" sub-directory. Now, the application automatically copies images to a new "images" sub-directory after user confirmation.
+Project Name Display: Fixed an issue where the project name would not display in the top menu when saved with imported JSON annotations. This is now resolved.

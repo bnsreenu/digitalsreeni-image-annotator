@@ -4,9 +4,10 @@ from .soft_dark_stylesheet import soft_dark_stylesheet
 from .default_stylesheet import default_stylesheet
 
 class HelpWindow(QDialog):
-    def __init__(self, dark_mode=False, font_size=10, parent=None):
-        super().__init__(parent)
+    def __init__(self, dark_mode=False, font_size=10):
+        super().__init__()
         self.setWindowTitle("Help")
+        self.setModal(False)  # Make it non-modal
         self.setGeometry(100, 100, 800, 600)
         layout = QVBoxLayout()
         self.text_browser = QTextBrowser()
@@ -22,6 +23,11 @@ class HelpWindow(QDialog):
         self.font_size = font_size
         self.apply_font_size()
         self.load_help_content()
+        
+    def show_centered(self, parent):
+        parent_geo = parent.geometry()
+        self.move(parent_geo.center() - self.rect().center())
+        self.show()
     
     def apply_font_size(self):
         self.setStyleSheet(f"QWidget {{ font-size: {self.font_size}pt; }}")

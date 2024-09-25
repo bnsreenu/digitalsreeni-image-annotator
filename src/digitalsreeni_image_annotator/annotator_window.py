@@ -425,13 +425,42 @@ class ImageAnnotator(QMainWindow):
     
 
     def save_project(self, show_message=True):
-        if not hasattr(self, 'current_project_file'):
+        if not hasattr(self, 'current_project_file') or not self.current_project_file:
             self.current_project_file, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "Image Annotator Project (*.iap)")
             if not self.current_project_file:
+                return  # User cancelled the save dialog
+            
+        self.current_project_dir = os.path.dirname(self.current_project_file)
+
+        # Check if images are in the correct directory structure
+        images_dir = os.path.join(self.current_project_dir, "images")
+        images_to_move = []
+        for file_name, src_path in self.image_paths.items():
+            if not src_path.startswith(images_dir):
+                images_to_move.append((file_name, src_path))
+
+        if images_to_move:
+            reply = QMessageBox.question(self, 'Image Directory Structure',
+                                         f"The project structure requires all images to be in an 'images' subdirectory. "
+                                         f"{len(images_to_move)} images are not in the correct location. "
+                                         f"Do you want to copy these images to the correct directory?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            
+            if reply == QMessageBox.Yes:
+                os.makedirs(images_dir, exist_ok=True)
+                for file_name, src_path in images_to_move:
+                    dst_path = os.path.join(images_dir, file_name)
+                    try:
+                        shutil.copy2(src_path, dst_path)
+                        self.image_paths[file_name] = dst_path
+                    except Exception as e:
+                        QMessageBox.warning(self, "Copy Failed", f"Failed to copy {file_name}: {str(e)}")
+                        return
+            else:
+                QMessageBox.warning(self, "Save Cancelled", "Project cannot be saved without the correct directory structure.")
                 return
-            self.current_project_dir = os.path.dirname(self.current_project_file)
-    
-        # Prepare image data separately
+
+        # Prepare image data
         images_data = []
         for image_info in self.all_images:
             file_name = image_info['file_name']
@@ -441,9 +470,8 @@ class ImageAnnotator(QMainWindow):
                 'height': image_info['height'],
                 'is_multi_slice': image_info['is_multi_slice']
             }
-    
+
             if image_data['is_multi_slice']:
-                print(f"Multi-slice image detected: {file_name}")
                 base_name_without_ext = os.path.splitext(file_name)[0]
                 image_data['slices'] = []
                 for slice_name, _ in self.image_slices.get(base_name_without_ext, []):
@@ -455,20 +483,11 @@ class ImageAnnotator(QMainWindow):
                 
                 image_data['dimensions'] = self.convert_to_serializable(self.image_dimensions.get(base_name_without_ext, []))
                 image_data['shape'] = self.convert_to_serializable(self.image_shapes.get(base_name_without_ext, []))
-                print(f"Slices: {len(image_data['slices'])}")
-                print(f"Dimensions: {image_data['dimensions']}")
             else:
-                print(f"Single image detected: {file_name}")
                 image_data['annotations'] = self.convert_to_serializable(self.all_annotations.get(file_name, {}))
-    
+
             images_data.append(image_data)
-    
-            # Copy image to project directory
-            src_path = self.image_paths[file_name]
-            dst_path = os.path.join(self.current_project_dir, "images", file_name)
-            if not os.path.exists(dst_path):
-                shutil.copy2(src_path, dst_path)
-    
+
         # Create project data
         project_data = {
             'classes': [
@@ -478,13 +497,16 @@ class ImageAnnotator(QMainWindow):
             'images': images_data,
             'image_paths': self.image_paths
         }
-    
+
         # Save project data
         with open(self.current_project_file, 'w') as f:
             json.dump(self.convert_to_serializable(project_data), f, indent=2)
-    
+
         if show_message:
             self.show_info("Project Saved", f"Project saved to {self.current_project_file}")
+
+        # Update the window title
+        self.update_window_title()
         
 
             
@@ -602,50 +624,55 @@ class ImageAnnotator(QMainWindow):
             self.image_label.clear_temp_sam_prediction()  # Clear temporary prediction
     
     
+    
+
+    def normalize_16bit_to_8bit(self, array):
+        """Normalize a 16-bit array to 8-bit."""
+        return ((array - array.min()) / (array.max() - array.min()) * 255).astype(np.uint8)
+
     def qimage_to_numpy(self, qimage):
         width = qimage.width()
         height = qimage.height()
         fmt = qimage.format()
-    
-        if fmt == QImage.Format_Grayscale8:
-            # Handle grayscale format
+
+        if fmt == QImage.Format_Grayscale16:
+            # Handle 16-bit grayscale images
+            buffer = qimage.constBits().asarray(height * width * 2)  # 2 bytes per pixel
+            image = np.frombuffer(buffer, dtype=np.uint16).reshape((height, width))
+            image_8bit = self.normalize_16bit_to_8bit(image)
+            return np.stack((image_8bit,) * 3, axis=-1)  # Convert to RGB
+        
+        elif fmt == QImage.Format_RGB16:
+            # Handle 16-bit RGB images
+            buffer = qimage.constBits().asarray(height * width * 2)  # 2 bytes per pixel
+            image = np.frombuffer(buffer, dtype=np.uint16).reshape((height, width))
+            image_8bit = self.normalize_16bit_to_8bit(image)
+            return np.stack((image_8bit,) * 3, axis=-1)  # Convert to RGB
+
+        elif fmt == QImage.Format_Grayscale8:
             buffer = qimage.constBits().asarray(height * width)
             image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width))
-            # Convert grayscale to RGB
             return np.stack((image,) * 3, axis=-1)
         
         elif fmt in [QImage.Format_RGB32, QImage.Format_ARGB32, QImage.Format_ARGB32_Premultiplied]:
-            # Handle RGB32 and ARGB32 formats
             buffer = qimage.constBits().asarray(height * width * 4)
             image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
             return image[:, :, :3]  # Return only RGB channels
         
         elif fmt == QImage.Format_RGB888:
-            # Handle RGB888 format (no alpha channel, 3 bytes per pixel)
             buffer = qimage.constBits().asarray(height * width * 3)
             image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 3))
             return image  # Already RGB
         
         elif fmt == QImage.Format_Indexed8:
-            # Handle Indexed8 format (palette-based)
             buffer = qimage.constBits().asarray(height * width)
             image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width))
-            # Convert palette-based to RGB using the color table
             color_table = qimage.colorTable()
             rgb_image = np.zeros((height, width, 3), dtype=np.uint8)
             for y in range(height):
                 for x in range(width):
                     rgb_image[y, x] = QColor(color_table[image[y, x]]).getRgb()[:3]
             return rgb_image
-    
-        elif fmt == QImage.Format_RGB16:
-            # Handle RGB16 format (16-bit RGB)
-            buffer = qimage.constBits().asarray(height * width * 2)
-            image = np.frombuffer(buffer, dtype=np.uint16).reshape((height, width))
-            # Convert 16-bit to 8-bit
-            image = (image / 256).astype(np.uint8)
-            # Convert to RGB
-            return np.stack((image,) * 3, axis=-1)
         
         else:
             # For any other format, convert to RGB32 first
@@ -654,40 +681,41 @@ class ImageAnnotator(QMainWindow):
             image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
             return image[:, :, :3]  # Return only RGB channels
 
+
         
     def apply_sam_prediction(self):
         if self.image_label.sam_bbox is None:
             print("SAM bbox is None")
             return
-    
+
         x1, y1, x2, y2 = self.image_label.sam_bbox
         bbox = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
         print(f"Applying SAM prediction with bbox: {bbox}")
-    
+
         try:
             # Convert QImage to numpy array
             image = self.qimage_to_numpy(self.current_image)
-    
+
             # Run SAM prediction
             results = self.sam_model(image, bboxes=[bbox])
             mask = results[0].masks.data[0].cpu().numpy()
-    
+
             if mask is not None:
                 print(f"Mask shape: {mask.shape}, Mask sum: {mask.sum()}")
                 contours = self.mask_to_polygon(mask)
                 print(f"Contours generated: {len(contours)} contour(s)")
-    
+
                 if not contours:
                     print("No valid contours found")
                     return
-    
+
                 temp_annotation = {
                     "segmentation": contours[0],  # Take the first contour
                     "category_id": self.class_mapping[self.current_class],
                     "category_name": self.current_class,
                     "score": float(results[0].boxes.conf[0])  # Convert tensor to float
                 }
-    
+
                 self.image_label.temp_sam_prediction = temp_annotation
                 self.image_label.update()
             else:
@@ -696,7 +724,7 @@ class ImageAnnotator(QMainWindow):
             print(f"Error in applying SAM prediction: {str(e)}")
             import traceback
             traceback.print_exc()
-    
+
         # Reset SAM bounding box
         self.image_label.sam_bbox = None
         self.image_label.update()
@@ -1952,7 +1980,7 @@ class ImageAnnotator(QMainWindow):
     # update the show_help method:
     def show_help(self):
         self.help_window = HelpWindow(dark_mode=self.dark_mode, font_size=self.font_sizes[self.current_font_size])
-        self.help_window.show()
+        self.help_window.show_centered(self)
 
             
     def add_images(self):
