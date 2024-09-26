@@ -32,7 +32,8 @@ from .export_formats import (
     export_semantic_labels, export_pascal_voc_bbox, export_pascal_voc_both
 )
 
-from .import_formats import import_coco_json
+from .import_formats import import_coco_json, import_yolo_v8
+from .import_formats import process_import_format
 
 import shutil 
 import copy
@@ -1289,86 +1290,118 @@ class ImageAnnotator(QMainWindow):
     
  
 
-    
-    def import_annotations(self):
-        import_format = self.import_format_selector.currentText()
         
+    def import_annotations(self):
+        print("Starting import_annotations")
+        import_format = self.import_format_selector.currentText()
+        print(f"Import format: {import_format}")
+    
         if import_format == "COCO JSON":
             file_name, _ = QFileDialog.getOpenFileName(self, "Import COCO JSON Annotations", "", "JSON Files (*.json)")
             if not file_name:
+                print("No file selected, returning")
                 return
             
-            imported_annotations, image_info = import_coco_json(file_name, self.class_mapping)
-            
-            # Load images from the same directory as the JSON file
+            print(f"Selected file: {file_name}")
             json_dir = os.path.dirname(file_name)
-            images_loaded = 0
-            images_not_found = []
+            images_dir = os.path.join(json_dir, 'images')
+            imported_annotations, image_info = import_coco_json(file_name, self.class_mapping)
+        
+        elif import_format == "YOLO v8":
+            directory = QFileDialog.getExistingDirectory(self, "Select YOLO v8 Dataset Directory")
+            if not directory:
+                print("No directory selected, returning")
+                return
             
-            for image_id, info in image_info.items():
-                image_path = os.path.join(json_dir, info['file_name'])
-                if os.path.exists(image_path):
-                    self.image_paths[info['file_name']] = image_path
-                    self.all_images.append({
-                        "file_name": info['file_name'],
-                        "height": info['height'],
-                        "width": info['width'],
-                        "id": image_id,
-                        "is_multi_slice": False
-                    })
-                    images_loaded += 1
-                else:
-                    images_not_found.append(info['file_name'])
-            
-            if images_not_found:
-                message = f"The following {len(images_not_found)} images were not found in the same directory as the JSON file:\n\n"
-                message += "\n".join(images_not_found[:10])
-                if len(images_not_found) > 10:
-                    message += f"\n... and {len(images_not_found) - 10} more."
-                message += "\n\nDo you want to proceed and ignore annotations for these missing images?"
-                reply = QMessageBox.question(self, "Missing Images", message, 
-                                             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-                
-                if reply == QMessageBox.No:
-                    QMessageBox.information(self, "Import Cancelled", 
-                                            "Import cancelled. Please ensure all images are in the same directory as the JSON file and try again.")
-                    return
-            
-            # Update annotations (only for found images)
-            self.all_annotations.update({k: v for k, v in imported_annotations.items() if k not in images_not_found})
-            
-            # Update class mapping and colors
-            for annotations in self.all_annotations.values():
-                for category_name in annotations.keys():
-                    if category_name not in self.class_mapping:
-                        new_id = len(self.class_mapping) + 1
-                        self.class_mapping[category_name] = new_id
-                        self.image_label.class_colors[category_name] = QColor(Qt.GlobalColor(new_id % 16 + 7))
-            
-            # Update UI
-            self.update_class_list()
-            self.update_image_list()
-            self.update_annotation_list()
-            
-            # Highlight and display the first image
-            if self.image_list.count() > 0:
-                self.image_list.setCurrentRow(0)
-                self.switch_image(self.image_list.item(0))
-            
-            self.image_label.update()
-            
-            message = f"Annotations have been imported successfully from {file_name}\n"
-            message += f"{images_loaded} images were loaded from the same directory.\n"
-            if images_not_found:
-                message += f"Annotations for {len(images_not_found)} missing images were ignored."
-            
-            QMessageBox.information(self, "Import Complete", message)
+            print(f"Selected directory: {directory}")
+            images_dir = os.path.join(directory, 'images')
+            try:
+                imported_annotations, image_info = process_import_format(import_format, directory, self.class_mapping)
+            except ValueError as e:
+                QMessageBox.warning(self, "Import Error", str(e))
+                return
+        
         else:
             QMessageBox.warning(self, "Unsupported Format", f"The selected format '{import_format}' is not implemented for import.")
+            return
     
-
-
+        print(f"JSON/YOLO directory: {json_dir if import_format == 'COCO JSON' else directory}")
+        print(f"Images directory: {images_dir}")
+        print(f"Imported annotations count: {len(imported_annotations)}")
+        print(f"Image info count: {len(image_info)}")
     
+        images_loaded = 0
+        images_not_found = []
+    
+        for info in image_info.values():
+            print(f"Processing image: {info['file_name']}")
+            image_path = os.path.join(images_dir, info['file_name'])
+    
+            if os.path.exists(image_path):
+                print(f"Image found at: {image_path}")
+                self.image_paths[info['file_name']] = image_path
+                self.all_images.append({
+                    "file_name": info['file_name'],
+                    "height": info['height'],
+                    "width": info['width'],
+                    "id": info['id'],
+                    "is_multi_slice": False
+                })
+                images_loaded += 1
+            else:
+                print(f"Image not found at: {image_path}")
+                images_not_found.append(info['file_name'])
+    
+        print(f"Images loaded: {images_loaded}")
+        print(f"Images not found: {len(images_not_found)}")
+    
+        if images_not_found:
+            message = f"The following {len(images_not_found)} images were not found in the 'images' directory:\n\n"
+            message += "\n".join(images_not_found[:10])
+            if len(images_not_found) > 10:
+                message += f"\n... and {len(images_not_found) - 10} more."
+            message += "\n\nDo you want to proceed and ignore annotations for these missing images?"
+            reply = QMessageBox.question(self, "Missing Images", message, 
+                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            
+            if reply == QMessageBox.No:
+                print("Import cancelled due to missing images")
+                QMessageBox.information(self, "Import Cancelled", 
+                                        "Import cancelled. Please ensure all images are in the 'images' directory and try again.")
+                return
+    
+        # Update annotations (only for found images)
+        self.all_annotations.update({k: v for k, v in imported_annotations.items() if k not in images_not_found})
+    
+        # Update class mapping and colors
+        for annotations in self.all_annotations.values():
+            for category_name in annotations.keys():
+                if category_name not in self.class_mapping:
+                    new_id = len(self.class_mapping) + 1
+                    self.class_mapping[category_name] = new_id
+                    self.image_label.class_colors[category_name] = QColor(Qt.GlobalColor(new_id % 16 + 7))
+    
+        print("Updating UI")
+        # Update UI
+        self.update_class_list()
+        self.update_image_list()
+        self.update_annotation_list()
+    
+        # Highlight and display the first image
+        if self.image_list.count() > 0:
+            self.image_list.setCurrentRow(0)
+            self.switch_image(self.image_list.item(0))
+    
+        self.image_label.update()
+    
+        message = f"Annotations have been imported successfully from {file_name if import_format == 'COCO JSON' else directory}.\n"
+        message += f"{images_loaded} images were loaded from the 'images' directory.\n"
+        if images_not_found:
+            message += f"Annotations for {len(images_not_found)} missing images were ignored."
+    
+        print("Import complete, showing message")
+        QMessageBox.information(self, "Import Complete", message)
+      
     def export_annotations(self):
         export_format = self.export_format_selector.currentText()
         
@@ -1377,34 +1410,28 @@ class ImageAnnotator(QMainWindow):
             "Semantic Labels", "Pascal VOC (BBox)", "Pascal VOC (BBox + Segmentation)"
         ]
         
-        if export_format in supported_formats:
-            if export_format == "COCO JSON":
-                file_name, _ = QFileDialog.getSaveFileName(self, "Export Annotations", "", "JSON Files (*.json)")
-            else:
-                file_name = QFileDialog.getExistingDirectory(self, f"Select Output Directory for {export_format} Export")
-        else:
+        if export_format not in supported_formats:
             QMessageBox.warning(self, "Unsupported Format", f"The selected format '{export_format}' is not implemented.")
             return
+    
+        if export_format == "COCO JSON":
+            file_name, _ = QFileDialog.getSaveFileName(self, "Export COCO JSON Annotations", "", "JSON Files (*.json)")
+        else:
+            file_name = QFileDialog.getExistingDirectory(self, f"Select Output Directory for {export_format} Export")
     
         if not file_name:
             return
     
         self.save_current_annotations()
     
-        # Save annotated slices
         if export_format == "COCO JSON":
-            save_dir = os.path.dirname(file_name)
-        else:
-            save_dir = os.path.join(file_name, 'images')
-        
-        os.makedirs(save_dir, exist_ok=True)
-        slices_saved = self.save_slices(save_dir)
-    
-        if export_format == "COCO JSON":
-            coco_format = export_coco_json(self.all_annotations, self.class_mapping, self.image_paths, self.slices, self.image_slices)
-            with open(file_name, 'w') as f:
-                json.dump(coco_format, f, indent=2)
-            message = "Annotations have been exported successfully in COCO JSON format."
+            output_dir = os.path.dirname(file_name)
+            json_filename = os.path.basename(file_name)
+            json_file, images_dir = export_coco_json(self.all_annotations, self.class_mapping, 
+                                                     self.image_paths, self.slices, self.image_slices, 
+                                                     output_dir, json_filename)
+            message = f"Annotations have been exported successfully in COCO JSON format.\n"
+            message += f"JSON file: {json_file}\nImages directory: {images_dir}"
         
         elif export_format == "YOLO v8":
             labels_dir, yaml_path = export_yolo_v8(self.all_annotations, self.class_mapping, self.image_paths, self.slices, self.image_slices, file_name)
@@ -1427,12 +1454,8 @@ class ImageAnnotator(QMainWindow):
         elif export_format == "Pascal VOC (BBox + Segmentation)":
             voc_dir = export_pascal_voc_both(self.all_annotations, self.class_mapping, self.image_paths, self.slices, self.image_slices, file_name)
             message = f"Annotations have been exported successfully in Pascal VOC format (BBox + Segmentation).\nPascal VOC Annotations: {voc_dir}"
-        
-        if slices_saved:
-            message += f"\nAnnotated slices have been saved in: {save_dir}"
-        
-        QMessageBox.information(self, "Export Complete", message)    
-        
+    
+        QMessageBox.information(self, "Export Complete", message)
     
 
     def save_slices(self, directory):
@@ -1732,7 +1755,7 @@ class ImageAnnotator(QMainWindow):
         
         self.import_format_selector = QComboBox()
         self.import_format_selector.addItem("COCO JSON")
-        # Add more import formats here as they are implemented
+        self.import_format_selector.addItem("YOLO v8")
         self.sidebar_layout.addWidget(self.import_format_selector)
         
         # Add spacing
@@ -2424,6 +2447,7 @@ class ImageAnnotator(QMainWindow):
             item = QListWidgetItem(class_name)
             self.update_class_item_color(item, color)
             self.class_list.addItem(item)
+        print(f"Updated class list with {self.class_list.count()} items")
 
     def toggle_tool(self):
         sender = self.sender()

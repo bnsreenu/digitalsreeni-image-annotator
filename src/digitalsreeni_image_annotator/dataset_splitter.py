@@ -10,27 +10,34 @@ class DatasetSplitterTool(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Dataset Splitter")
-        self.setGeometry(100, 100, 400, 300)
+        self.setGeometry(100, 100, 500, 300)
         self.setWindowFlags(self.windowFlags() | Qt.Window)
         self.initUI()
-
-
 
     def initUI(self):
         layout = QVBoxLayout()
 
         # Option selection
+        options_layout = QVBoxLayout()
         self.images_only_radio = QRadioButton("Images Only")
-        self.images_annotations_radio = QRadioButton("Images with COCO Annotations")
+        options_layout.addWidget(self.images_only_radio)
+
+        images_annotations_layout = QHBoxLayout()
+        self.images_annotations_radio = QRadioButton("Images and Annotations")
+        images_annotations_layout.addWidget(self.images_annotations_radio)
+        self.select_json_button = QPushButton("Upload COCO JSON File")
+        self.select_json_button.clicked.connect(self.select_json_file)
+        self.select_json_button.setEnabled(False)
+        images_annotations_layout.addWidget(self.select_json_button)
+        options_layout.addLayout(images_annotations_layout)
+
+        layout.addLayout(options_layout)
         
         option_group = QButtonGroup(self)
         option_group.addButton(self.images_only_radio)
         option_group.addButton(self.images_annotations_radio)
         
         self.images_only_radio.setChecked(True)
-
-        layout.addWidget(self.images_only_radio)
-        layout.addWidget(self.images_annotations_radio)
 
         # Percentage inputs
         train_layout = QHBoxLayout()
@@ -74,11 +81,14 @@ class DatasetSplitterTool(QDialog):
 
         self.input_directory = ""
         self.output_directory = ""
-        
-    def show_centered(self, parent):
-        parent_geo = parent.geometry()
-        self.move(parent_geo.center() - self.rect().center())
-        self.show()
+        self.json_file = ""
+
+        # Connect radio buttons to enable/disable JSON selection
+        self.images_only_radio.toggled.connect(self.toggle_json_selection)
+        self.images_annotations_radio.toggled.connect(self.toggle_json_selection)
+
+    def toggle_json_selection(self):
+        self.select_json_button.setEnabled(self.images_annotations_radio.isChecked())
 
     def select_input_directory(self):
         self.input_directory = QFileDialog.getExistingDirectory(self, "Select Input Directory")
@@ -86,10 +96,16 @@ class DatasetSplitterTool(QDialog):
     def select_output_directory(self):
         self.output_directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
 
+    def select_json_file(self):
+        self.json_file, _ = QFileDialog.getOpenFileName(self, "Select COCO JSON File", "", "JSON Files (*.json)")
 
     def split_dataset(self):
         if not self.input_directory or not self.output_directory:
             QMessageBox.warning(self, "Error", "Please select input and output directories.")
+            return
+
+        if self.images_annotations_radio.isChecked() and not self.json_file:
+            QMessageBox.warning(self, "Error", "Please select a COCO JSON file.")
             return
 
         train_percent = self.train_percent.value()
@@ -116,25 +132,14 @@ class DatasetSplitterTool(QDialog):
         val_images = image_files[train_split:train_split + val_split]
         test_images = image_files[train_split + val_split:]
 
-        self.copy_images(train_images, "train")
-        self.copy_images(val_images, "val")
-        self.copy_images(test_images, "test")
+        self.copy_images(train_images, "train", images_only=True)
+        self.copy_images(val_images, "val", images_only=True)
+        self.copy_images(test_images, "test", images_only=True)
 
         QMessageBox.information(self, "Success", "Dataset split successfully!")
 
     def split_images_and_annotations(self):
-        # Find the COCO JSON file in the input directory
-        json_files = [f for f in os.listdir(self.input_directory) if f.lower().endswith('.json')]
-        if not json_files:
-            QMessageBox.warning(self, "Error", "No JSON file found in the input directory.")
-            return
-        if len(json_files) > 1:
-            QMessageBox.warning(self, "Error", "Multiple JSON files found. Please ensure only one COCO JSON file is present.")
-            return
-        
-        coco_file = os.path.join(self.input_directory, json_files[0])
-
-        with open(coco_file, 'r') as f:
+        with open(self.json_file, 'r') as f:
             coco_data = json.load(f)
 
         image_files = [img['file_name'] for img in coco_data['images']]
@@ -147,16 +152,19 @@ class DatasetSplitterTool(QDialog):
         val_images = image_files[train_split:train_split + val_split]
         test_images = image_files[train_split + val_split:]
 
-        self.copy_images(train_images, "train")
-        self.copy_images(val_images, "val")
-        self.copy_images(test_images, "test")
+        self.copy_images(train_images, "train", images_only=False)
+        self.copy_images(val_images, "val", images_only=False)
+        self.copy_images(test_images, "test", images_only=False)
 
         self.split_coco_annotations(coco_data, train_images, val_images, test_images)
 
         QMessageBox.information(self, "Success", "Dataset and annotations split successfully!")
 
-    def copy_images(self, image_list, subset):
-        subset_dir = os.path.join(self.output_directory, subset)
+    def copy_images(self, image_list, subset, images_only=False):
+        if images_only:
+            subset_dir = os.path.join(self.output_directory, subset)
+        else:
+            subset_dir = os.path.join(self.output_directory, subset, "images")
         os.makedirs(subset_dir, exist_ok=True)
         
         for image in image_list:
@@ -187,3 +195,8 @@ class DatasetSplitterTool(QDialog):
         output_file = os.path.join(self.output_directory, subset, f"{subset}_annotations.json")
         with open(output_file, 'w') as f:
             json.dump(data, f, indent=2)
+
+    def show_centered(self, parent):
+        parent_geo = parent.geometry()
+        self.move(parent_geo.center() - self.rect().center())
+        self.show()

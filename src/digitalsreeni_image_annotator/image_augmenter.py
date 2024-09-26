@@ -191,6 +191,10 @@ class ImageAugmenterDialog(QDialog):
             QMessageBox.warning(self, "Missing COCO JSON", "Please select a COCO JSON file for annotation augmentation.")
             return
     
+        # Create 'images' subdirectory in the output directory
+        images_output_dir = os.path.join(self.output_dir, "images")
+        os.makedirs(images_output_dir, exist_ok=True)
+    
         image_files = [f for f in os.listdir(self.input_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'))]
         total_augmentations = len(image_files) * self.aug_count_spin.value()
     
@@ -237,7 +241,7 @@ class ImageAugmenterDialog(QDialog):
                     augmented = augmented.astype(bit_depth)
     
                     output_filename = f"{os.path.splitext(image_file)[0]}_aug_{j+1}{os.path.splitext(image_file)[1]}"
-                    output_path = os.path.join(self.output_dir, output_filename)
+                    output_path = os.path.join(images_output_dir, output_filename)
                     cv2.imwrite(output_path, augmented)
     
                     if self.coco_check.isChecked():
@@ -270,7 +274,7 @@ class ImageAugmenterDialog(QDialog):
                 json.dump(augmented_coco_data, f, indent=2)
     
         QMessageBox.information(self, "Augmentation Complete", "Image and annotation augmentation has been completed successfully.")
-    
+
     
 
 
