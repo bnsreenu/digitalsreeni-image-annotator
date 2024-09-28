@@ -8,6 +8,7 @@ A powerful and user-friendly tool for annotating images with polygons and rectan
 
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
+Watch the demo:
 [![Watch the demo video](https://img.youtube.com/vi/BupyYUw2boI/maxresdefault.jpg)](https://youtu.be/BupyYUw2boI)
 
 
