@@ -447,12 +447,10 @@ class ImageLabel(QLabel):
                 self.finish_current_annotation()
         elif event.key() == Qt.Key_Escape:
             if self.sam_magic_wand_active:
-                self.sam_magic_wand_active = False
+                # Clear only the temporary SAM prediction
                 self.sam_bbox = None
-                self.clear_temp_sam_prediction()  # Use the new method
-                self.setCursor(Qt.ArrowCursor)
-                if self.main_window:
-                    self.main_window.sam_magic_wand_button.setChecked(False)
+                self.clear_temp_sam_prediction()
+                # Don't deactivate the tool or change the cursor
             elif self.editing_polygon:
                 self.editing_polygon = None
                 self.editing_point_index = None
@@ -520,6 +518,13 @@ class ImageLabel(QLabel):
         if self.editing_point_index is not None:
             self.editing_polygon["segmentation"][self.editing_point_index*2] = pos[0]
             self.editing_polygon["segmentation"][self.editing_point_index*2+1] = pos[1]
+            
+            
+    def exit_editing_mode(self):
+        self.editing_polygon = None
+        self.editing_point_index = None
+        self.hover_point_index = None
+        self.update()
 
     @staticmethod
     def point_in_polygon(point, polygon):

@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QButtonGroup, QListWidgetItem, QScrollArea, 
                              QSlider, QMenu, QMessageBox, QColorDialog, QDialog,
                              QGridLayout, QComboBox, QAbstractItemView, QProgressDialog,
-                             QApplication, QAction)
+                             QApplication, QAction, QLineEdit, QTextEdit)
 from PyQt5.QtGui import QPixmap, QColor, QIcon, QImage, QFont, QKeySequence
 from PyQt5.QtCore import Qt
 import numpy as np
@@ -26,6 +26,8 @@ from .coco_json_combiner import show_coco_json_combiner
 from .stack_to_slices import show_stack_to_slices
 from .image_patcher import show_image_patcher
 from .image_augmenter import show_image_augmenter
+from .sam_utils import SAMUtils
+from .snake_game import SnakeGame
 
 from .export_formats import (
     export_coco_json, export_yolo_v8, export_labeled_images, 
@@ -111,16 +113,10 @@ class ImageAnnotator(QMainWindow):
         self.image_dimensions = {}
         self.image_slices = {}
         self.image_shapes = {}
+        
+        # Initialize SAM utils
+        self.sam_utils = SAMUtils()
     
-        # Initialize SAM model
-        self.sam_models = {
-            "SAM 2 tiny": "sam2_t.pt",
-            "SAM 2 small": "sam2_s.pt",
-            "SAM 2 base": "sam2_b.pt",
-            "SAM 2 large": "sam2_l.pt"
-        }
-        self.current_sam_model = None
-        self.sam_model = None
     
         # Create sam_magic_wand_button
         self.sam_magic_wand_button = QPushButton("Magic Wand")
@@ -423,8 +419,8 @@ class ImageAnnotator(QMainWindow):
             return {key: self.convert_to_serializable(value) for key, value in obj.items()}
         else:
             return obj
+        
     
-
     def save_project(self, show_message=True):
         if not hasattr(self, 'current_project_file') or not self.current_project_file:
             self.current_project_file, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "Image Annotator Project (*.iap)")
@@ -432,25 +428,26 @@ class ImageAnnotator(QMainWindow):
                 return  # User cancelled the save dialog
             
         self.current_project_dir = os.path.dirname(self.current_project_file)
-
+    
         # Check if images are in the correct directory structure
         images_dir = os.path.join(self.current_project_dir, "images")
-        images_to_move = []
+        os.makedirs(images_dir, exist_ok=True)
+        
+        images_to_copy = []
         for file_name, src_path in self.image_paths.items():
-            if not src_path.startswith(images_dir):
-                images_to_move.append((file_name, src_path))
-
-        if images_to_move:
+            dst_path = os.path.join(images_dir, file_name)
+            if os.path.abspath(src_path) != os.path.abspath(dst_path) and os.path.exists(src_path):
+                images_to_copy.append((file_name, src_path, dst_path))
+    
+        if images_to_copy:
             reply = QMessageBox.question(self, 'Image Directory Structure',
                                          f"The project structure requires all images to be in an 'images' subdirectory. "
-                                         f"{len(images_to_move)} images are not in the correct location. "
-                                         f"Do you want to copy these images to the correct directory?",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                                         f"{len(images_to_copy)} images need to be copied to the correct location. "
+                                         f"Do you want to copy these images?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
             
             if reply == QMessageBox.Yes:
-                os.makedirs(images_dir, exist_ok=True)
-                for file_name, src_path in images_to_move:
-                    dst_path = os.path.join(images_dir, file_name)
+                for file_name, src_path, dst_path in images_to_copy:
                     try:
                         shutil.copy2(src_path, dst_path)
                         self.image_paths[file_name] = dst_path
@@ -460,18 +457,25 @@ class ImageAnnotator(QMainWindow):
             else:
                 QMessageBox.warning(self, "Save Cancelled", "Project cannot be saved without the correct directory structure.")
                 return
-
+    
         # Prepare image data
         images_data = []
         for image_info in self.all_images:
             file_name = image_info['file_name']
+            image_path = self.image_paths.get(file_name)
+            
+            # Skip images that don't exist
+            if not image_path or not os.path.exists(image_path):
+                print(f"Warning: Image file not found: {file_name}")
+                continue
+            
             image_data = {
                 'file_name': file_name,
                 'width': image_info['width'],
                 'height': image_info['height'],
                 'is_multi_slice': image_info['is_multi_slice']
             }
-
+    
             if image_data['is_multi_slice']:
                 base_name_without_ext = os.path.splitext(file_name)[0]
                 image_data['slices'] = []
@@ -486,9 +490,9 @@ class ImageAnnotator(QMainWindow):
                 image_data['shape'] = self.convert_to_serializable(self.image_shapes.get(base_name_without_ext, []))
             else:
                 image_data['annotations'] = self.convert_to_serializable(self.all_annotations.get(file_name, {}))
-
+    
             images_data.append(image_data)
-
+    
         # Create project data
         project_data = {
             'classes': [
@@ -496,19 +500,49 @@ class ImageAnnotator(QMainWindow):
                 for name, color in self.image_label.class_colors.items()
             ],
             'images': images_data,
-            'image_paths': self.image_paths
+            'image_paths': {k: v for k, v in self.image_paths.items() if os.path.exists(v)}
         }
-
+    
         # Save project data
         with open(self.current_project_file, 'w') as f:
             json.dump(self.convert_to_serializable(project_data), f, indent=2)
-
+    
         if show_message:
             self.show_info("Project Saved", f"Project saved to {self.current_project_file}")
-
+    
         # Update the window title
         self.update_window_title()
         
+
+
+    def save_project_as(self):
+        new_project_file, _ = QFileDialog.getSaveFileName(self, "Save Project As", "", "Image Annotator Project (*.iap)")
+        if new_project_file:
+            # Ensure the file has the correct extension
+            if not new_project_file.lower().endswith('.iap'):
+                new_project_file += '.iap'
+            
+            # Store the original project file
+            original_project_file = getattr(self, 'current_project_file', None)
+            
+            # Set the new project file as the current one
+            self.current_project_file = new_project_file
+            self.current_project_dir = os.path.dirname(new_project_file)
+            
+            # Save the project with the new name
+            self.save_project(show_message=False)
+            
+            # Update the window title
+            self.update_window_title()
+            
+            # Show a success message
+            QMessageBox.information(self, "Project Saved As", f"Project saved as:\n{new_project_file}")
+            
+            # If this was originally a new unsaved project, update the original project file
+            if original_project_file is None:
+                self.current_project_file = new_project_file
+
+
 
             
     def load_multi_slice_image(self, image_path, dimensions=None, shape=None):
@@ -565,9 +599,6 @@ class ImageAnnotator(QMainWindow):
             if button != self.sam_magic_wand_button:
                 button.setChecked(False)
         
-        # Check the SAM Magic Wand button
-        self.sam_magic_wand_button.setChecked(True)
-        
         # Set the current tool
         self.image_label.current_tool = "sam_magic_wand"
         self.image_label.sam_magic_wand_active = True
@@ -583,21 +614,34 @@ class ImageAnnotator(QMainWindow):
         elif self.class_list.count() == 0:
             QMessageBox.warning(self, "No Class Selected", "Please add a class before using annotation tools.")
             self.sam_magic_wand_button.setChecked(False)
-            self.image_label.current_tool = None
-            self.image_label.sam_magic_wand_active = False
-            self.image_label.setCursor(Qt.ArrowCursor)
-            self.update_ui_for_current_tool()
+            self.deactivate_sam_magic_wand()
+    
+    def deactivate_sam_magic_wand(self):
+        self.image_label.current_tool = None
+        self.image_label.sam_magic_wand_active = False
+        self.image_label.setCursor(Qt.ArrowCursor)
+        
+        # Update UI based on the current tool
+        self.update_ui_for_current_tool()
             
     def toggle_sam_assisted(self):
         if not self.current_sam_model:
             QMessageBox.warning(self, "No SAM Model Selected", "Please pick a SAM model before using the SAM-Assisted tool.")
             self.sam_magic_wand_button.setChecked(False)
             return
-
-        # Existing toggle logic
+    
+        is_active = self.sam_magic_wand_button.isChecked()
+        if is_active:
+            self.activate_sam_magic_wand()
+        else:
+            self.deactivate_sam_magic_wand()
+    
+        self.image_label.clear_temp_sam_prediction()  # Clear temporary prediction
+    
+    def toggle_sam_magic_wand(self):
         if self.sam_magic_wand_button.isChecked():
             if self.current_class is None:
-                QMessageBox.warning(self, "No Class Selected", "Please select a class before using SAM-Assisted tool.")
+                QMessageBox.warning(self, "No Class Selected", "Please select a class before using SAM2 Magic Wand.")
                 self.sam_magic_wand_button.setChecked(False)
                 return
             self.image_label.setCursor(Qt.CrossCursor)
@@ -608,140 +652,36 @@ class ImageAnnotator(QMainWindow):
             self.image_label.sam_bbox = None
         
         self.image_label.clear_temp_sam_prediction()  # Clear temporary prediction
-                    
-        def toggle_sam_magic_wand(self):
-            if self.sam_magic_wand_button.isChecked():
-                if self.current_class is None:
-                    QMessageBox.warning(self, "No Class Selected", "Please select a class before using SAM2 Magic Wand.")
-                    self.sam_magic_wand_button.setChecked(False)
-                    return
-                self.image_label.setCursor(Qt.CrossCursor)
-                self.image_label.sam_magic_wand_active = True
-            else:
-                self.image_label.setCursor(Qt.ArrowCursor)
-                self.image_label.sam_magic_wand_active = False
-                self.image_label.sam_bbox = None
-            
-            self.image_label.clear_temp_sam_prediction()  # Clear temporary prediction
-    
-    
     
 
-    def normalize_16bit_to_8bit(self, array):
-        """Normalize a 16-bit array to 8-bit."""
-        return ((array - array.min()) / (array.max() - array.min()) * 255).astype(np.uint8)
-
-    def qimage_to_numpy(self, qimage):
-        width = qimage.width()
-        height = qimage.height()
-        fmt = qimage.format()
-
-        if fmt == QImage.Format_Grayscale16:
-            # Handle 16-bit grayscale images
-            buffer = qimage.constBits().asarray(height * width * 2)  # 2 bytes per pixel
-            image = np.frombuffer(buffer, dtype=np.uint16).reshape((height, width))
-            image_8bit = self.normalize_16bit_to_8bit(image)
-            return np.stack((image_8bit,) * 3, axis=-1)  # Convert to RGB
-        
-        elif fmt == QImage.Format_RGB16:
-            # Handle 16-bit RGB images
-            buffer = qimage.constBits().asarray(height * width * 2)  # 2 bytes per pixel
-            image = np.frombuffer(buffer, dtype=np.uint16).reshape((height, width))
-            image_8bit = self.normalize_16bit_to_8bit(image)
-            return np.stack((image_8bit,) * 3, axis=-1)  # Convert to RGB
-
-        elif fmt == QImage.Format_Grayscale8:
-            buffer = qimage.constBits().asarray(height * width)
-            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width))
-            return np.stack((image,) * 3, axis=-1)
-        
-        elif fmt in [QImage.Format_RGB32, QImage.Format_ARGB32, QImage.Format_ARGB32_Premultiplied]:
-            buffer = qimage.constBits().asarray(height * width * 4)
-            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
-            return image[:, :, :3]  # Return only RGB channels
-        
-        elif fmt == QImage.Format_RGB888:
-            buffer = qimage.constBits().asarray(height * width * 3)
-            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 3))
-            return image  # Already RGB
-        
-        elif fmt == QImage.Format_Indexed8:
-            buffer = qimage.constBits().asarray(height * width)
-            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width))
-            color_table = qimage.colorTable()
-            rgb_image = np.zeros((height, width, 3), dtype=np.uint8)
-            for y in range(height):
-                for x in range(width):
-                    rgb_image[y, x] = QColor(color_table[image[y, x]]).getRgb()[:3]
-            return rgb_image
-        
-        else:
-            # For any other format, convert to RGB32 first
-            converted_image = qimage.convertToFormat(QImage.Format_RGB32)
-            buffer = converted_image.constBits().asarray(height * width * 4)
-            image = np.frombuffer(buffer, dtype=np.uint8).reshape((height, width, 4))
-            return image[:, :, :3]  # Return only RGB channels
-
-
-        
+    
     def apply_sam_prediction(self):
         if self.image_label.sam_bbox is None:
             print("SAM bbox is None")
             return
-
+    
         x1, y1, x2, y2 = self.image_label.sam_bbox
         bbox = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
         print(f"Applying SAM prediction with bbox: {bbox}")
-
-        try:
-            # Convert QImage to numpy array
-            image = self.qimage_to_numpy(self.current_image)
-
-            # Run SAM prediction
-            results = self.sam_model(image, bboxes=[bbox])
-            mask = results[0].masks.data[0].cpu().numpy()
-
-            if mask is not None:
-                print(f"Mask shape: {mask.shape}, Mask sum: {mask.sum()}")
-                contours = self.mask_to_polygon(mask)
-                print(f"Contours generated: {len(contours)} contour(s)")
-
-                if not contours:
-                    print("No valid contours found")
-                    return
-
-                temp_annotation = {
-                    "segmentation": contours[0],  # Take the first contour
-                    "category_id": self.class_mapping[self.current_class],
-                    "category_name": self.current_class,
-                    "score": float(results[0].boxes.conf[0])  # Convert tensor to float
-                }
-
-                self.image_label.temp_sam_prediction = temp_annotation
-                self.image_label.update()
-            else:
-                print("Failed to generate mask")
-        except Exception as e:
-            print(f"Error in applying SAM prediction: {str(e)}")
-            import traceback
-            traceback.print_exc()
-
+    
+        prediction = self.sam_utils.apply_sam_prediction(self.current_image, bbox)
+    
+        if prediction:
+            temp_annotation = {
+                "segmentation": prediction["segmentation"],
+                "category_id": self.class_mapping[self.current_class],
+                "category_name": self.current_class,
+                "score": prediction["score"]
+            }
+    
+            self.image_label.temp_sam_prediction = temp_annotation
+            self.image_label.update()
+        else:
+            print("Failed to generate prediction")
+    
         # Reset SAM bounding box
         self.image_label.sam_bbox = None
         self.image_label.update()
-    
-    
-    def mask_to_polygon(self, mask):
-        import cv2
-        contours, _ = cv2.findContours((mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        polygons = []
-        for contour in contours:
-            if cv2.contourArea(contour) > 10:  # Filter out very small contours
-                polygon = contour.flatten().tolist()
-                if len(polygon) >= 6:  # Ensure the polygon has at least 3 points
-                    polygons.append(polygon)
-        print(f"Generated {len(polygons)} valid polygons")
-        return polygons
     
     def accept_sam_prediction(self):
         if self.image_label.temp_sam_prediction:
@@ -789,8 +729,8 @@ class ImageAnnotator(QMainWindow):
         
         raise ValueError(f"Unsupported image shape: {image_array.shape}")
             
-            
-    
+                
+        
     def add_images_to_list(self, file_names):
         first_added_item = None
         for file_name in file_names:
@@ -827,21 +767,13 @@ class ImageAnnotator(QMainWindow):
                 if first_added_item is None:
                     first_added_item = item
                 
-                # Copy image to project directory if a project is open
-                if hasattr(self, 'current_project_dir'):
-                    dst_path = os.path.join(self.current_project_dir, "images", base_name)
-                    if not os.path.exists(dst_path):
-                        shutil.copy2(file_name, dst_path)
-                    self.image_paths[base_name] = dst_path
-                else:
-                    self.image_paths[base_name] = file_name
+                # Update image_paths with the original file path
+                self.image_paths[base_name] = file_name
     
         if first_added_item:
             self.image_list.setCurrentItem(first_added_item)
             self.switch_image(first_added_item)
-
-
-
+    
 
     def update_all_images(self, new_image_info):
         for info in new_image_info:
@@ -886,11 +818,11 @@ class ImageAnnotator(QMainWindow):
     
         self.save_current_annotations()
         self.image_label.clear_temp_sam_prediction()
+        self.image_label.exit_editing_mode()  # Add this line to exit editing mode
     
         file_name = item.text()
         print(f"\nSwitching to image: {file_name}")
-       # print(f"Current annotations before switch: {list(self.all_annotations.keys())}")
-
+    
         image_info = next((img for img in self.all_images if img["file_name"] == file_name), None)
         
         if image_info:
@@ -908,14 +840,14 @@ class ImageAnnotator(QMainWindow):
                         if self.slices:
                             self.current_image = self.slices[0][1]
                             self.current_slice = self.slices[0][0]
-                            self.update_slice_list()  # Update the slice list
+                            self.update_slice_list()
                             self.activate_slice(self.current_slice)
                     else:
                         self.load_multi_slice_image(image_path, image_info.get('dimensions'), image_info.get('shape'))
                 else:
                     self.load_regular_image(image_path)
                     self.display_image()
-                    self.clear_slice_list()  # Clear the slice list for non-stack images
+                    self.clear_slice_list()
                 
                 self.load_image_annotations()
                 self.update_annotation_list()
@@ -939,8 +871,7 @@ class ImageAnnotator(QMainWindow):
             self.current_slice = None
             self.image_label.clear()
             self.update_image_info()
-            self.clear_slice_list()  # Clear the slice list if no image is found
-       # print(f"Current annotations after switch: {list(self.all_annotations.keys())}")
+            self.clear_slice_list()
         
             
     def activate_current_slice(self):
@@ -1015,11 +946,7 @@ class ImageAnnotator(QMainWindow):
             print(f"CZI array dtype: {image_array.dtype}")
             print(f"CZI array min: {image_array.min()}, max: {image_array.max()}")
             
-            # Print information about each channel
-            # if len(image_array.shape) > 2:
-            #     for c in range(image_array.shape[-3]):  # Assuming channel is the third-to-last dimension
-            #         channel = image_array[..., c, :, :]
-                    #print(f"Channel {c} - min: {channel.min()}, max: {channel.max()}, mean: {channel.mean()}")
+
     
         if dimensions and shape and not force_dimension_dialog:
             # Use stored dimensions and shape
@@ -1181,13 +1108,30 @@ class ImageAnnotator(QMainWindow):
         print(f"Created {len(slices)} slices for {base_name}")
         return slices
 
+
+
     def add_slice_to_list(self, slice_name):
         item = QListWidgetItem(slice_name)
-        if slice_name in self.all_annotations:
-            item.setForeground(QColor(Qt.green))
+        
+        if self.dark_mode:
+            # Dark mode
+            item.setBackground(QColor(40, 40, 40))  # Very dark gray background for all items
+            if slice_name in self.all_annotations:
+                item.setForeground(QColor(60, 60, 60))  # Dark gray text
+                item.setBackground(QColor(173, 216, 230))  # Light blue background
+            else:
+                item.setForeground(QColor(200, 200, 200))  # Light gray text
         else:
-            item.setForeground(QColor(Qt.black) if not self.dark_mode else QColor(Qt.white))
+            # Light mode
+            item.setBackground(QColor(240, 240, 240))  # Very light gray background for all items
+            if slice_name in self.all_annotations:
+                item.setForeground(QColor(255, 255, 255))  # White text
+                item.setBackground(QColor(70, 130, 180))  # Medium-dark blue background
+            else:
+                item.setForeground(QColor(0, 0, 0))  # Black text
+        
         self.slice_list.addItem(item)
+
 
 
 
@@ -1278,18 +1222,42 @@ class ImageAnnotator(QMainWindow):
                        
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Up or event.key() == Qt.Key_Down:
-            current_row = self.slice_list.currentRow()
-            if event.key() == Qt.Key_Up and current_row > 0:
-                self.slice_list.setCurrentRow(current_row - 1)
-            elif event.key() == Qt.Key_Down and current_row < self.slice_list.count() - 1:
-                self.slice_list.setCurrentRow(current_row + 1)
-            self.switch_slice(self.slice_list.currentItem())
-        else:
+        # Check if the current focus is on a text editing widget
+        focused_widget = QApplication.focusWidget()
+        if isinstance(focused_widget, (QLineEdit, QTextEdit)):
             super().keyPressEvent(event)
-    
- 
+            return
 
+        if event.key() == Qt.Key_F2:
+            # Launch the secret Snake game
+            self.launch_snake_game()
+        elif event.key() == Qt.Key_Delete:
+            # Handle deletions
+            if self.class_list.hasFocus() and self.class_list.currentItem():
+                self.delete_class()
+            elif self.annotation_list.hasFocus() and self.annotation_list.selectedItems():
+                self.delete_selected_annotations()
+            elif self.image_list.hasFocus() and self.image_list.currentItem():
+                self.delete_selected_image()
+        elif event.key() == Qt.Key_Up or event.key() == Qt.Key_Down:
+            # Handle slice navigation
+            if self.slice_list.hasFocus():
+                current_row = self.slice_list.currentRow()
+                if event.key() == Qt.Key_Up and current_row > 0:
+                    self.slice_list.setCurrentRow(current_row - 1)
+                elif event.key() == Qt.Key_Down and current_row < self.slice_list.count() - 1:
+                    self.slice_list.setCurrentRow(current_row + 1)
+                self.switch_slice(self.slice_list.currentItem())
+            else:
+                # Pass the event to the parent for default handling
+                super().keyPressEvent(event)
+        else:
+            # Pass any other key events to the parent for default handling
+            super().keyPressEvent(event)
+     
+    def launch_snake_game(self):
+        self.snake_game = SnakeGame()
+        self.snake_game.show()
         
     def import_annotations(self):
         print("Starting import_annotations")
@@ -1509,15 +1477,38 @@ class ImageAnnotator(QMainWindow):
         #print(f"Updated annotation list with {self.annotation_list.count()} items")
                 
 
-            
+    
+    
     def update_slice_list_colors(self):
+        # Set the background color of the entire list widget
+        if self.dark_mode:
+            self.slice_list.setStyleSheet("QListWidget { background-color: rgb(40, 40, 40); }")
+        else:
+            self.slice_list.setStyleSheet("QListWidget { background-color: rgb(240, 240, 240); }")
+    
         for i in range(self.slice_list.count()):
             item = self.slice_list.item(i)
             slice_name = item.text()
-            if slice_name in self.all_annotations and any(self.all_annotations[slice_name].values()):
-                item.setForeground(QColor(Qt.green))
+            
+            if self.dark_mode:
+                # Dark mode
+                if slice_name in self.all_annotations and any(self.all_annotations[slice_name].values()):
+                    item.setForeground(QColor(60, 60, 60))  # Dark gray text
+                    item.setBackground(QColor(173, 216, 230))  # Light blue background
+                else:
+                    item.setForeground(QColor(200, 200, 200))  # Light gray text
+                    item.setBackground(QColor(40, 40, 40))  # Very dark gray background
             else:
-                item.setForeground(QColor(Qt.black) if not self.dark_mode else QColor(Qt.white))
+                # Light mode
+                if slice_name in self.all_annotations and any(self.all_annotations[slice_name].values()):
+                    item.setForeground(QColor(255, 255, 255))  # White text
+                    item.setBackground(QColor(70, 130, 180))  # Medium-dark blue background
+                else:
+                    item.setForeground(QColor(0, 0, 0))  # Black text
+                    item.setBackground(QColor(240, 240, 240))  # Very light gray background
+    
+        # Force the list to repaint
+        self.slice_list.repaint()
                 
 
     def update_annotation_list_colors(self, class_name=None, color=None):
@@ -1639,8 +1630,8 @@ class ImageAnnotator(QMainWindow):
         self.annotation_list.itemSelectionChanged.connect(self.update_highlighted_annotations)
         
         
-        
-
+            
+    
     def create_menu_bar(self):
         menu_bar = self.menuBar()
     
@@ -1661,19 +1652,16 @@ class ImageAnnotator(QMainWindow):
         save_project_action.setShortcut(QKeySequence.Save)
         save_project_action.triggered.connect(self.save_project)
         project_menu.addAction(save_project_action)
+        
+        save_project_as_action = QAction("Save Project &As...", self)
+        save_project_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_project_as_action.triggered.connect(self.save_project_as)
+        project_menu.addAction(save_project_as_action)
     
         close_project_action = QAction("&Close Project", self)
         close_project_action.setShortcut(QKeySequence("Ctrl+W"))
         close_project_action.triggered.connect(self.close_project)
         project_menu.addAction(close_project_action)
-    
-        # Edit Menu
-        edit_menu = menu_bar.addMenu("&Edit")
-    
-        delete_annotations_action = QAction("&Delete Selected Annotations", self)
-        delete_annotations_action.setShortcut(QKeySequence.Delete)
-        delete_annotations_action.triggered.connect(self.delete_selected_annotations)
-        edit_menu.addAction(delete_annotations_action)
     
         # Settings Menu
         settings_menu = menu_bar.addMenu("&Settings")
@@ -1689,20 +1677,18 @@ class ImageAnnotator(QMainWindow):
         toggle_dark_mode_action.triggered.connect(self.toggle_dark_mode)
         settings_menu.addAction(toggle_dark_mode_action)
         
-        
         # Tools Menu
         tools_menu = menu_bar.addMenu("&Tools")
         
         annotation_stats_action = QAction("Annotation Statistics", self)
         annotation_stats_action.triggered.connect(self.show_annotation_statistics)
-        annotation_stats_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        annotation_stats_action.setShortcut(QKeySequence("Ctrl+Alt+S"))
         tools_menu.addAction(annotation_stats_action)      
         
         coco_json_combiner_action = QAction("COCO JSON Combiner", self)
         coco_json_combiner_action.triggered.connect(self.show_coco_json_combiner)
         tools_menu.addAction(coco_json_combiner_action)
-        
-
+    
         dataset_splitter_action = QAction("Dataset Splitter", self)
         dataset_splitter_action.triggered.connect(self.open_dataset_splitter)
         tools_menu.addAction(dataset_splitter_action)     
@@ -1718,18 +1704,16 @@ class ImageAnnotator(QMainWindow):
         image_augmenter_action = QAction("Image Augmenter", self)
         image_augmenter_action.triggered.connect(self.show_image_augmenter)
         tools_menu.addAction(image_augmenter_action)
-        
-
     
-        # Help Menu (moved out of Settings)
+        # Help Menu
         help_menu = menu_bar.addMenu("&Help")
     
         help_action = QAction("&Show Help", self)
         help_action.setShortcut(QKeySequence.HelpContents)
         help_action.triggered.connect(self.show_help)
         help_menu.addAction(help_action)
-    
-    
+        
+        
     
 
     def change_font_size(self, size):
@@ -1798,20 +1782,20 @@ class ImageAnnotator(QMainWindow):
         # SAM-Assisted tools subsection
         sam_widget = QWidget()
         sam_layout = QVBoxLayout(sam_widget)
-
+    
         # SAM-Assisted button on top
         self.sam_magic_wand_button = QPushButton("SAM-Assisted")
         self.sam_magic_wand_button.setCheckable(True)
         self.sam_magic_wand_button.clicked.connect(self.toggle_sam_assisted)
         sam_layout.addWidget(self.sam_magic_wand_button)
-
+    
         # Add SAM model selector
         self.sam_model_selector = QComboBox()
         self.sam_model_selector.addItem("Pick a SAM Model")
-        self.sam_model_selector.addItems(list(self.sam_models.keys()))
+        self.sam_model_selector.addItems(list(self.sam_utils.sam_models.keys()))
         self.sam_model_selector.currentTextChanged.connect(self.change_sam_model)
         sam_layout.addWidget(self.sam_model_selector)
-
+    
         annotation_layout.addWidget(sam_widget)
     
         # Setup tool group
@@ -1856,13 +1840,19 @@ class ImageAnnotator(QMainWindow):
         self.sidebar_layout.addWidget(annotation_widget)
         
     def change_sam_model(self, model_name):
+        self.sam_utils.change_sam_model(model_name)
+        self.current_sam_model = self.sam_utils.current_sam_model
+        self.sam_model = self.sam_utils.sam_model
+    
         if model_name != "Pick a SAM Model":
-            self.current_sam_model = model_name
-            self.sam_model = SAM(self.sam_models[self.current_sam_model])
+            # Activate the SAM Magic Wand button
+            self.sam_magic_wand_button.setChecked(True)
+            self.activate_sam_magic_wand()
             print(f"Changed SAM model to: {model_name}")
         else:
-            self.current_sam_model = None
-            self.sam_model = None
+            # Deactivate the SAM Magic Wand button
+            self.sam_magic_wand_button.setChecked(False)
+            self.deactivate_sam_magic_wand()
             print("SAM model unset")
         
         
@@ -1906,6 +1896,16 @@ class ImageAnnotator(QMainWindow):
     def toggle_dark_mode(self):
         self.dark_mode = not self.dark_mode
         self.apply_theme_and_font()
+        
+        # Update slice list colors
+        self.update_slice_list_colors()
+        
+        # Update other UI elements if necessary
+        self.update_class_list()
+        self.update_annotation_list()
+        
+        # Force a repaint of the main window
+        self.repaint()
         
     def apply_stylesheet(self):
         if self.dark_mode:
@@ -2367,9 +2367,65 @@ class ImageAnnotator(QMainWindow):
             
             # Update slice list colors
             self.update_slice_list_colors()
-
+    
+            QMessageBox.information(self, "Annotations Deleted", f"{len(selected_items)} annotation(s) have been deleted.")
         
-
+    def delete_selected_image(self):
+        current_item = self.image_list.currentItem()
+        if current_item:
+            file_name = current_item.text()
+            reply = QMessageBox.question(self, 'Delete Image',
+                                         f"Are you sure you want to delete the image '{file_name}'?\n\n"
+                                         "This will remove the image and all its associated annotations.",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            
+            if reply == QMessageBox.Yes:
+                # Remove from all data structures
+                self.image_list.takeItem(self.image_list.row(current_item))
+                self.image_paths.pop(file_name, None)
+                self.all_images = [img for img in self.all_images if img["file_name"] != file_name]
+                
+                # Remove annotations
+                self.all_annotations.pop(file_name, None)
+                
+                # Handle multi-dimensional images
+                base_name = os.path.splitext(file_name)[0]
+                if base_name in self.image_slices:
+                    # Remove slices
+                    for slice_name, _ in self.image_slices[base_name]:
+                        self.all_annotations.pop(slice_name, None)
+                    del self.image_slices[base_name]
+                    
+                    # Clear slice list
+                    self.slice_list.clear()
+                
+                # Clear current image and slice if it was the removed image
+                if self.image_file_name == file_name:
+                    self.current_image = None
+                    self.image_file_name = ""
+                    self.current_slice = None
+                    self.image_label.clear()
+                    self.annotation_list.clear()
+                
+                # Switch to another image if available
+                if self.image_list.count() > 0:
+                    next_item = self.image_list.item(0)
+                    self.image_list.setCurrentItem(next_item)
+                    self.switch_image(next_item)
+                else:
+                    # No images left
+                    self.current_image = None
+                    self.image_file_name = ""
+                    self.current_slice = None
+                    self.image_label.clear()
+                    self.annotation_list.clear()
+                    self.slice_list.clear()
+                
+                # Update UI
+                self.update_ui()
+                
+                QMessageBox.information(self, "Image Deleted", f"The image '{file_name}' has been deleted.")
+            
 
     def display_image(self):
         if self.current_image:
@@ -2399,35 +2455,40 @@ class ImageAnnotator(QMainWindow):
         self.update_image_info()
     
 
-
     def add_class(self, class_name=None, color=None):
-        #print(f"add_class called with class_name: {class_name}, type: {type(class_name)}, color: {color}")
-        
         if class_name is None:
-            class_name, ok = QInputDialog.getText(self, "Add Class", "Enter class name:")
-            if not ok or not class_name or class_name in self.class_mapping:
-                print("Class addition cancelled or invalid")
-                return
-        
+            while True:
+                class_name, ok = QInputDialog.getText(self, "Add Class", "Enter class name:")
+                if not ok:
+                    print("Class addition cancelled")
+                    return
+                if not class_name.strip():
+                    QMessageBox.warning(self, "Invalid Input", "Please enter a class name or press Cancel.")
+                    continue
+                if class_name in self.class_mapping:
+                    QMessageBox.warning(self, "Duplicate Class", f"The class '{class_name}' already exists. Please choose a different name.")
+                    continue
+                break
+    
         if not isinstance(class_name, str):
             print(f"Warning: class_name is not a string. Converting {class_name} to string.")
             class_name = str(class_name)
-        
+    
         if color is None:
             color = QColor(Qt.GlobalColor(len(self.image_label.class_colors) % 16 + 7))
         elif isinstance(color, str):
             color = QColor(color)
-        
-       # print(f"Adding class: {class_name}, color: {color.name()}")
-        
+    
+        print(f"Adding class: {class_name}, color: {color.name()}")
+    
         self.image_label.class_colors[class_name] = color
         self.class_mapping[class_name] = len(self.class_mapping) + 1
-        
+    
         try:
             item = QListWidgetItem(class_name)
             self.update_class_item_color(item, color)
             self.class_list.addItem(item)
-            
+    
             self.class_list.setCurrentItem(item)
             self.current_class = class_name
             print(f"Class added successfully: {class_name}")
@@ -2435,6 +2496,9 @@ class ImageAnnotator(QMainWindow):
             print(f"Error adding class: {e}")
             import traceback
             traceback.print_exc()
+
+
+
     
     def update_class_item_color(self, item, color):
         pixmap = QPixmap(16, 16)
@@ -2580,26 +2644,41 @@ class ImageAnnotator(QMainWindow):
         current_item = self.class_list.currentItem()
         if current_item:
             class_name = current_item.text()
-            # Remove class color
-            self.image_label.class_colors.pop(class_name, None)
             
-            # Remove class from mapping
-            del self.class_mapping[class_name]
+            # Show confirmation dialog
+            reply = QMessageBox.question(self, 'Delete Class',
+                                         f"Are you sure you want to delete the class '{class_name}'?\n\n"
+                                         "This will remove all annotations associated with this class.",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             
-            # Remove annotations for this class from all images
-            for image_annotations in self.all_annotations.values():
-                image_annotations.pop(class_name, None)
-            
-            # Remove annotations for this class from current image
-            self.image_label.annotations.pop(class_name, None)
-            
-            # Update annotation list
-            self.update_annotation_list()
-
-            # Remove class from list
-            self.class_list.takeItem(self.class_list.row(current_item))
-            
-            self.image_label.update()
+            if reply == QMessageBox.Yes:
+                # Proceed with deletion
+                # Remove class color
+                self.image_label.class_colors.pop(class_name, None)
+                
+                # Remove class from mapping
+                del self.class_mapping[class_name]
+                
+                # Remove annotations for this class from all images
+                for image_annotations in self.all_annotations.values():
+                    image_annotations.pop(class_name, None)
+                
+                # Remove annotations for this class from current image
+                self.image_label.annotations.pop(class_name, None)
+                
+                # Update annotation list
+                self.update_annotation_list()
+    
+                # Remove class from list
+                self.class_list.takeItem(self.class_list.row(current_item))
+                
+                self.image_label.update()
+                
+                # Inform the user
+                QMessageBox.information(self, "Class Deleted", f"The class '{class_name}' has been deleted.")
+            else:
+                # User cancelled the operation
+                QMessageBox.information(self, "Deletion Cancelled", "The class deletion was cancelled.")
 
     def finish_polygon(self):
         if self.image_label.current_tool == "polygon" and len(self.image_label.current_annotation) > 2:
