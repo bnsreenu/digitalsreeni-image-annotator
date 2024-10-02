@@ -29,6 +29,11 @@ from .image_augmenter import show_image_augmenter
 from .sam_utils import SAMUtils
 from .snake_game import SnakeGame
 
+from shapely.geometry import Polygon, MultiPolygon, Point
+from shapely.ops import unary_union
+from shapely.validation import make_valid
+import shapely
+
 from .export_formats import (
     export_coco_json, export_yolo_v8, export_labeled_images, 
     export_semantic_labels, export_pascal_voc_bbox, export_pascal_voc_both
@@ -115,12 +120,13 @@ class ImageAnnotator(QMainWindow):
         self.image_shapes = {}
         
         # Initialize SAM utils
+        self.current_sam_model = None
         self.sam_utils = SAMUtils()
-    
     
         # Create sam_magic_wand_button
         self.sam_magic_wand_button = QPushButton("Magic Wand")
         self.sam_magic_wand_button.setCheckable(True)
+        self.sam_magic_wand_button.setEnabled(False)  # Initially disable the button
     
         # Initialize tool group
         self.tool_group = QButtonGroup(self)
@@ -213,11 +219,14 @@ class ImageAnnotator(QMainWindow):
             self.all_annotations = project_data.get('annotations', {})
             self.image_paths = project_data.get('image_paths', {})
             
-            #print("Loaded image_paths:", self.image_paths)
-            
             # Load classes
             for class_info in project_data['classes']:
                 self.add_class(class_info['name'], QColor(class_info['color']))
+            
+            # Select the last added class
+            if self.class_list.count() > 0:
+                last_class_index = self.class_list.count() - 1
+                self.select_class(last_class_index)
             
             # Load all annotations first
             self.all_annotations.clear()
@@ -247,8 +256,6 @@ class ImageAnnotator(QMainWindow):
                     self.load_multi_slice_image(image_path, dimensions, shape)
                 else:
                     self.add_images_to_list([image_path])
-            
-            #print("Updated image_paths:", self.image_paths)
             
             self.update_ui()
             
@@ -358,7 +365,15 @@ class ImageAnnotator(QMainWindow):
         self.image_list.clear()
         for image_info in self.all_images:
             self.image_list.addItem(image_info['file_name'])
-    
+
+    def select_class(self, index):
+        if 0 <= index < self.class_list.count():
+            item = self.class_list.item(index)
+            self.class_list.setCurrentItem(item)
+            self.current_class = item.text()
+            print(f"Selected class: {self.current_class}")
+        else:
+            print("Invalid class index")
     
     
     def close_project(self):
@@ -436,8 +451,9 @@ class ImageAnnotator(QMainWindow):
         images_to_copy = []
         for file_name, src_path in self.image_paths.items():
             dst_path = os.path.join(images_dir, file_name)
-            if os.path.abspath(src_path) != os.path.abspath(dst_path) and os.path.exists(src_path):
-                images_to_copy.append((file_name, src_path, dst_path))
+            if os.path.abspath(src_path) != os.path.abspath(dst_path):
+                if not os.path.exists(dst_path):
+                    images_to_copy.append((file_name, src_path, dst_path))
     
         if images_to_copy:
             reply = QMessageBox.question(self, 'Image Directory Structure',
@@ -457,18 +473,12 @@ class ImageAnnotator(QMainWindow):
             else:
                 QMessageBox.warning(self, "Save Cancelled", "Project cannot be saved without the correct directory structure.")
                 return
+
     
         # Prepare image data
         images_data = []
         for image_info in self.all_images:
             file_name = image_info['file_name']
-            image_path = self.image_paths.get(file_name)
-            
-            # Skip images that don't exist
-            if not image_path or not os.path.exists(image_path):
-                print(f"Warning: Image file not found: {file_name}")
-                continue
-            
             image_data = {
                 'file_name': file_name,
                 'width': image_info['width'],
@@ -489,7 +499,9 @@ class ImageAnnotator(QMainWindow):
                 image_data['dimensions'] = self.convert_to_serializable(self.image_dimensions.get(base_name_without_ext, []))
                 image_data['shape'] = self.convert_to_serializable(self.image_shapes.get(base_name_without_ext, []))
             else:
-                image_data['annotations'] = self.convert_to_serializable(self.all_annotations.get(file_name, {}))
+                image_data['annotations'] = {}
+                for class_name, annotations in self.all_annotations.get(file_name, {}).items():
+                    image_data['annotations'][class_name] = [ann.copy() for ann in annotations]
     
             images_data.append(image_data)
     
@@ -512,6 +524,10 @@ class ImageAnnotator(QMainWindow):
     
         # Update the window title
         self.update_window_title()
+        
+        # Update image_paths to reflect the correct locations
+        for file_name in self.image_paths.keys():
+            self.image_paths[file_name] = os.path.join(images_dir, file_name)
         
 
 
@@ -630,8 +646,7 @@ class ImageAnnotator(QMainWindow):
             self.sam_magic_wand_button.setChecked(False)
             return
     
-        is_active = self.sam_magic_wand_button.isChecked()
-        if is_active:
+        if self.sam_magic_wand_button.isChecked():
             self.activate_sam_magic_wand()
         else:
             self.deactivate_sam_magic_wand()
@@ -799,6 +814,7 @@ class ImageAnnotator(QMainWindow):
                 self.load_image_annotations()
                 self.update_annotation_list()
                 self.clear_highlighted_annotation()
+                self.image_label.highlighted_annotations.clear()  # Add this line
                 self.image_label.reset_annotation_state()
                 self.image_label.clear_current_annotation()
                 self.update_image_info()
@@ -818,7 +834,7 @@ class ImageAnnotator(QMainWindow):
     
         self.save_current_annotations()
         self.image_label.clear_temp_sam_prediction()
-        self.image_label.exit_editing_mode()  # Add this line to exit editing mode
+        self.image_label.exit_editing_mode()
     
         file_name = item.text()
         print(f"\nSwitching to image: {file_name}")
@@ -852,6 +868,10 @@ class ImageAnnotator(QMainWindow):
                 self.load_image_annotations()
                 self.update_annotation_list()
                 self.clear_highlighted_annotation()
+                
+                self.image_label.highlighted_annotations.clear()  
+                self.update_annotation_list()
+                self.image_label.update()
                 self.image_label.reset_annotation_state()
                 self.image_label.clear_current_annotation()
                 self.update_image_info()
@@ -1219,7 +1239,9 @@ class ImageAnnotator(QMainWindow):
         self.slices = []
         self.current_slice = None
     
-                       
+    def reset_tool_buttons(self):
+        for button in self.tool_group.buttons():
+            button.setChecked(False)                      
 
     def keyPressEvent(self, event):
         # Check if the current focus is on a text editing widget
@@ -1297,7 +1319,7 @@ class ImageAnnotator(QMainWindow):
         print(f"Images directory: {images_dir}")
         print(f"Imported annotations count: {len(imported_annotations)}")
         print(f"Image info count: {len(image_info)}")
-    
+        
         images_loaded = 0
         images_not_found = []
     
@@ -1339,7 +1361,21 @@ class ImageAnnotator(QMainWindow):
                 return
     
         # Update annotations (only for found images)
-        self.all_annotations.update({k: v for k, v in imported_annotations.items() if k not in images_not_found})
+        for image_name, annotations in imported_annotations.items():
+            if image_name not in self.image_paths:
+                continue
+            self.all_annotations[image_name] = {}
+            for category_name, category_annotations in annotations.items():
+                self.all_annotations[image_name][category_name] = []
+                for i, ann in enumerate(category_annotations, start=1):
+                    new_ann = {
+                        "segmentation": ann["segmentation"],
+                        "category_id": ann["category_id"],
+                        "category_name": category_name,
+                        "number": i,
+                        "type": "polygon"  # Assuming all imported annotations are polygons
+                    }
+                    self.all_annotations[image_name][category_name].append(new_ann)
     
         # Update class mapping and colors
         for annotations in self.all_annotations.values():
@@ -1369,7 +1405,9 @@ class ImageAnnotator(QMainWindow):
     
         print("Import complete, showing message")
         QMessageBox.information(self, "Import Complete", message)
-      
+    
+    
+    
     def export_annotations(self):
         export_format = self.export_format_selector.currentText()
         
@@ -1463,18 +1501,16 @@ class ImageAnnotator(QMainWindow):
     def update_annotation_list(self, image_name=None):
         self.annotation_list.clear()
         current_name = image_name or self.current_slice or self.image_file_name
-       # print(f"Updating annotation list for: {current_name}")
         annotations = self.all_annotations.get(current_name, {})
-       # print(f"Annotations found: {annotations}")
         for class_name, class_annotations in annotations.items():
             color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
-            for i, annotation in enumerate(class_annotations, start=1):
-                item_text = f"{class_name} - {i}"
+            for annotation in class_annotations:
+                number = annotation.get('number', 0)  # Use 0 if 'number' doesn't exist
+                item_text = f"{class_name} - {number}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, annotation)
                 item.setForeground(color)
                 self.annotation_list.addItem(item)
-        #print(f"Updated annotation list with {self.annotation_list.count()} items")
                 
 
     
@@ -1816,9 +1852,19 @@ class ImageAnnotator(QMainWindow):
         self.annotation_list.itemSelectionChanged.connect(self.update_highlighted_annotations)
         annotation_layout.addWidget(self.annotation_list)
         
-        self.delete_button = QPushButton("Delete Selected Annotations")
+        #Delete and Merge annotation buttons
+        self.delete_button = QPushButton("Delete")
         self.delete_button.clicked.connect(self.delete_selected_annotations)
-        annotation_layout.addWidget(self.delete_button)
+        self.merge_button = QPushButton("Merge")
+        self.merge_button.clicked.connect(self.merge_annotations)
+    
+        # Create a horizontal layout for the buttons
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.delete_button)
+        button_layout.addWidget(self.merge_button)
+    
+        # Add the button layout to the annotation layout
+        annotation_layout.addLayout(button_layout)
     
         # Add export format selector 
         self.export_format_selector = QComboBox()
@@ -1842,15 +1888,19 @@ class ImageAnnotator(QMainWindow):
     def change_sam_model(self, model_name):
         self.sam_utils.change_sam_model(model_name)
         self.current_sam_model = self.sam_utils.current_sam_model
-        self.sam_model = self.sam_utils.sam_model
-    
+        
         if model_name != "Pick a SAM Model":
-            # Activate the SAM Magic Wand button
+            # Enable the SAM Magic Wand button
+            self.sam_magic_wand_button.setEnabled(True)
+            
+            # Activate the SAM Magic Wand tool
             self.sam_magic_wand_button.setChecked(True)
             self.activate_sam_magic_wand()
+            
             print(f"Changed SAM model to: {model_name}")
         else:
-            # Deactivate the SAM Magic Wand button
+            # Disable and deactivate the SAM Magic Wand button
+            self.sam_magic_wand_button.setEnabled(False)
             self.sam_magic_wand_button.setChecked(False)
             self.deactivate_sam_magic_wand()
             print("SAM model unset")
@@ -2062,6 +2112,17 @@ class ImageAnnotator(QMainWindow):
         self.polygon_button.setChecked(False)
         self.rectangle_button.setChecked(False)
         self.sam_magic_wand_button.setChecked(False)
+        self.sam_magic_wand_button.setEnabled(False)  # Disable the SAM-Assisted button
+        self.image_label.sam_magic_wand_active = False  # Deactivate SAM magic wand
+    
+        # Reset SAM-related attributes
+        self.image_label.sam_bbox = None
+        self.image_label.drawing_sam_bbox = False
+        self.image_label.temp_sam_prediction = None
+    
+        self.image_label.setCursor(Qt.ArrowCursor)  # Reset cursor to default
+        self.sam_model_selector.setCurrentIndex(0)  # Reset to "Pick a SAM Model"
+        self.current_sam_model = None  # Reset the current SAM model
         
         # Reset project-related attributes
         if not new_project:
@@ -2138,7 +2199,7 @@ class ImageAnnotator(QMainWindow):
             base_name = os.path.splitext(file_name)[0]
             
             print(f"Removing annotations for image: {base_name}")
-            print(f"Current annotations: {list(self.all_annotations.keys())}")
+            #print(f"Current annotations: {list(self.all_annotations.keys())}")
             
             # Create a list of keys to remove, using a more specific matching condition
             keys_to_remove = [key for key in self.all_annotations.keys() 
@@ -2150,7 +2211,7 @@ class ImageAnnotator(QMainWindow):
             for key in keys_to_remove:
                 del self.all_annotations[key]
             
-            print(f"Annotations after removal: {list(self.all_annotations.keys())}")
+            #print(f"Annotations after removal: {list(self.all_annotations.keys())}")
             
             # Remove existing slices
             if base_name in self.image_slices:
@@ -2172,7 +2233,7 @@ class ImageAnnotator(QMainWindow):
             self.update_annotation_list()
             self.image_label.update()
             
-            print(f"Final annotations: {list(self.all_annotations.keys())}")
+            #print(f"Final annotations: {list(self.all_annotations.keys())}")
             
             QMessageBox.information(self, "Dimensions Redefined", 
                                     "The dimensions have been redefined and the image reloaded. "
@@ -2302,9 +2363,12 @@ class ImageAnnotator(QMainWindow):
                             ann["segmentation"] = annotation["segmentation"][0]
                             ann["type"] = "polygon"
                         elif "bbox" in annotation:
-                            # Store bbox as is, don't convert to rectangle
                             ann["bbox"] = annotation["bbox"]
                             ann["type"] = "bbox"
+                        
+                        # Add number field if it's missing
+                        if "number" not in ann:
+                            ann["number"] = len(self.all_annotations[file_name][category_name]) + 1
                         
                         self.all_annotations[file_name][category_name].append(ann)
             
@@ -2318,6 +2382,10 @@ class ImageAnnotator(QMainWindow):
                 self.switch_image(self.image_list.findItems(self.image_file_name, Qt.MatchExactly)[0])
             elif self.all_images:
                 self.switch_image(self.image_list.item(0))
+                
+            self.image_label.highlighted_annotations = []  # Clear existing highlights
+            self.update_annotation_list()  # This will repopulate the annotation list
+            self.image_label.update()  # Force a redraw of the image label
 
 
 
@@ -2329,8 +2397,18 @@ class ImageAnnotator(QMainWindow):
     def update_highlighted_annotations(self):
         selected_items = self.annotation_list.selectedItems()
         self.image_label.highlighted_annotations = [item.data(Qt.UserRole) for item in selected_items]
-        self.image_label.update()
+        self.image_label.update()  # Force a redraw of the image label
         
+        # Enable/disable merge button based on selection
+        self.merge_button.setEnabled(len(selected_items) >= 2)
+
+    def renumber_annotations(self):
+        current_name = self.current_slice or self.image_file_name
+        if current_name in self.all_annotations:
+            for class_name, annotations in self.all_annotations[current_name].items():
+                for i, ann in enumerate(annotations, start=1):
+                    ann['number'] = i
+        self.update_annotation_list()
 
     def delete_selected_annotations(self):
         selected_items = self.annotation_list.selectedItems()
@@ -2354,21 +2432,134 @@ class ImageAnnotator(QMainWindow):
                     if annotation in self.image_label.annotations[category_name]:
                         self.image_label.annotations[category_name].remove(annotation)
             
-            # Remove items from annotation_list
-            for item in selected_items:
-                self.annotation_list.takeItem(self.annotation_list.row(item))
-            
-            self.image_label.highlighted_annotations.clear()
-            self.image_label.update()
+            # Renumber remaining annotations
+            self.renumber_annotations()
             
             # Update all_annotations
             current_name = self.current_slice or self.image_file_name
             self.all_annotations[current_name] = self.image_label.annotations
             
+            # Clear and repopulate the annotation list
+            self.update_annotation_list()
+            
+            self.image_label.highlighted_annotations.clear()
+            self.image_label.update()
+            
             # Update slice list colors
             self.update_slice_list_colors()
     
-            QMessageBox.information(self, "Annotations Deleted", f"{len(selected_items)} annotation(s) have been deleted.")
+            QMessageBox.information(self, "Annotations Deleted", f"{len(selected_items)} annotation(s) have been deleted.")  
+
+
+    def merge_annotations(self):
+        if self.image_label.editing_polygon is not None:
+            QMessageBox.warning(self, "Edit Mode Active", 
+                                "Please exit the annotation edit mode before merging annotations.")
+            return
+    
+        selected_items = self.annotation_list.selectedItems()
+        if len(selected_items) < 2:
+            QMessageBox.warning(self, "Not Enough Annotations", "Please select at least two annotations to merge.")
+            return
+    
+        class_name = selected_items[0].data(Qt.UserRole)['category_name']
+        if not all(item.data(Qt.UserRole)['category_name'] == class_name for item in selected_items):
+            QMessageBox.warning(self, "Mixed Classes", "All selected annotations must be from the same class.")
+            return
+    
+        polygons = []
+        original_annotations = []
+        for item in selected_items:
+            annotation = item.data(Qt.UserRole)
+            original_annotations.append(annotation)
+            if 'segmentation' in annotation:
+                points = zip(annotation['segmentation'][0::2], annotation['segmentation'][1::2])
+                polygon = Polygon(points)
+                if not polygon.is_valid:
+                    polygon = polygon.buffer(0)
+                polygons.append(polygon)
+    
+        def are_all_polygons_connected(polygons):
+            if len(polygons) < 2:
+                return True
+            
+            connected = set([0])  # Start with the first polygon
+            to_check = set(range(1, len(polygons)))
+            
+            while to_check:
+                newly_connected = set()
+                for i in connected:
+                    for j in to_check:
+                        if polygons[i].intersects(polygons[j]) or polygons[i].touches(polygons[j]):
+                            newly_connected.add(j)
+                
+                if not newly_connected:
+                    return False  # If no new connections found, they're not all connected
+                
+                connected.update(newly_connected)
+                to_check -= newly_connected
+            
+            return True  # All polygons are connected
+    
+        if not are_all_polygons_connected(polygons):
+            QMessageBox.warning(self, "Disconnected Polygons", "Not all selected annotations are connected. Please select only connected annotations to merge.")
+            return
+    
+        try:
+            merged_polygon = unary_union(polygons)
+        except Exception as e:
+            QMessageBox.warning(self, "Merge Error", f"Unable to merge the selected annotations due to an error: {str(e)}")
+            return
+    
+        new_annotation = {
+            "segmentation": [],
+            "category_id": self.class_mapping[class_name],
+            "category_name": class_name,
+        }
+    
+        if isinstance(merged_polygon, Polygon):
+            new_annotation["segmentation"] = [coord for point in merged_polygon.exterior.coords for coord in point]
+        elif isinstance(merged_polygon, MultiPolygon):
+            largest_polygon = max(merged_polygon.geoms, key=lambda p: p.area)
+            new_annotation["segmentation"] = [coord for point in largest_polygon.exterior.coords for coord in point]
+    
+        # Ask user about keeping original annotations
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Merge Annotations")
+        msg_box.setText("Do you want to keep the original annotations?")
+        msg_box.setIcon(QMessageBox.Question)
+        
+        keep_button = msg_box.addButton("Keep", QMessageBox.YesRole)
+        delete_button = msg_box.addButton("Delete", QMessageBox.NoRole)
+        cancel_button = msg_box.addButton("Cancel", QMessageBox.RejectRole)
+        
+        msg_box.setDefaultButton(cancel_button)
+        msg_box.setEscapeButton(cancel_button)
+    
+        msg_box.exec_()
+    
+        if msg_box.clickedButton() == cancel_button:
+            return
+    
+        if msg_box.clickedButton() == delete_button:
+            for annotation in original_annotations:
+                if annotation in self.image_label.annotations[class_name]:
+                    self.image_label.annotations[class_name].remove(annotation)
+    
+        self.image_label.annotations.setdefault(class_name, []).append(new_annotation)
+    
+        current_name = self.current_slice or self.image_file_name
+        self.all_annotations[current_name] = self.image_label.annotations
+    
+        self.renumber_annotations()
+        self.update_annotation_list()
+        self.save_current_annotations()
+        self.update_slice_list_colors()
+        self.image_label.update()
+    
+        QMessageBox.information(self, "Merge Complete", "Annotations have been merged successfully.")
+    
+    
         
     def delete_selected_image(self):
         current_item = self.image_list.currentItem()
@@ -2511,13 +2702,23 @@ class ImageAnnotator(QMainWindow):
             item = QListWidgetItem(class_name)
             self.update_class_item_color(item, color)
             self.class_list.addItem(item)
+        
+        # Re-select the current class if it exists
+        if self.current_class:
+            items = self.class_list.findItems(self.current_class, Qt.MatchExactly)
+            if items:
+                self.class_list.setCurrentItem(items[0])
+        elif self.class_list.count() > 0:
+            # If no class is selected, select the last one
+            self.select_class(self.class_list.count() - 1)
+    
         print(f"Updated class list with {self.class_list.count()} items")
 
     def toggle_tool(self):
         sender = self.sender()
         if sender is None:
-            sender = self.sam_magic_wand_button  # Default to SAM2 Magic Wand when called programmatically
-        
+            sender = self.sam_magic_wand_button
+    
         other_buttons = [btn for btn in self.tool_group.buttons() if btn != sender]
     
         if sender.isChecked():
@@ -2544,6 +2745,7 @@ class ImageAnnotator(QMainWindow):
                 self.image_label.current_tool = None
         else:
             self.image_label.current_tool = None
+            self.image_label.clear_current_annotation()  # Add this line
     
         # Update SAM magic wand state
         self.image_label.sam_magic_wand_active = (self.image_label.current_tool == "sam_magic_wand")
@@ -2566,6 +2768,7 @@ class ImageAnnotator(QMainWindow):
         selected_item = self.class_list.currentItem()
         if selected_item:
             self.current_class = selected_item.text()
+            print(f"Class selected: {self.current_class}")
 
     def show_class_context_menu(self, position):
         menu = QMenu()
@@ -2694,6 +2897,7 @@ class ImageAnnotator(QMainWindow):
             self.image_label.annotations.setdefault(self.current_class, []).append(new_annotation)
             self.add_annotation_to_list(new_annotation)
             self.image_label.clear_current_annotation()
+            self.image_label.drawing_polygon = False  # Reset the drawing_polygon flag
             self.image_label.reset_annotation_state()
             self.image_label.update()
             
@@ -2722,12 +2926,19 @@ class ImageAnnotator(QMainWindow):
         class_name = annotation['category_name']
         color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
         annotations = self.image_label.annotations.get(class_name, [])
-        item_text = f"{class_name} - {len(annotations)}"
+        number = max([ann.get('number', 0) for ann in annotations] + [0]) + 1
+        annotation['number'] = number
+        item_text = f"{class_name} - {number}"
         item = QListWidgetItem(item_text)
         item.setData(Qt.UserRole, annotation)
         item.setForeground(color)
         self.annotation_list.addItem(item)
         
+        # Clear the current selection
+        self.annotation_list.clearSelection()
+        self.image_label.highlighted_annotations.clear()
+        self.image_label.update()
+            
     
 
 

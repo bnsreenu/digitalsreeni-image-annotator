@@ -8,10 +8,6 @@ A powerful and user-friendly tool for annotating images with polygons and rectan
 
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
-## Watch the demo:
-[![Watch the demo video](https://img.youtube.com/vi/BupyYUw2boI/maxresdefault.jpg)](https://youtu.be/BupyYUw2boI)
-
-
 
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
@@ -20,6 +16,7 @@ Dr. Sreenivas Bhattiprolu
 
 - Semi-automated annotations with SAM-2 assistance (Segment Anything Model) — Because who doesn't love a helpful AI sidekick?
 - Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge.
+- Merge annotations - For when SAM-2's guesswork needs a little human touch. 
 - Save and load projects for continued work.
 - Import existing COCO JSON annotations with images.
 - Export annotations to various formats (COCO JSON, YOLO v8, Labeled images, Semantic labels, Pascal VOC).
@@ -37,6 +34,9 @@ Dr. Sreenivas Bhattiprolu
   - Stack to slices converter
   - Image patcher
   - Image augmenter
+
+## Operating System Requirements
+This application is built using PyQt5 and has been tested on macOS and Windows. It may experience compatibility issues on Linux systems, particularly related to the XCB plugin for PyQt5.
 
 ## Installation
 
@@ -76,6 +76,7 @@ The application uses the Ultralytics library, so there's no need to separately i
      - Note that SAM2 provides various outputs with different scores, and only the top-scoring region will be displayed. If the desired result isn't achieved on the first try, draw again.
      - For low-quality images where SAM2 may not auto-detect objects, manual tools may be necessary.
    - Edit existing annotations by double-clicking on them.
+   - Merge connected annotations by selecting them from the Annotations list and clicking the Merge button. 
    - Save your project using "Save Project" or Ctrl+S.
    - Use "Open Project" or Ctrl+O to load a previously saved project.
    - Click "Import Annotations with Images" to load existing COCO JSON annotations along with their images.

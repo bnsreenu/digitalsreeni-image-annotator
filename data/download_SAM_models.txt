@@ -1,0 +1,11 @@
+It is recommended to pre-download SAM models and place them in your working director - the directory from where you are starting this application. This avoids downloading the models multiple times. 
+
+Download models from: https://docs.ultralytics.com/models/sam-2/
+
+Direct Download links:
+Tiny model: https://github.com/ultralytics/assets/releases/download/v8.2.0/sam2_t.pt
+Small: https://github.com/ultralytics/assets/releases/download/v8.2.0/sam2_s.pt
+Base: https://github.com/ultralytics/assets/releases/download/v8.2.0/sam2_b.pt
+Large: https://github.com/ultralytics/assets/releases/download/v8.2.0/sam2_l.pt
+
+Be cautious with the large model as it demands higher computing and memory resources from your system.
