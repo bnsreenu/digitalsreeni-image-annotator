@@ -119,6 +119,9 @@ class ImageAnnotator(QMainWindow):
         self.image_slices = {}
         self.image_shapes = {}
         
+        #For paint brush and eraser
+        self.paint_brush_size = 10
+        self.eraser_size = 10
         # Initialize SAM utils
         self.current_sam_model = None
         self.sam_utils = SAMUtils()
@@ -203,7 +206,7 @@ class ImageAnnotator(QMainWindow):
             self.show_info("New Project", f"New project created at {self.current_project_file}")
             self.update_window_title()
             
-            
+          
     
     def open_project(self):
         project_file, _ = QFileDialog.getOpenFileName(self, "Open Project", "", "Image Annotator Project (*.iap)")
@@ -558,7 +561,19 @@ class ImageAnnotator(QMainWindow):
             if original_project_file is None:
                 self.current_project_file = new_project_file
 
-
+    def auto_save(self):
+        if not hasattr(self, 'current_project_file'):
+            reply = QMessageBox.question(self, 'No Project', 
+                                         "You need to save the project before auto-saving. Would you like to save now?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply == QMessageBox.Yes:
+                self.save_project()
+            else:
+                return
+        
+        if hasattr(self, 'current_project_file'):
+            self.save_project(show_message=False)
+            print("Project auto-saved.")
 
             
     def load_multi_slice_image(self, image_path, dimensions=None, shape=None):
@@ -788,6 +803,7 @@ class ImageAnnotator(QMainWindow):
         if first_added_item:
             self.image_list.setCurrentItem(first_added_item)
             self.switch_image(first_added_item)
+        self.auto_save()  # Auto-save after adding images
     
 
     def update_all_images(self, new_image_info):
@@ -795,12 +811,50 @@ class ImageAnnotator(QMainWindow):
             if not any(img['file_name'] == info['file_name'] for img in self.all_images):
                 self.all_images.append(info)
 
+    def closeEvent(self, event):
+        if not self.image_label.check_unsaved_changes():
+            event.ignore()
+            return
+        event.accept()
 
+        if self.image_label.temp_paint_mask is not None or self.image_label.temp_eraser_mask is not None:
+            reply = QMessageBox.question(self, 'Unsaved Changes',
+                                         "You have unsaved changes. Do you want to save them before closing?",
+                                         QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            if reply == QMessageBox.Yes:
+                if self.image_label.temp_paint_mask is not None:
+                    self.image_label.commit_paint_annotation()
+                if self.image_label.temp_eraser_mask is not None:
+                    self.image_label.commit_eraser_changes()
+            elif reply == QMessageBox.Cancel:
+                event.ignore()
+                return
+    
+        # Perform any other cleanup or saving operations here
+        event.accept()
 
             
     def switch_slice(self, item):
         if item is None:
             return
+        if not self.image_label.check_unsaved_changes():
+            return
+        
+        # Check for unsaved changes
+        if self.image_label.temp_paint_mask is not None or self.image_label.temp_eraser_mask is not None:
+            reply = QMessageBox.question(self, 'Unsaved Changes',
+                                         "You have unsaved changes. Do you want to save them?",
+                                         QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            if reply == QMessageBox.Yes:
+                if self.image_label.temp_paint_mask is not None:
+                    self.image_label.commit_paint_annotation()
+                if self.image_label.temp_eraser_mask is not None:
+                    self.image_label.commit_eraser_changes()
+            elif reply == QMessageBox.Cancel:
+                return
+            else:
+                self.image_label.discard_paint_annotation()
+                self.image_label.discard_eraser_changes()
     
         self.save_current_annotations()
         self.image_label.clear_temp_sam_prediction()
@@ -831,6 +885,24 @@ class ImageAnnotator(QMainWindow):
     def switch_image(self, item):
         if item is None:
             return
+        if not self.image_label.check_unsaved_changes():    
+            return
+        
+        # Check for unsaved changes
+        if self.image_label.temp_paint_mask is not None or self.image_label.temp_eraser_mask is not None:
+            reply = QMessageBox.question(self, 'Unsaved Changes',
+                                         "You have unsaved changes. Do you want to save them?",
+                                         QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            if reply == QMessageBox.Yes:
+                if self.image_label.temp_paint_mask is not None:
+                    self.image_label.commit_paint_annotation()
+                if self.image_label.temp_eraser_mask is not None:
+                    self.image_label.commit_eraser_changes()
+            elif reply == QMessageBox.Cancel:
+                return
+            else:
+                self.image_label.discard_paint_annotation()
+                self.image_label.discard_eraser_changes()
     
         self.save_current_annotations()
         self.image_label.clear_temp_sam_prediction()
@@ -1282,6 +1354,8 @@ class ImageAnnotator(QMainWindow):
         self.snake_game.show()
         
     def import_annotations(self):
+        if not self.image_label.check_unsaved_changes():    
+            return
         print("Starting import_annotations")
         import_format = self.import_format_selector.currentText()
         print(f"Import format: {import_format}")
@@ -1405,10 +1479,13 @@ class ImageAnnotator(QMainWindow):
     
         print("Import complete, showing message")
         QMessageBox.information(self, "Import Complete", message)
+        self.auto_save()  # Auto-save after importing annotations
     
     
     
     def export_annotations(self):
+        if not self.image_label.check_unsaved_changes():    
+            return
         export_format = self.export_format_selector.currentText()
         
         supported_formats = [
@@ -1505,14 +1582,18 @@ class ImageAnnotator(QMainWindow):
         for class_name, class_annotations in annotations.items():
             color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
             for annotation in class_annotations:
-                number = annotation.get('number', 0)  # Use 0 if 'number' doesn't exist
+                number = annotation.get('number', 0)
                 item_text = f"{class_name} - {number}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, annotation)
                 item.setForeground(color)
                 self.annotation_list.addItem(item)
+        
+        # Force the annotation list to repaint
+        self.annotation_list.repaint()
+        
+        #print(f"Annotation list updated for {current_name}. Current annotations: {annotations}")
                 
-
     
     
     def update_slice_list_colors(self):
@@ -1804,15 +1885,26 @@ class ImageAnnotator(QMainWindow):
         # Manual tools subsection
         manual_widget = QWidget()
         manual_layout = QVBoxLayout(manual_widget)
-        manual_layout.addWidget(QLabel("Manual"))
-
-        self.polygon_button = QPushButton("Polygon Tool")
+    
+        button_layout_top = QHBoxLayout()
+        self.polygon_button = QPushButton("Polygon")
         self.polygon_button.setCheckable(True)
-        self.rectangle_button = QPushButton("Rectangle Tool")
+        self.rectangle_button = QPushButton("Rectangle")
         self.rectangle_button.setCheckable(True)
-        manual_layout.addWidget(self.polygon_button)
-        manual_layout.addWidget(self.rectangle_button)
-
+        button_layout_top.addWidget(self.polygon_button)
+        button_layout_top.addWidget(self.rectangle_button)
+    
+        button_layout_bottom = QHBoxLayout()
+        self.paint_brush_button = QPushButton("Paint Brush")
+        self.paint_brush_button.setCheckable(True)
+        self.eraser_button = QPushButton("Eraser")
+        self.eraser_button.setCheckable(True)
+        button_layout_bottom.addWidget(self.paint_brush_button)
+        button_layout_bottom.addWidget(self.eraser_button)
+    
+        manual_layout.addLayout(button_layout_top)
+        manual_layout.addLayout(button_layout_bottom)
+    
         annotation_layout.addWidget(manual_widget)
 
         # SAM-Assisted tools subsection
@@ -1839,10 +1931,14 @@ class ImageAnnotator(QMainWindow):
         self.tool_group.setExclusive(False)
         self.tool_group.addButton(self.polygon_button)
         self.tool_group.addButton(self.rectangle_button)
+        self.tool_group.addButton(self.paint_brush_button)
+        self.tool_group.addButton(self.eraser_button)
         self.tool_group.addButton(self.sam_magic_wand_button)
     
         self.polygon_button.clicked.connect(self.toggle_tool)
         self.rectangle_button.clicked.connect(self.toggle_tool)
+        self.paint_brush_button.clicked.connect(self.toggle_tool)
+        self.eraser_button.clicked.connect(self.toggle_tool)
         self.sam_magic_wand_button.clicked.connect(self.toggle_tool)
     
         # Annotations list subsection
@@ -2057,6 +2153,8 @@ class ImageAnnotator(QMainWindow):
 
             
     def add_images(self):
+        if not self.image_label.check_unsaved_changes():    
+            return
         file_names, _ = QFileDialog.getOpenFileNames(self, "Add Images", "", "Image Files (*.png *.jpg *.bmp *.tif *.tiff *.czi)")
         if file_names:
             self.add_images_to_list(file_names)
@@ -2286,7 +2384,8 @@ class ImageAnnotator(QMainWindow):
                 self.slice_list.clear()
             
             # Update UI
-            self.update_ui()     
+            self.update_ui()  
+            self.auto_save()  # Auto-save after removing an image
 
 
     def load_annotations(self):
@@ -2395,6 +2494,8 @@ class ImageAnnotator(QMainWindow):
         self.image_label.update()
         
     def update_highlighted_annotations(self):
+        if not self.image_label.check_unsaved_changes():
+            return
         selected_items = self.annotation_list.selectedItems()
         self.image_label.highlighted_annotations = [item.data(Qt.UserRole) for item in selected_items]
         self.image_label.update()  # Force a redraw of the image label
@@ -2449,6 +2550,7 @@ class ImageAnnotator(QMainWindow):
             self.update_slice_list_colors()
     
             QMessageBox.information(self, "Annotations Deleted", f"{len(selected_items)} annotation(s) have been deleted.")  
+            self.auto_save()  # Auto-save after deleting annotations
 
 
     def merge_annotations(self):
@@ -2558,6 +2660,7 @@ class ImageAnnotator(QMainWindow):
         self.image_label.update()
     
         QMessageBox.information(self, "Merge Complete", "Annotations have been merged successfully.")
+        self.auto_save()  # Auto-save after merging annotations
     
     
         
@@ -2647,6 +2750,8 @@ class ImageAnnotator(QMainWindow):
     
 
     def add_class(self, class_name=None, color=None):
+        if not self.image_label.check_unsaved_changes():    
+            return
         if class_name is None:
             while True:
                 class_name, ok = QInputDialog.getText(self, "Add Class", "Enter class name:")
@@ -2683,6 +2788,7 @@ class ImageAnnotator(QMainWindow):
             self.class_list.setCurrentItem(item)
             self.current_class = class_name
             print(f"Class added successfully: {class_name}")
+            self.auto_save()  # Auto-save after adding a class
         except Exception as e:
             print(f"Error adding class: {e}")
             import traceback
@@ -2715,11 +2821,18 @@ class ImageAnnotator(QMainWindow):
         print(f"Updated class list with {self.class_list.count()} items")
 
     def toggle_tool(self):
+        if not self.image_label.check_unsaved_changes():
+            return
+        
         sender = self.sender()
         if sender is None:
             sender = self.sam_magic_wand_button
     
         other_buttons = [btn for btn in self.tool_group.buttons() if btn != sender]
+    
+        # Deactivate SAM if we're switching to a different tool
+        if sender != self.sam_magic_wand_button and self.image_label.sam_magic_wand_active:
+            self.deactivate_sam_magic_wand()
     
         if sender.isChecked():
             # Uncheck all other buttons
@@ -2733,7 +2846,13 @@ class ImageAnnotator(QMainWindow):
                 self.image_label.current_tool = "rectangle"
             elif sender == self.sam_magic_wand_button:
                 self.image_label.current_tool = "sam_magic_wand"
-                self.image_label.sam_magic_wand_active = True
+                self.activate_sam_magic_wand()
+            elif sender == self.paint_brush_button:
+                self.image_label.current_tool = "paint_brush"
+                self.image_label.setFocus()  # Set focus on the image label
+            elif sender == self.eraser_button:
+                self.image_label.current_tool = "eraser"
+                self.image_label.setFocus()  # Set focus on the image label
             
             # If a class is not selected, select the first one (if available)
             if self.current_class is None and self.class_list.count() > 0:
@@ -2745,15 +2864,26 @@ class ImageAnnotator(QMainWindow):
                 self.image_label.current_tool = None
         else:
             self.image_label.current_tool = None
-            self.image_label.clear_current_annotation()  # Add this line
-    
-        # Update SAM magic wand state
-        self.image_label.sam_magic_wand_active = (self.image_label.current_tool == "sam_magic_wand")
-        self.image_label.setCursor(Qt.CrossCursor if self.image_label.sam_magic_wand_active else Qt.ArrowCursor)
+            if sender == self.sam_magic_wand_button:
+                self.deactivate_sam_magic_wand()
     
         # Update UI based on the current tool
         self.update_ui_for_current_tool()
-        
+
+    def wheelEvent(self, event):
+        if event.modifiers() == Qt.ControlModifier:
+            delta = event.angleDelta().y()
+            if self.image_label.current_tool == "paint_brush":
+                self.paint_brush_size = max(1, self.paint_brush_size + delta // 120)
+                print(f"Paint brush size: {self.paint_brush_size}")
+            elif self.image_label.current_tool == "eraser":
+                self.eraser_size = max(1, self.eraser_size + delta // 120)
+                print(f"Eraser size: {self.eraser_size}")
+        else:
+            super().wheelEvent(event)
+
+
+
     def update_ui_for_current_tool(self):
         # Disable finish_polygon_button if it still exists in your code
         if hasattr(self, 'finish_polygon_button'):
@@ -2765,6 +2895,8 @@ class ImageAnnotator(QMainWindow):
         self.sam_magic_wand_button.setChecked(self.image_label.current_tool == "sam_magic_wand")        
 
     def on_class_selected(self):
+        if not self.image_label.check_unsaved_changes():
+            return
         selected_item = self.class_list.currentItem()
         if selected_item:
             self.current_class = selected_item.text()
@@ -2797,6 +2929,7 @@ class ImageAnnotator(QMainWindow):
                 self.update_class_item_color(current_item, color)
                 self.update_annotation_list_colors(class_name, color)
                 self.image_label.update()
+                self.auto_save()  # Auto-save after changing class color
                 
 
     
@@ -2840,6 +2973,7 @@ class ImageAnnotator(QMainWindow):
     
                 # Update the image label
                 self.image_label.update()
+                self.auto_save()  # Auto-save after renaming a class
     
                 #print(f"Class renamed from '{old_name}' to '{new_name}'")
 
@@ -2879,6 +3013,7 @@ class ImageAnnotator(QMainWindow):
                 
                 # Inform the user
                 QMessageBox.information(self, "Class Deleted", f"The class '{class_name}' has been deleted.")
+                self.auto_save()  # Auto-save after deleting a class
             else:
                 # User cancelled the operation
                 QMessageBox.information(self, "Deletion Cancelled", "The class deletion was cancelled.")
@@ -2906,6 +3041,7 @@ class ImageAnnotator(QMainWindow):
             
             # Update the slice list colors
             self.update_slice_list_colors()
+            self.auto_save()  # Auto-save after adding a polygon annotation
 
 
     def highlight_annotation(self, item):
@@ -2989,6 +3125,7 @@ class ImageAnnotator(QMainWindow):
             
             # Update the slice list colors
             self.update_slice_list_colors()
+            self.auto_save()
 
     def enter_edit_mode(self, annotation):
         self.editing_mode = True

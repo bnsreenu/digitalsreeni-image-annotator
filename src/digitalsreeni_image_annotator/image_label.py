@@ -8,13 +8,16 @@ displaying the image and handling annotation interactions.
 Dr. Sreenivas Bhattiprolu
 """
 
-from PyQt5.QtWidgets import QLabel, QApplication
+from PyQt5.QtWidgets import QLabel, QApplication, QMessageBox
 from PyQt5.QtGui import (QPainter, QPen, QColor, QFont, QPolygonF, QBrush, QPolygon,
                          QPixmap, QImage, QWheelEvent, QMouseEvent, QKeyEvent)
 from PyQt5.QtCore import Qt, QPoint, QPointF, QRectF, QSize
 from PIL import Image
 import os
 import warnings
+import cv2
+import numpy as np
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
@@ -54,6 +57,14 @@ class ImageLabel(QLabel):
         self.image_path = None
         self.dark_mode = False
         
+        self.paint_mask = None
+        self.eraser_mask = None
+        self.temp_paint_mask = None
+        self.is_painting = False
+        self.temp_eraser_mask = None
+        self.is_erasing = False
+        self.cursor_pos = None
+
         #SAM
         self.sam_magic_wand_active = False
         self.sam_bbox = None
@@ -133,7 +144,126 @@ class ImageLabel(QLabel):
         """Handle resize events."""
         super().resizeEvent(event)
         self.update_offset()
+        
+        
+    def start_painting(self, pos):
+        if self.temp_paint_mask is None:
+            self.temp_paint_mask = np.zeros((self.original_pixmap.height(), self.original_pixmap.width()), dtype=np.uint8)
+        self.is_painting = True
+        self.continue_painting(pos)
 
+    def continue_painting(self, pos):
+        if not self.is_painting:
+            return
+        brush_size = self.main_window.paint_brush_size
+        cv2.circle(self.temp_paint_mask, (int(pos[0]), int(pos[1])), brush_size, 255, -1)
+        self.update()
+
+    def finish_painting(self):
+        if not self.is_painting:
+            return
+        self.is_painting = False
+        # Don't commit the annotation yet, just keep the temp_paint_mask
+        
+        
+    def commit_paint_annotation(self):
+        if self.temp_paint_mask is not None and self.main_window.current_class:
+            class_name = self.main_window.current_class
+            contours, _ = cv2.findContours(self.temp_paint_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                if cv2.contourArea(contour) > 10:  # Minimum area threshold
+                    segmentation = contour.flatten().tolist()
+                    new_annotation = {
+                        "segmentation": segmentation,
+                        "category_id": self.main_window.class_mapping[class_name],
+                        "category_name": class_name,
+                    }
+                    self.annotations.setdefault(class_name, []).append(new_annotation)
+                    self.main_window.add_annotation_to_list(new_annotation)
+            self.temp_paint_mask = None
+            self.main_window.save_current_annotations()
+            self.main_window.update_slice_list_colors()
+            self.update()
+            
+    
+    def discard_paint_annotation(self):
+        self.temp_paint_mask = None
+        self.update()     
+        
+
+    def start_erasing(self, pos):
+        if self.temp_eraser_mask is None:
+            self.temp_eraser_mask = np.zeros((self.original_pixmap.height(), self.original_pixmap.width()), dtype=np.uint8)
+        self.is_erasing = True
+        self.continue_erasing(pos)
+
+    def continue_erasing(self, pos):
+        if not self.is_erasing:
+            return
+        eraser_size = self.main_window.eraser_size
+        cv2.circle(self.temp_eraser_mask, (int(pos[0]), int(pos[1])), eraser_size, 255, -1)
+        self.update()
+
+    def finish_erasing(self):
+        if not self.is_erasing:
+            return
+        self.is_erasing = False
+        # Don't commit the eraser changes yet, just keep the temp_eraser_mask
+
+    def commit_eraser_changes(self):
+        if self.temp_eraser_mask is not None:
+            eraser_mask = self.temp_eraser_mask.astype(bool)
+            current_name = self.main_window.current_slice or self.main_window.image_file_name
+            annotations_changed = False
+            
+            for class_name, annotations in self.annotations.items():
+                updated_annotations = []
+                max_number = max([ann.get('number', 0) for ann in annotations] + [0])
+                for annotation in annotations:
+                    if "segmentation" in annotation:
+                        points = np.array(annotation["segmentation"]).reshape(-1, 2).astype(int)
+                        mask = np.zeros_like(self.temp_eraser_mask)
+                        cv2.fillPoly(mask, [points], 255)
+                        mask = mask.astype(bool)
+                        mask[eraser_mask] = False
+                        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        for i, contour in enumerate(contours):
+                            if cv2.contourArea(contour) > 10:  # Minimum area threshold
+                                new_segmentation = contour.flatten().tolist()
+                                new_annotation = annotation.copy()
+                                new_annotation["segmentation"] = new_segmentation
+                                if i == 0:
+                                    new_annotation["number"] = annotation.get("number", max_number + 1)
+                                else:
+                                    max_number += 1
+                                    new_annotation["number"] = max_number
+                                updated_annotations.append(new_annotation)
+                        if len(contours) > 1:
+                            annotations_changed = True
+                    else:
+                        updated_annotations.append(annotation)
+                self.annotations[class_name] = updated_annotations
+            
+            self.temp_eraser_mask = None
+            
+            # Update the all_annotations dictionary in the main window
+            self.main_window.all_annotations[current_name] = self.annotations
+            
+            # Call update_annotation_list directly
+            self.main_window.update_annotation_list()
+            
+            self.main_window.save_current_annotations()
+            self.main_window.update_slice_list_colors()
+            self.update()
+    
+            #print(f"Eraser changes committed. Annotations changed: {annotations_changed}")
+            #print(f"Current annotations: {self.annotations}")
+    
+    def discard_eraser_changes(self):
+        self.temp_eraser_mask = None
+        self.update()
+        
+        
     def paintEvent(self, event):
         super().paintEvent(event)
         if self.scaled_pixmap:
@@ -145,14 +275,129 @@ class ImageLabel(QLabel):
             
             # Draw annotations
             self.draw_annotations(painter)
+            
+            # Draw other elements
             if self.editing_polygon:
                 self.draw_editing_polygon(painter)
+            
             if self.drawing_rectangle and self.current_rectangle:
                 self.draw_current_rectangle(painter)
+            
             if self.sam_magic_wand_active and self.sam_bbox:
                 self.draw_sam_bbox(painter)
-    
+            
+            # Draw temporary paint mask
+            if self.temp_paint_mask is not None:
+                self.draw_temp_paint_mask(painter)
+            
+            # Draw temporary eraser mask
+            if self.temp_eraser_mask is not None:
+                self.draw_temp_eraser_mask(painter)
+            
+            # Draw brush/eraser size indicator
+            self.draw_tool_size_indicator(painter)
+            
+            painter.end()
 
+            
+    def draw_temp_paint_mask(self, painter):
+        if self.temp_paint_mask is not None:
+            painter.save()
+            painter.translate(self.offset_x, self.offset_y)
+            painter.scale(self.zoom_factor, self.zoom_factor)
+            
+            mask_image = QImage(self.temp_paint_mask.data, self.temp_paint_mask.shape[1], self.temp_paint_mask.shape[0], self.temp_paint_mask.shape[1], QImage.Format_Grayscale8)
+            mask_pixmap = QPixmap.fromImage(mask_image)
+            painter.setOpacity(0.5)
+            painter.drawPixmap(0, 0, mask_pixmap)
+            painter.setOpacity(1.0)
+            
+            painter.restore()
+    
+    def draw_temp_eraser_mask(self, painter):
+        if self.temp_eraser_mask is not None:
+            painter.save()
+            painter.translate(self.offset_x, self.offset_y)
+            painter.scale(self.zoom_factor, self.zoom_factor)
+            
+            mask_image = QImage(self.temp_eraser_mask.data, self.temp_eraser_mask.shape[1], self.temp_eraser_mask.shape[0], self.temp_eraser_mask.shape[1], QImage.Format_Grayscale8)
+            mask_pixmap = QPixmap.fromImage(mask_image)
+            painter.setOpacity(0.5)
+            painter.drawPixmap(0, 0, mask_pixmap)
+            painter.setOpacity(1.0)
+            
+            painter.restore()
+    
+    
+    # def draw_tool_size_indicator(self, painter):
+    #     if self.current_tool in ["paint_brush", "eraser"] and hasattr(self, 'cursor_pos'):
+    #         painter.save()
+    #         painter.translate(self.offset_x, self.offset_y)
+    #         painter.scale(self.zoom_factor, self.zoom_factor)
+            
+    #         if self.current_tool == "paint_brush":
+    #             size = self.main_window.paint_brush_size
+    #             color = QColor(255, 0, 0, 128)  # Semi-transparent red
+    #         else:  # eraser
+    #             size = self.main_window.eraser_size
+    #             color = QColor(0, 0, 255, 128)  # Semi-transparent blue
+            
+    #         painter.setPen(QPen(color, 1 / self.zoom_factor, Qt.SolidLine))
+    #         painter.setBrush(Qt.NoBrush)
+    #         painter.drawEllipse(QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size)
+            
+    #         painter.restore()
+    
+    def draw_tool_size_indicator(self, painter):
+        if self.current_tool in ["paint_brush", "eraser"] and hasattr(self, 'cursor_pos'):
+            painter.save()
+            painter.translate(self.offset_x, self.offset_y)
+            painter.scale(self.zoom_factor, self.zoom_factor)
+            
+            if self.current_tool == "paint_brush":
+                size = self.main_window.paint_brush_size
+                color = QColor(255, 0, 0, 128)  # Semi-transparent red
+            else:  # eraser
+                size = self.main_window.eraser_size
+                color = QColor(0, 0, 255, 128)  # Semi-transparent blue
+            
+            # Draw filled circle
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size)
+            
+            # Draw circle outline
+            painter.setPen(QPen(color.darker(150), 1 / self.zoom_factor, Qt.SolidLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size)
+            
+            # Draw text to show current size
+            font = QFont("Arial")
+            font.setPointSizeF(10 / self.zoom_factor)
+            painter.setFont(font)
+            painter.setPen(Qt.black)  # Set text color to black for better visibility
+            text_rect = QRectF(self.cursor_pos[0] + size + 5, self.cursor_pos[1] - 10, 50, 20)
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, f"Size: {size}")
+            
+            painter.restore()
+        
+    
+    def draw_paint_mask(self, painter):
+        if self.paint_mask is not None:
+            mask_image = QImage(self.paint_mask.data, self.paint_mask.shape[1], self.paint_mask.shape[0], self.paint_mask.shape[1], QImage.Format_Grayscale8)
+            mask_pixmap = QPixmap.fromImage(mask_image)
+            painter.setOpacity(0.5)
+            painter.drawPixmap(self.offset_x, self.offset_y, mask_pixmap.scaled(self.scaled_pixmap.size()))
+            painter.setOpacity(1.0)
+    
+    def draw_eraser_mask(self, painter):
+        if self.eraser_mask is not None:
+            mask_image = QImage(self.eraser_mask.data, self.eraser_mask.shape[1], self.eraser_mask.shape[0], self.eraser_mask.shape[1], QImage.Format_Grayscale8)
+            mask_pixmap = QPixmap.fromImage(mask_image)
+            painter.setOpacity(0.5)
+            painter.drawPixmap(self.offset_x, self.offset_y, mask_pixmap.scaled(self.scaled_pixmap.size()))
+            painter.setOpacity(1.0)
+        
 
     def draw_sam_bbox(self, painter):
         painter.save()
@@ -166,7 +411,27 @@ class ImageLabel(QLabel):
     def clear_temp_sam_prediction(self):
         self.temp_sam_prediction = None
         self.update()
-        
+
+    def check_unsaved_changes(self):
+        if self.temp_paint_mask is not None or self.temp_eraser_mask is not None:
+            reply = QMessageBox.question(
+                self.main_window, 'Unsaved Changes',
+                "You have unsaved changes. Do you want to save them?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            )
+            if reply == QMessageBox.Yes:
+                if self.temp_paint_mask is not None:
+                    self.commit_paint_annotation()
+                if self.temp_eraser_mask is not None:
+                    self.commit_eraser_changes()
+                return True
+            elif reply == QMessageBox.No:
+                self.discard_paint_annotation()
+                self.discard_eraser_changes()
+                return True
+            else:  # Cancel
+                return False
+        return True  # No unsaved changes
         
     def clear(self):
         super().clear()
@@ -332,8 +597,7 @@ class ImageLabel(QLabel):
         self.update()
 
     def wheelEvent(self, event: QWheelEvent):
-        """Handle wheel events for zooming."""
-        if event.modifiers() == Qt.ControlModifier and self.main_window:
+        if event.modifiers() == Qt.ControlModifier:
             delta = event.angleDelta().y()
             if delta > 0:
                 self.main_window.zoom_in()
@@ -368,11 +632,17 @@ class ImageLabel(QLabel):
                     self.end_point = pos
                     self.drawing_rectangle = True
                     self.current_rectangle = None
+                elif self.current_tool == "paint_brush":
+                    self.start_painting(pos)
+                elif self.current_tool == "eraser":
+                    self.start_erasing(pos)
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if not self.original_pixmap:
             return
+        self.cursor_pos = self.get_image_coordinates(event.pos())
+        
         if event.modifiers() == Qt.ControlModifier and event.buttons() == Qt.LeftButton:
             if self.pan_start_pos:
                 delta = event.pos() - self.pan_start_pos
@@ -383,7 +653,7 @@ class ImageLabel(QLabel):
                 self.pan_start_pos = event.pos()
             event.accept()
         else:
-            pos = self.get_image_coordinates(event.pos())
+            pos = self.cursor_pos
             if self.sam_magic_wand_active and self.drawing_sam_bbox:
                 self.sam_bbox[2] = pos[0]
                 self.sam_bbox[3] = pos[1]
@@ -394,7 +664,11 @@ class ImageLabel(QLabel):
             elif self.current_tool == "rectangle" and self.drawing_rectangle:
                 self.end_point = pos
                 self.current_rectangle = self.get_rectangle_from_points()
-            self.update()
+            elif self.current_tool == "paint_brush" and event.buttons() == Qt.LeftButton:
+                self.continue_painting(pos)
+            elif self.current_tool == "eraser" and event.buttons() == Qt.LeftButton:
+                self.continue_erasing(pos)
+        self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if not self.original_pixmap:
@@ -417,7 +691,11 @@ class ImageLabel(QLabel):
                     self.drawing_rectangle = False
                     if self.current_rectangle:
                         self.main_window.finish_rectangle()
-            self.update()
+                elif self.current_tool == "paint_brush":
+                    self.finish_painting()
+                elif self.current_tool == "eraser":
+                    self.finish_erasing()
+        self.update()
             
 
     def mouseDoubleClickEvent(self, event):
@@ -453,21 +731,41 @@ class ImageLabel(QLabel):
                 self.main_window.update_annotation_list()
             elif self.current_tool == "polygon" and self.drawing_polygon:
                 self.finish_polygon()
+            elif self.current_tool == "paint_brush":
+                self.commit_paint_annotation()
+            elif self.current_tool == "eraser":
+                self.commit_eraser_changes()
             else:
                 self.finish_current_annotation()
         elif event.key() == Qt.Key_Escape:
             if self.sam_magic_wand_active:
-                # Clear only the temporary SAM prediction
                 self.sam_bbox = None
                 self.clear_temp_sam_prediction()
-                # Don't deactivate the tool or change the cursor
             elif self.editing_polygon:
                 self.editing_polygon = None
                 self.editing_point_index = None
                 self.hover_point_index = None
                 self.main_window.enable_tools()
+            elif self.current_tool == "paint_brush":
+                self.discard_paint_annotation()
+            elif self.current_tool == "eraser":
+                self.discard_eraser_changes()
             else:
                 self.cancel_current_annotation()
+        elif event.key() == Qt.Key_Minus:
+            if self.current_tool == "paint_brush":
+                self.main_window.paint_brush_size = max(1, self.main_window.paint_brush_size - 1)
+                print(f"Paint brush size: {self.main_window.paint_brush_size}")
+            elif self.current_tool == "eraser":
+                self.main_window.eraser_size = max(1, self.main_window.eraser_size - 1)
+                print(f"Eraser size: {self.main_window.eraser_size}")
+        elif event.key() == Qt.Key_Equal:
+            if self.current_tool == "paint_brush":
+                self.main_window.paint_brush_size += 1
+                print(f"Paint brush size: {self.main_window.paint_brush_size}")
+            elif self.current_tool == "eraser":
+                self.main_window.eraser_size += 1
+                print(f"Eraser size: {self.main_window.eraser_size}")
         self.update()
 
 

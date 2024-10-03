@@ -1,9 +1,0 @@
-New Features and Enhancements
-
-Introduced a new 'Merge' tool, enabling the merging of multiple contiguous annotations. This feature is particularly helpful when SAM-assisted annotations fail to capture the entire object. Users can manually annotate the missing region, ensure it overlaps with the existing annotation, and then merge them together for a seamless result.
-
-Added an alternative method to close polygon annotations. In addition to pressing "Enter," users can now double-click on the last point to complete the polygon during annotation.
-
-Bug Fixes
-
-Resolved several longstanding bugs that surfaced during regression testing following the introduction of the Merge feature.
