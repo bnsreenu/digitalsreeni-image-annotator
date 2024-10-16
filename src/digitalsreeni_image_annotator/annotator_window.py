@@ -2,15 +2,16 @@ import os
 import json
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QFileDialog, QListWidget, QInputDialog, 
-                             QLabel, QButtonGroup, QListWidgetItem, QScrollArea, 
-                             QSlider, QMenu, QMessageBox, QColorDialog, QDialog,
+                             QLabel, QButtonGroup, QListWidgetItem, QScrollArea, QCheckBox,
+                             QSlider, QMenu, QMessageBox, QColorDialog, QDialog, QDoubleSpinBox,
                              QGridLayout, QComboBox, QAbstractItemView, QProgressDialog,
-                             QApplication, QAction, QLineEdit, QTextEdit)
-from PyQt5.QtGui import QPixmap, QColor, QIcon, QImage, QFont, QKeySequence
-from PyQt5.QtCore import Qt
+                             QApplication, QAction, QLineEdit, QTextEdit, QDialogButtonBox, QProgressBar)
+from PyQt5.QtGui import QPixmap, QColor, QIcon, QImage, QFont, QKeySequence, QPalette
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 import numpy as np
 from tifffile import TiffFile
 from czifile import CziFile
+import cv2
 
 
 from .image_label import ImageLabel
@@ -28,6 +29,7 @@ from .image_patcher import show_image_patcher
 from .image_augmenter import show_image_augmenter
 from .sam_utils import SAMUtils
 from .snake_game import SnakeGame
+from .yolo_trainer import YOLOTrainer, TrainingInfoDialog, LoadPredictionModelDialog
 
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.ops import unary_union
@@ -49,6 +51,23 @@ from ultralytics import SAM
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
+
+class TrainingThread(QThread):
+    progress_update = pyqtSignal(str)
+    finished = pyqtSignal(object)
+
+    def __init__(self, yolo_trainer, epochs, imgsz):
+        super().__init__()
+        self.yolo_trainer = yolo_trainer
+        self.epochs = epochs
+        self.imgsz = imgsz
+
+    def run(self):
+        try:
+            results = self.yolo_trainer.train_model(epochs=self.epochs, imgsz=self.imgsz)
+            self.finished.emit(results)
+        except Exception as e:
+            self.finished.emit(str(e))
 
 class DimensionDialog(QDialog):
     def __init__(self, shape, file_name, parent=None, default_dimensions=None):
@@ -85,6 +104,8 @@ class DimensionDialog(QDialog):
 
     def get_dimensions(self):
         return [combo.currentText() for combo in self.combos]
+    
+
 
 class ImageAnnotator(QMainWindow):
     def __init__(self):
@@ -141,6 +162,9 @@ class ImageAnnotator(QMainWindow):
     
         # Dark mode control
         self.dark_mode = False
+        
+        #Default annotations sorting
+        self.current_sort_method = "class"  # Default sorting method
     
         # Setup UI components
         self.setup_ui()
@@ -150,6 +174,12 @@ class ImageAnnotator(QMainWindow):
     
         # Connect sam_magic_wand_button
         self.sam_magic_wand_button.clicked.connect(self.toggle_tool)
+        
+        self.class_list.itemChanged.connect(self.toggle_class_visibility)
+        
+        #YOLO Trainer
+        self.yolo_trainer = None
+        self.setup_yolo_menu()
 
 
     def setup_ui(self):
@@ -183,6 +213,7 @@ class ImageAnnotator(QMainWindow):
 
                 
     def new_project(self):
+        self.remove_all_temp_annotations()  # Remove temp annotations from the previous project
         project_file, _ = QFileDialog.getSaveFileName(self, "Create New Project", "", "Image Annotator Project (*.iap)")
         if project_file:
             # Ensure the file has the correct extension
@@ -204,11 +235,13 @@ class ImageAnnotator(QMainWindow):
             
             # Keep only this message
             self.show_info("New Project", f"New project created at {self.current_project_file}")
+            self.initialize_yolo_trainer()
             self.update_window_title()
             
           
     
     def open_project(self):
+        self.remove_all_temp_annotations()  # Remove temp annotations from the previous project
         project_file, _ = QFileDialog.getOpenFileName(self, "Open Project", "", "Image Annotator Project (*.iap)")
         if project_file:
             with open(project_file, 'r') as f:
@@ -262,11 +295,19 @@ class ImageAnnotator(QMainWindow):
             
             self.update_ui()
             
+            self.remove_all_temp_annotations()  #To make sure we have no temp annotations from any previous unfinished work
+            
             # Select the first image if available
             if self.image_list.count() > 0:
                 self.image_list.setCurrentRow(0)
                 self.switch_image(self.image_list.item(0))
                 
+            # Select the first class if available
+            if self.class_list.count() > 0:
+                self.class_list.setCurrentRow(0)
+                self.on_class_selected()
+                        
+            self.initialize_yolo_trainer()    
             self.update_window_title()
             
             # Check for missing images
@@ -386,6 +427,7 @@ class ImageAnnotator(QMainWindow):
                                          QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
             
             if reply == QMessageBox.Yes:
+                self.remove_all_temp_annotations()  # Remove temp annotations before saving
                 self.save_project(show_message=False)  # Save without showing a message
             elif reply == QMessageBox.Cancel:
                 return  # User cancelled the operation
@@ -401,8 +443,6 @@ class ImageAnnotator(QMainWindow):
     
         # Update the window title
         self.update_window_title()
-    
-        # No message box for project closed
     
     
     def delete_selected_class(self):
@@ -650,7 +690,14 @@ class ImageAnnotator(QMainWindow):
     def deactivate_sam_magic_wand(self):
         self.image_label.current_tool = None
         self.image_label.sam_magic_wand_active = False
+        self.sam_magic_wand_button.setChecked(False)
+        self.sam_magic_wand_button.setEnabled(False)  # Disable the button
         self.image_label.setCursor(Qt.ArrowCursor)
+        
+        # Clear any SAM-related temporary data
+        self.image_label.sam_bbox = None
+        self.image_label.drawing_sam_bbox = False
+        self.image_label.temp_sam_prediction = None
         
         # Update UI based on the current tool
         self.update_ui_for_current_tool()
@@ -729,6 +776,18 @@ class ImageAnnotator(QMainWindow):
         self.slice_list.itemClicked.connect(self.switch_slice)
         self.image_list_layout.addWidget(QLabel("Slices:"))
         self.image_list_layout.addWidget(self.slice_list)
+        
+
+
+        
+    def qimage_to_numpy(self, qimage):
+        width = qimage.width()
+        height = qimage.height()
+        ptr = qimage.bits()
+        ptr.setsize(height * width * 4)
+        arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
+        return arr[:, :, :3]  # Slice off the alpha channel
+
 
     def open_images(self):
         file_names, _ = QFileDialog.getOpenFileNames(self, "Open Images", "", "Image Files (*.png *.jpg *.bmp *.tif *.tiff *.czi)")
@@ -888,21 +947,13 @@ class ImageAnnotator(QMainWindow):
         if not self.image_label.check_unsaved_changes():    
             return
         
-        # Check for unsaved changes
-        if self.image_label.temp_paint_mask is not None or self.image_label.temp_eraser_mask is not None:
-            reply = QMessageBox.question(self, 'Unsaved Changes',
-                                         "You have unsaved changes. Do you want to save them?",
-                                         QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
-            if reply == QMessageBox.Yes:
-                if self.image_label.temp_paint_mask is not None:
-                    self.image_label.commit_paint_annotation()
-                if self.image_label.temp_eraser_mask is not None:
-                    self.image_label.commit_eraser_changes()
-            elif reply == QMessageBox.Cancel:
-                return
-            else:
-                self.image_label.discard_paint_annotation()
-                self.image_label.discard_eraser_changes()
+        # Store the current item before checking temp annotations
+        current_item = self.image_list.currentItem()
+        
+        if not self.check_temp_annotations():
+            # If the user chooses not to discard temp annotations, revert the selection
+            self.image_list.setCurrentItem(current_item)
+            return
     
         self.save_current_annotations()
         self.image_label.clear_temp_sam_prediction()
@@ -942,7 +993,6 @@ class ImageAnnotator(QMainWindow):
                 self.clear_highlighted_annotation()
                 
                 self.image_label.highlighted_annotations.clear()  
-                self.update_annotation_list()
                 self.image_label.update()
                 self.image_label.reset_annotation_state()
                 self.image_label.clear_current_annotation()
@@ -1321,14 +1371,13 @@ class ImageAnnotator(QMainWindow):
         if isinstance(focused_widget, (QLineEdit, QTextEdit)):
             super().keyPressEvent(event)
             return
-
+    
         if event.key() == Qt.Key_F2:
-            # Launch the secret Snake game
             self.launch_snake_game()
         elif event.key() == Qt.Key_Delete:
             # Handle deletions
             if self.class_list.hasFocus() and self.class_list.currentItem():
-                self.delete_class()
+                self.delete_class(self.class_list.currentItem())
             elif self.annotation_list.hasFocus() and self.annotation_list.selectedItems():
                 self.delete_selected_annotations()
             elif self.image_list.hasFocus() and self.image_list.currentItem():
@@ -1345,13 +1394,35 @@ class ImageAnnotator(QMainWindow):
             else:
                 # Pass the event to the parent for default handling
                 super().keyPressEvent(event)
+        elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            # Handle accepting visible temporary classes
+            if self.has_visible_temp_classes():
+                self.accept_visible_temp_classes()
+            else:
+                super().keyPressEvent(event)
+        elif event.key() == Qt.Key_Escape:
+            # Handle rejecting visible temporary classes
+            if self.has_visible_temp_classes():
+                self.reject_visible_temp_classes()
+            else:
+                super().keyPressEvent(event)
         else:
             # Pass any other key events to the parent for default handling
             super().keyPressEvent(event)
+
+    def has_visible_temp_classes(self):
+        for i in range(self.class_list.count()):
+            item = self.class_list.item(i)
+            if item.text().startswith("Temp-") and item.checkState() == Qt.Checked:
+                return True
+        return False
      
     def launch_snake_game(self):
-        self.snake_game = SnakeGame()
+        #print("Launching Snake game")
+        if not hasattr(self, 'snake_game') or not self.snake_game.isVisible():
+            self.snake_game = SnakeGame()
         self.snake_game.show()
+        self.snake_game.setFocus()
         
     def import_annotations(self):
         if not self.image_label.check_unsaved_changes():    
@@ -1372,15 +1443,16 @@ class ImageAnnotator(QMainWindow):
             imported_annotations, image_info = import_coco_json(file_name, self.class_mapping)
         
         elif import_format == "YOLO v8":
-            directory = QFileDialog.getExistingDirectory(self, "Select YOLO v8 Dataset Directory")
-            if not directory:
-                print("No directory selected, returning")
+            yaml_file, _ = QFileDialog.getOpenFileName(self, "Select YOLO Dataset YAML", "", "YAML Files (*.yaml *.yml)")
+            if not yaml_file:
+                print("No YAML file selected, returning")
                 return
             
-            print(f"Selected directory: {directory}")
-            images_dir = os.path.join(directory, 'images')
+            print(f"Selected YAML file: {yaml_file}")
             try:
-                imported_annotations, image_info = process_import_format(import_format, directory, self.class_mapping)
+                imported_annotations, image_info = process_import_format(import_format, yaml_file, self.class_mapping)
+                yaml_dir = os.path.dirname(yaml_file)
+                images_dir = os.path.join(yaml_dir, 'train', 'images')
             except ValueError as e:
                 QMessageBox.warning(self, "Import Error", str(e))
                 return
@@ -1389,7 +1461,7 @@ class ImageAnnotator(QMainWindow):
             QMessageBox.warning(self, "Unsupported Format", f"The selected format '{import_format}' is not implemented for import.")
             return
     
-        print(f"JSON/YOLO directory: {json_dir if import_format == 'COCO JSON' else directory}")
+        print(f"JSON/YOLO directory: {json_dir if import_format == 'COCO JSON' else os.path.dirname(yaml_file)}")
         print(f"Images directory: {images_dir}")
         print(f"Imported annotations count: {len(imported_annotations)}")
         print(f"Image info count: {len(image_info)}")
@@ -1443,11 +1515,12 @@ class ImageAnnotator(QMainWindow):
                 self.all_annotations[image_name][category_name] = []
                 for i, ann in enumerate(category_annotations, start=1):
                     new_ann = {
-                        "segmentation": ann["segmentation"],
+                        "segmentation": ann.get("segmentation"),
+                        "bbox": ann.get("bbox"),
                         "category_id": ann["category_id"],
                         "category_name": category_name,
                         "number": i,
-                        "type": "polygon"  # Assuming all imported annotations are polygons
+                        "type": ann.get("type", "polygon")
                     }
                     self.all_annotations[image_name][category_name].append(new_ann)
     
@@ -1469,10 +1542,16 @@ class ImageAnnotator(QMainWindow):
         if self.image_list.count() > 0:
             self.image_list.setCurrentRow(0)
             self.switch_image(self.image_list.item(0))
-    
+            
+            
+        # Select the first class if available
+        if self.class_list.count() > 0:
+            self.class_list.setCurrentRow(0)
+            self.on_class_selected()
+        
         self.image_label.update()
     
-        message = f"Annotations have been imported successfully from {file_name if import_format == 'COCO JSON' else directory}.\n"
+        message = f"Annotations have been imported successfully from {file_name if import_format == 'COCO JSON' else yaml_file}.\n"
         message += f"{images_loaded} images were loaded from the 'images' directory.\n"
         if images_not_found:
             message += f"Annotations for {len(images_not_found)} missing images were ignored."
@@ -1574,26 +1653,26 @@ class ImageAnnotator(QMainWindow):
         for image_name in self.all_annotations.keys():
             self.update_annotation_list(image_name)
         self.update_annotation_list()  # Update for the current image/slice
-
+    
     def update_annotation_list(self, image_name=None):
         self.annotation_list.clear()
         current_name = image_name or self.current_slice or self.image_file_name
         annotations = self.all_annotations.get(current_name, {})
         for class_name, class_annotations in annotations.items():
-            color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
-            for annotation in class_annotations:
-                number = annotation.get('number', 0)
-                item_text = f"{class_name} - {number}"
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.UserRole, annotation)
-                item.setForeground(color)
-                self.annotation_list.addItem(item)
+            if not class_name.startswith("Temp-"):  # Only show non-temporary annotations
+                color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
+                for annotation in class_annotations:
+                    number = annotation.get('number', 0)
+                    area = calculate_area(annotation)
+                    item_text = f"{class_name} - {number:<3} Area: {area:.2f}"
+                    item = QListWidgetItem(item_text)
+                    item.setData(Qt.UserRole, annotation)
+                    item.setForeground(color)
+                    self.annotation_list.addItem(item)
         
         # Force the annotation list to repaint
         self.annotation_list.repaint()
-        
-        #print(f"Annotation list updated for {current_name}. Current annotations: {annotations}")
-                
+                    
     
     
     def update_slice_list_colors(self):
@@ -1822,6 +1901,8 @@ class ImageAnnotator(QMainWindow):
         image_augmenter_action.triggered.connect(self.show_image_augmenter)
         tools_menu.addAction(image_augmenter_action)
     
+
+    
         # Help Menu
         help_menu = menu_bar.addMenu("&Help")
     
@@ -1948,19 +2029,37 @@ class ImageAnnotator(QMainWindow):
         self.annotation_list.itemSelectionChanged.connect(self.update_highlighted_annotations)
         annotation_layout.addWidget(self.annotation_list)
         
-        #Delete and Merge annotation buttons
+        # Create a horizontal layout for the sort buttons
+        sort_button_layout = QHBoxLayout()
+        
+        self.sort_by_class_button = QPushButton("Sort by Class")
+        self.sort_by_class_button.clicked.connect(self.sort_annotations_by_class)
+        sort_button_layout.addWidget(self.sort_by_class_button)
+        
+        self.sort_by_area_button = QPushButton("Sort by Area")
+        self.sort_by_area_button.clicked.connect(self.sort_annotations_by_area)
+        sort_button_layout.addWidget(self.sort_by_area_button)
+        
+        # Add the sort button layout to the annotation layout
+        annotation_layout.addLayout(sort_button_layout)
+        
+        # Delete and Merge annotation buttons
         self.delete_button = QPushButton("Delete")
         self.delete_button.clicked.connect(self.delete_selected_annotations)
         self.merge_button = QPushButton("Merge")
         self.merge_button.clicked.connect(self.merge_annotations)
-    
-        # Create a horizontal layout for the buttons
+        self.change_class_button = QPushButton("Change Class")
+        self.change_class_button.clicked.connect(self.change_annotation_class)
+        
+        # Create a horizontal layout for the other buttons
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.delete_button)
         button_layout.addWidget(self.merge_button)
-    
+        button_layout.addWidget(self.change_class_button)
+        
         # Add the button layout to the annotation layout
         annotation_layout.addLayout(button_layout)
+           
     
         # Add export format selector 
         self.export_format_selector = QComboBox()
@@ -1980,6 +2079,53 @@ class ImageAnnotator(QMainWindow):
     
         # Add the annotation widget to the sidebar
         self.sidebar_layout.addWidget(annotation_widget)
+            
+    def sort_annotations_by_class(self):
+        current_name = self.current_slice or self.image_file_name
+        if current_name not in self.all_annotations:
+            QMessageBox.information(self, "No Annotations", "There are no annotations to sort for this image.")
+            return
+    
+        annotations = self.all_annotations[current_name]
+        sorted_annotations = []
+        for class_name in sorted(annotations.keys()):
+            if not class_name.startswith("Temp-"):  # Skip temporary classes
+                class_annotations = sorted(annotations[class_name], key=lambda x: x.get('number', 0))
+                sorted_annotations.extend(class_annotations)
+    
+        self.update_annotation_list_with_sorted(sorted_annotations)
+        
+    def sort_annotations_by_area(self):
+        current_name = self.current_slice or self.image_file_name
+        if current_name not in self.all_annotations:
+            QMessageBox.information(self, "No Annotations", "There are no annotations to sort for this image.")
+            return
+    
+        annotations = self.all_annotations[current_name]
+        sorted_annotations = []
+        for class_name in annotations.keys():
+            if not class_name.startswith("Temp-"):  # Skip temporary classes
+                class_annotations = sorted(annotations[class_name], key=lambda x: calculate_area(x), reverse=True)
+                sorted_annotations.extend(class_annotations)
+    
+        self.update_annotation_list_with_sorted(sorted_annotations)
+
+    def update_annotation_list_with_sorted(self, sorted_annotations):
+        self.annotation_list.clear()
+        for annotation in sorted_annotations:
+            class_name = annotation['category_name']
+            if not class_name.startswith("Temp-"):  # Only add non-temporary annotations
+                number = annotation.get('number', 0)
+                area = calculate_area(annotation)
+                item_text = f"{class_name} - {number:<3} Area: {area:.2f}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, annotation)
+                color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
+                item.setForeground(color)
+                self.annotation_list.addItem(item)
+    
+        self.image_label.update()
+    
         
     def change_sam_model(self, model_name):
         self.sam_utils.change_sam_model(model_name)
@@ -2265,22 +2411,49 @@ class ImageAnnotator(QMainWindow):
             
     def show_image_context_menu(self, position):
         menu = QMenu()
-        delete_action = menu.addAction("Remove Image")
-        redefine_dimensions_action = None
-    
         current_item = self.image_list.itemAt(position)
         if current_item:
             file_name = current_item.text()
-            file_path = self.image_paths.get(file_name)
-            if file_path and file_path.lower().endswith(('.tif', '.tiff', '.czi')):
+            delete_action = menu.addAction("Remove Image")
+            
+            if not self.is_multi_dimensional(file_name):
+                predict_action = menu.addAction("Predict using YOLO")
+            
+            if self.is_multi_dimensional(file_name):
                 redefine_dimensions_action = menu.addAction("Redefine Dimensions")
+            
+            action = menu.exec_(self.image_list.mapToGlobal(position))
+            
+            if action == delete_action:
+                self.remove_image()
+            elif not self.is_multi_dimensional(file_name) and action == predict_action:
+                self.predict_single_image(file_name)
+            elif self.is_multi_dimensional(file_name) and action == redefine_dimensions_action:
+                self.redefine_dimensions(file_name)
     
-        action = menu.exec_(self.image_list.mapToGlobal(position))
+    def is_multi_dimensional(self, file_name):
+        return file_name.lower().endswith(('.tif', '.tiff', '.czi'))
+    
+    def predict_single_image(self, file_name):
+        if self.is_multi_dimensional(file_name):
+            return  # Do nothing for multi-dimensional images
         
-        if action == delete_action:
-            self.remove_image()
-        elif action == redefine_dimensions_action:
-            self.redefine_dimensions(file_name)
+        if not self.yolo_trainer or not self.yolo_trainer.model:
+            QMessageBox.warning(self, "No Model", "Please load a YOLO model first from the YOLO > Prediction Settings > Load Model menu.")
+            return
+        
+        # Deactivate SAM tool before prediction
+        self.deactivate_sam_magic_wand()
+        
+        image_path = self.image_paths[file_name]
+        try:
+            results = self.yolo_trainer.predict(image_path)
+            self.process_yolo_results(results, file_name)
+        except Exception as e:
+            QMessageBox.warning(self, "Prediction Error", 
+                f"An error occurred during prediction: {str(e)}\n\n"
+                "This might be due to a mismatch between the model and the YAML file classes. "
+                "Please check that the YAML file corresponds to the loaded model.")
             
     def redefine_dimensions(self, file_name):
         file_path = self.image_paths.get(file_name)
@@ -2494,14 +2667,13 @@ class ImageAnnotator(QMainWindow):
         self.image_label.update()
         
     def update_highlighted_annotations(self):
-        if not self.image_label.check_unsaved_changes():
-            return
         selected_items = self.annotation_list.selectedItems()
         self.image_label.highlighted_annotations = [item.data(Qt.UserRole) for item in selected_items]
         self.image_label.update()  # Force a redraw of the image label
         
-        # Enable/disable merge button based on selection
+        # Enable/disable merge and change class buttons based on selection
         self.merge_button.setEnabled(len(selected_items) >= 2)
+        self.change_class_button.setEnabled(len(selected_items) > 0)
 
     def renumber_annotations(self):
         current_name = self.current_slice or self.image_file_name
@@ -2533,15 +2705,15 @@ class ImageAnnotator(QMainWindow):
                     if annotation in self.image_label.annotations[category_name]:
                         self.image_label.annotations[category_name].remove(annotation)
             
-            # Renumber remaining annotations
-            self.renumber_annotations()
-            
             # Update all_annotations
             current_name = self.current_slice or self.image_file_name
             self.all_annotations[current_name] = self.image_label.annotations
             
-            # Clear and repopulate the annotation list
-            self.update_annotation_list()
+            # Sort and update the annotation list based on the current sorting method
+            if self.current_sort_method == "area":
+                self.sort_annotations_by_area()
+            else:
+                self.sort_annotations_by_class()
             
             self.image_label.highlighted_annotations.clear()
             self.image_label.update()
@@ -2752,6 +2924,7 @@ class ImageAnnotator(QMainWindow):
     def add_class(self, class_name=None, color=None):
         if not self.image_label.check_unsaved_changes():    
             return
+    
         if class_name is None:
             while True:
                 class_name, ok = QInputDialog.getText(self, "Add Class", "Enter class name:")
@@ -2765,6 +2938,11 @@ class ImageAnnotator(QMainWindow):
                     QMessageBox.warning(self, "Duplicate Class", f"The class '{class_name}' already exists. Please choose a different name.")
                     continue
                 break
+        else:
+            # For programmatic addition (e.g., from YOLO predictions)
+            if class_name in self.class_mapping:
+                print(f"Class '{class_name}' already exists. Skipping addition.")
+                return
     
         if not isinstance(class_name, str):
             print(f"Warning: class_name is not a string. Converting {class_name} to string.")
@@ -2782,7 +2960,19 @@ class ImageAnnotator(QMainWindow):
     
         try:
             item = QListWidgetItem(class_name)
-            self.update_class_item_color(item, color)
+            
+            # Create a color indicator
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(color)
+            item.setIcon(QIcon(pixmap))
+            
+            # Set visibility state
+            item.setData(Qt.UserRole, True)
+            
+            # Set checkbox
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            
             self.class_list.addItem(item)
     
             self.class_list.setCurrentItem(item)
@@ -2795,31 +2985,123 @@ class ImageAnnotator(QMainWindow):
             traceback.print_exc()
 
 
-
     
     def update_class_item_color(self, item, color):
         pixmap = QPixmap(16, 16)
         pixmap.fill(color)
         item.setIcon(QIcon(pixmap))
         
+        
+        
     def update_class_list(self):
         self.class_list.clear()
         for class_name, color in self.image_label.class_colors.items():
             item = QListWidgetItem(class_name)
-            self.update_class_item_color(item, color)
+            
+            # Create a color indicator
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(color)
+            item.setIcon(QIcon(pixmap))
+            
+            # Store the visibility state
+            item.setData(Qt.UserRole, self.image_label.class_visibility.get(class_name, True))
+            
+            # Set checkbox
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) else Qt.Unchecked)
+            
             self.class_list.addItem(item)
-        
+    
         # Re-select the current class if it exists
         if self.current_class:
             items = self.class_list.findItems(self.current_class, Qt.MatchExactly)
             if items:
                 self.class_list.setCurrentItem(items[0])
         elif self.class_list.count() > 0:
-            # If no class is selected, select the last one
-            self.select_class(self.class_list.count() - 1)
+            # If no class is selected, select the first one
+            self.class_list.setCurrentItem(self.class_list.item(0))
     
         print(f"Updated class list with {self.class_list.count()} items")
+        
+    def update_class_selection(self):
+        for i in range(self.class_list.count()):
+            item = self.class_list.item(i)
+            if item.text() == self.current_class:
+                item.setSelected(True)
+            else:
+                item.setSelected(False)
+            
 
+    def toggle_class_visibility(self, item):
+        class_name = item.text()
+        is_visible = item.checkState() == Qt.Checked
+        self.image_label.set_class_visibility(class_name, is_visible)
+        item.setData(Qt.UserRole, is_visible)
+        self.image_label.update()
+    
+    
+        
+    def change_annotation_class(self):
+        selected_items = self.annotation_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "No Selection", "Please select one or more annotations to change class.")
+            return
+    
+        class_dialog = QDialog(self)
+        class_dialog.setWindowTitle("Change Class")
+        layout = QVBoxLayout(class_dialog)
+    
+        class_combo = QComboBox()
+        for class_name in self.class_mapping.keys():
+            class_combo.addItem(class_name)
+        layout.addWidget(class_combo)
+    
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(class_dialog.accept)
+        button_box.rejected.connect(class_dialog.reject)
+        layout.addWidget(button_box)
+    
+        if class_dialog.exec_() == QDialog.Accepted:
+            new_class = class_combo.currentText()
+            current_name = self.current_slice or self.image_file_name
+            
+            # Get the current maximum number for the new class
+            max_number = max([ann.get('number', 0) for ann in self.image_label.annotations.get(new_class, [])] + [0])
+            
+            for item in selected_items:
+                annotation = item.data(Qt.UserRole)
+                old_class = annotation['category_name']
+                
+                # Remove from old class
+                self.image_label.annotations[old_class].remove(annotation)
+                if not self.image_label.annotations[old_class]:
+                    del self.image_label.annotations[old_class]
+                
+                # Add to new class with updated number
+                annotation['category_name'] = new_class
+                annotation['category_id'] = self.class_mapping[new_class]
+                max_number += 1
+                annotation['number'] = max_number
+                if new_class not in self.image_label.annotations:
+                    self.image_label.annotations[new_class] = []
+                self.image_label.annotations[new_class].append(annotation)
+    
+            # Update all_annotations
+            self.all_annotations[current_name] = self.image_label.annotations
+    
+            # Renumber all annotations for consistency
+            self.renumber_annotations()
+    
+            self.update_annotation_list()
+            self.image_label.update()
+            self.save_current_annotations()
+            self.update_slice_list_colors()
+            self.auto_save()
+    
+            QMessageBox.information(self, "Class Changed", f"Selected annotations have been changed to class '{new_class}'.")
+
+
+        
     def toggle_tool(self):
         if not self.image_label.check_unsaved_changes():
             return
@@ -2827,6 +3109,16 @@ class ImageAnnotator(QMainWindow):
         sender = self.sender()
         if sender is None:
             sender = self.sam_magic_wand_button
+    
+        if not self.current_class:
+            QMessageBox.warning(self, "No Class Selected", "Please select a class before using annotation tools.")
+            sender.setChecked(False)
+            return
+    
+        if self.current_class and self.current_class.startswith("Temp-"):
+            QMessageBox.warning(self, "Invalid Selection", "Cannot use annotation tools with temporary classes.")
+            sender.setChecked(False)
+            return
     
         other_buttons = [btn for btn in self.tool_group.buttons() if btn != sender]
     
@@ -2853,15 +3145,6 @@ class ImageAnnotator(QMainWindow):
             elif sender == self.eraser_button:
                 self.image_label.current_tool = "eraser"
                 self.image_label.setFocus()  # Set focus on the image label
-            
-            # If a class is not selected, select the first one (if available)
-            if self.current_class is None and self.class_list.count() > 0:
-                self.class_list.setCurrentRow(0)
-                self.current_class = self.class_list.currentItem().text()
-            elif self.class_list.count() == 0:
-                QMessageBox.warning(self, "No Class Selected", "Please add a class before using annotation tools.")
-                sender.setChecked(False)
-                self.image_label.current_tool = None
         else:
             self.image_label.current_tool = None
             if sender == self.sam_magic_wand_button:
@@ -2883,7 +3166,6 @@ class ImageAnnotator(QMainWindow):
             super().wheelEvent(event)
 
 
-
     def update_ui_for_current_tool(self):
         # Disable finish_polygon_button if it still exists in your code
         if hasattr(self, 'finish_polygon_button'):
@@ -2892,132 +3174,195 @@ class ImageAnnotator(QMainWindow):
         # Update button states
         self.polygon_button.setChecked(self.image_label.current_tool == "polygon")
         self.rectangle_button.setChecked(self.image_label.current_tool == "rectangle")
-        self.sam_magic_wand_button.setChecked(self.image_label.current_tool == "sam_magic_wand")        
+        self.sam_magic_wand_button.setChecked(self.image_label.current_tool == "sam_magic_wand")
+        
+        # Enable/disable SAM button based on model availability
+        self.sam_magic_wand_button.setEnabled(self.current_sam_model is not None)
+    
+        # Disable all tools if no class is selected
+        tools_enabled = self.current_class is not None and not self.current_class.startswith("Temp-")
+        for button in self.tool_group.buttons():
+            button.setEnabled(tools_enabled)
+    
+        # Update cursor based on the current tool
+        if self.image_label.current_tool == "sam_magic_wand" and self.sam_magic_wand_button.isEnabled():
+            self.image_label.setCursor(Qt.CrossCursor)
+        else:
+            self.image_label.setCursor(Qt.ArrowCursor) 
 
-    def on_class_selected(self):
+    def on_class_selected(self, current=None, previous=None):
         if not self.image_label.check_unsaved_changes():
             return
-        selected_item = self.class_list.currentItem()
-        if selected_item:
-            self.current_class = selected_item.text()
+        
+        if current is None:
+            current = self.class_list.currentItem()
+        
+        if current:
+            self.current_class = current.text()
             print(f"Class selected: {self.current_class}")
+            
+            if self.current_class.startswith("Temp-"):
+                self.disable_annotation_tools()
+            else:
+                self.enable_annotation_tools()
+        else:
+            self.current_class = None
+            self.disable_annotation_tools()
+    
+    def disable_annotation_tools(self):
+        for button in self.tool_group.buttons():
+            button.setChecked(False)
+            button.setEnabled(False)
+        self.image_label.current_tool = None
+    
+    def enable_annotation_tools(self):
+        for button in self.tool_group.buttons():
+            button.setEnabled(True)
 
     def show_class_context_menu(self, position):
         menu = QMenu()
         rename_action = menu.addAction("Rename Class")
         change_color_action = menu.addAction("Change Color")
         delete_action = menu.addAction("Delete Class")
-
-        action = menu.exec_(self.class_list.mapToGlobal(position))
+    
+        item = self.class_list.itemAt(position)
+        if item:
+            action = menu.exec_(self.class_list.mapToGlobal(position))
+            
+            if action == rename_action:
+                self.rename_class(item)
+            elif action == change_color_action:
+                self.change_class_color(item)
+            elif action == delete_action:
+                self.delete_class(item)
+        else:
+            QMessageBox.warning(self, "No Selection", "Please select a class to perform actions.")
+            
+    def change_class_color(self, item):
+        class_name = item.text()
+        current_color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
+        color = QColorDialog.getColor(current_color, self, f"Select Color for {class_name}")
         
-        if action == rename_action:
-            self.rename_class()
-        elif action == change_color_action:
-            self.change_class_color()
-        elif action == delete_action:
-            self.delete_class()
+        if color.isValid():
+            self.image_label.class_colors[class_name] = color
             
-    def change_class_color(self):
-        current_item = self.class_list.currentItem()
-        if current_item:
-            class_name = current_item.text()
-            current_color = self.image_label.class_colors.get(class_name, QColor(Qt.white))
-            color = QColorDialog.getColor(current_color, self, f"Select Color for {class_name}")
+            # Update the color indicator
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(color)
+            item.setIcon(QIcon(pixmap))
             
-            if color.isValid():
-                self.image_label.class_colors[class_name] = color
-                self.update_class_item_color(current_item, color)
-                self.update_annotation_list_colors(class_name, color)
-                self.image_label.update()
-                self.auto_save()  # Auto-save after changing class color
+            self.update_annotation_list_colors(class_name, color)
+            self.image_label.update()
+            self.auto_save()  # Auto-save after changing class color
                 
 
     
-
-    def rename_class(self):
-        current_item = self.class_list.currentItem()
-        if current_item:
-            old_name = current_item.text()
-            new_name, ok = QInputDialog.getText(self, "Rename Class", "Enter new class name:", text=old_name)
-            if ok and new_name and new_name != old_name:
-                # Update class mapping
+    def rename_class(self, item):
+        old_name = item.text()
+        new_name, ok = QInputDialog.getText(self, "Rename Class", "Enter new class name:", text=old_name)
+        if ok and new_name and new_name != old_name:
+            # Update class mapping
+            if old_name in self.class_mapping:
                 old_id = self.class_mapping[old_name]
                 self.class_mapping[new_name] = old_id
                 del self.class_mapping[old_name]
+            else:
+                print(f"Warning: Class '{old_name}' not found in class_mapping")
+                return
     
-                # Update class colors
+            # Update class colors
+            if old_name in self.image_label.class_colors:
                 self.image_label.class_colors[new_name] = self.image_label.class_colors.pop(old_name)
+            else:
+                print(f"Warning: Class '{old_name}' not found in class_colors")
+                return
     
-                # Update annotations for all images and slices
-                for image_name, image_annotations in self.all_annotations.items():
-                    if old_name in image_annotations:
-                        image_annotations[new_name] = image_annotations.pop(old_name)
-                        for annotation in image_annotations[new_name]:
-                            annotation['category_name'] = new_name
-    
-                # Update current image annotations
-                if old_name in self.image_label.annotations:
-                    self.image_label.annotations[new_name] = self.image_label.annotations.pop(old_name)
-                    for annotation in self.image_label.annotations[new_name]:
+            # Update annotations for all images and slices
+            for image_name, image_annotations in self.all_annotations.items():
+                if old_name in image_annotations:
+                    image_annotations[new_name] = image_annotations.pop(old_name)
+                    for annotation in image_annotations[new_name]:
                         annotation['category_name'] = new_name
     
-                # Update current class if it's the renamed one
-                if self.current_class == old_name:
-                    self.current_class = new_name
+            # Update current image annotations
+            if old_name in self.image_label.annotations:
+                self.image_label.annotations[new_name] = self.image_label.annotations.pop(old_name)
+                for annotation in self.image_label.annotations[new_name]:
+                    annotation['category_name'] = new_name
     
-                # Update annotation list for all images and slices
-                self.update_all_annotation_lists()
+            # Update current class if it's the renamed one
+            if self.current_class == old_name:
+                self.current_class = new_name
     
-                # Update class list
-                current_item.setText(new_name)
+            # Update annotation list for all images and slices
+            self.update_all_annotation_lists()
     
-                # Update the image label
-                self.image_label.update()
-                self.auto_save()  # Auto-save after renaming a class
+            # Update class list
+            item.setText(new_name)
     
-                #print(f"Class renamed from '{old_name}' to '{new_name}'")
-
-    def delete_class(self):
-        current_item = self.class_list.currentItem()
-        if current_item:
-            class_name = current_item.text()
+            # Update the image label
+            self.image_label.update()
+            self.auto_save()  # Auto-save after renaming a class
+    
+            print(f"Class renamed from '{old_name}' to '{new_name}'")
+    
+    def delete_class(self, item=None):
+        if item is None:
+            item = self.class_list.currentItem()
+        
+        if item is None:
+            QMessageBox.warning(self, "No Selection", "Please select a class to delete.")
+            return
+    
+        class_name = item.text()
+        
+        # Show confirmation dialog
+        reply = QMessageBox.question(self, 'Delete Class',
+                                     f"Are you sure you want to delete the class '{class_name}'?\n\n"
+                                     "This will remove all annotations associated with this class.",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            # Proceed with deletion
+            # Remove class color
+            self.image_label.class_colors.pop(class_name, None)
             
-            # Show confirmation dialog
-            reply = QMessageBox.question(self, 'Delete Class',
-                                         f"Are you sure you want to delete the class '{class_name}'?\n\n"
-                                         "This will remove all annotations associated with this class.",
-                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            # Remove class from mapping
+            self.class_mapping.pop(class_name, None)
             
-            if reply == QMessageBox.Yes:
-                # Proceed with deletion
-                # Remove class color
-                self.image_label.class_colors.pop(class_name, None)
-                
-                # Remove class from mapping
-                del self.class_mapping[class_name]
-                
-                # Remove annotations for this class from all images
-                for image_annotations in self.all_annotations.values():
-                    image_annotations.pop(class_name, None)
-                
-                # Remove annotations for this class from current image
-                self.image_label.annotations.pop(class_name, None)
-                
-                # Update annotation list
-                self.update_annotation_list()
+            # Remove annotations for this class from all images
+            for image_annotations in self.all_annotations.values():
+                image_annotations.pop(class_name, None)
+            
+            # Remove annotations for this class from current image
+            self.image_label.annotations.pop(class_name, None)
+            
+            # Update annotation list
+            self.update_annotation_list()
     
-                # Remove class from list
-                self.class_list.takeItem(self.class_list.row(current_item))
-                
-                self.image_label.update()
-                
-                # Inform the user
-                QMessageBox.information(self, "Class Deleted", f"The class '{class_name}' has been deleted.")
-                self.auto_save()  # Auto-save after deleting a class
-            else:
-                # User cancelled the operation
-                QMessageBox.information(self, "Deletion Cancelled", "The class deletion was cancelled.")
-
+            # Remove class from list
+            row = self.class_list.row(item)
+            self.class_list.takeItem(row)
+            
+            # Update current_class
+            if self.current_class == class_name:
+                self.current_class = None
+                if self.class_list.count() > 0:
+                    self.class_list.setCurrentRow(0)
+                    self.on_class_selected(self.class_list.item(0))
+                else:
+                    self.disable_annotation_tools()
+            
+            self.image_label.update()
+            
+            # Inform the user
+            QMessageBox.information(self, "Class Deleted", f"The class '{class_name}' has been deleted.")
+            self.auto_save()  # Auto-save after deleting a class
+        else:
+            # User cancelled the operation
+            QMessageBox.information(self, "Deletion Cancelled", "The class deletion was cancelled.")
+            
+        
     def finish_polygon(self):
         if self.image_label.current_tool == "polygon" and len(self.image_label.current_annotation) > 2:
             if self.current_class is None:
@@ -3064,7 +3409,9 @@ class ImageAnnotator(QMainWindow):
         annotations = self.image_label.annotations.get(class_name, [])
         number = max([ann.get('number', 0) for ann in annotations] + [0]) + 1
         annotation['number'] = number
-        item_text = f"{class_name} - {number}"
+        area = calculate_area(annotation)
+        item_text = f"{class_name} - {number:<3} Area: {area:.2f}"
+        
         item = QListWidgetItem(item_text)
         item.setData(Qt.UserRole, annotation)
         item.setForeground(color)
@@ -3143,3 +3490,478 @@ class ImageAnnotator(QMainWindow):
         self.update_annotation_list()
         self.image_label.update()
 
+    def highlight_annotation_in_list(self, annotation):
+        for i in range(self.annotation_list.count()):
+            item = self.annotation_list.item(i)
+            if item.data(Qt.UserRole) == annotation:
+                self.annotation_list.setCurrentItem(item)
+                break
+
+    def select_annotation_in_list(self, annotation):
+        for i in range(self.annotation_list.count()):
+            item = self.annotation_list.item(i)
+            if item.data(Qt.UserRole) == annotation:
+                self.annotation_list.setCurrentItem(item)
+                break
+            
+################################################################
+            
+    def setup_yolo_menu(self):
+        yolo_menu = self.menuBar().addMenu("&YOLO (beta)")
+        
+        # Training submenu
+        training_submenu = yolo_menu.addMenu("Training")
+        
+        load_pretrained_action = QAction("Load Pre-trained Model", self)
+        load_pretrained_action.triggered.connect(self.load_yolo_model)
+        training_submenu.addAction(load_pretrained_action)
+    
+        prepare_data_action = QAction("Prepare YOLO Dataset", self)
+        prepare_data_action.triggered.connect(self.prepare_yolo_dataset)
+        training_submenu.addAction(prepare_data_action)
+    
+        load_yaml_action = QAction("Load Dataset YAML", self)
+        load_yaml_action.triggered.connect(self.load_yolo_yaml)
+        training_submenu.addAction(load_yaml_action)
+    
+        train_action = QAction("Train Model", self)
+        train_action.triggered.connect(self.show_train_dialog)
+        training_submenu.addAction(train_action)
+  
+        save_model_action = QAction("Save Model", self)
+        save_model_action.triggered.connect(self.save_yolo_model)
+        training_submenu.addAction(save_model_action)
+    
+        # Prediction Settings submenu
+        prediction_submenu = yolo_menu.addMenu("Prediction Settings")
+        
+        load_model_action = QAction("Load Model", self)
+        load_model_action.triggered.connect(self.load_prediction_model)
+        prediction_submenu.addAction(load_model_action)
+    
+        set_threshold_action = QAction("Set Confidence Threshold", self)
+        set_threshold_action.triggered.connect(self.set_confidence_threshold)
+        prediction_submenu.addAction(set_threshold_action)
+    
+
+
+        
+        
+
+    def load_yolo_model(self):
+        if not hasattr(self, 'current_project_dir'):
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+            return
+        
+        if not self.yolo_trainer:
+            self.initialize_yolo_trainer()
+        
+        if self.yolo_trainer.load_model():
+            QMessageBox.information(self, "Model Loaded", "YOLO model loaded successfully.")
+        else:
+            QMessageBox.warning(self, "Load Cancelled", "Model loading was cancelled.")
+            
+    def prepare_yolo_dataset(self):
+        if not hasattr(self, 'current_project_file'):
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+            return
+    
+        if not self.yolo_trainer:
+            self.initialize_yolo_trainer()
+    
+        try:
+            yaml_path = self.yolo_trainer.prepare_dataset()
+            QMessageBox.information(self, "Dataset Prepared", f"YOLO dataset prepared successfully. YAML file: {yaml_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred while preparing the dataset: {str(e)}")
+
+
+    def load_yolo_yaml(self):
+        if not hasattr(self, 'current_project_file'):
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+            return
+    
+        if not self.yolo_trainer:
+            self.initialize_yolo_trainer()
+    
+        try:
+            if self.yolo_trainer.load_yaml():
+                QMessageBox.information(self, "YAML Loaded", "Dataset YAML loaded successfully.")
+            else:
+                QMessageBox.warning(self, "Load Cancelled", "YAML loading was cancelled.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred while loading the YAML file: {str(e)}")
+        
+
+    def save_yolo_model(self):
+        if not hasattr(self, 'current_project_file'):
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+            return
+    
+        if not self.yolo_trainer or not self.yolo_trainer.model:
+            QMessageBox.warning(self, "No Model", "Please train or load a YOLO model first.")
+            return
+    
+        try:
+            if self.yolo_trainer.save_model():
+                QMessageBox.information(self, "Model Saved", "YOLO model saved successfully.")
+            else:
+                QMessageBox.warning(self, "Save Cancelled", "Model saving was cancelled.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"An error occurred while saving the model: {str(e)}")
+
+    def load_prediction_model(self):
+        if not hasattr(self, 'current_project_file'):
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+            return
+    
+        if not self.yolo_trainer:
+            self.initialize_yolo_trainer()
+    
+        dialog = LoadPredictionModelDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            model_path = dialog.model_path
+            yaml_path = dialog.yaml_path
+            if model_path and yaml_path:
+                try:
+                    result, message = self.yolo_trainer.load_prediction_model(model_path, yaml_path)
+                    if result:
+                        QMessageBox.information(self, "Model Loaded", "YOLO model and YAML file loaded successfully for prediction.")
+                        if message:
+                            QMessageBox.warning(self, "Class Mismatch Warning", message)
+                    else:
+                        QMessageBox.critical(self, "Error Loading Model", f"Could not load the model or YAML file: {message}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+            else:
+                QMessageBox.warning(self, "Files Required", "Both model and YAML files are required for prediction.")
+
+    def show_train_dialog(self):
+        if not self.yolo_trainer:
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+            return
+        if not self.yolo_trainer.model:
+            QMessageBox.warning(self, "No Model", "Please load a pre-trained model first.")
+            return
+        if not self.yolo_trainer.yaml_path:
+            QMessageBox.warning(self, "No Dataset", "Please prepare or load a dataset YAML first.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Train YOLO Model")
+        layout = QVBoxLayout()
+
+        epochs_label = QLabel("Number of Epochs:")
+        epochs_input = QLineEdit("100")
+        layout.addWidget(epochs_label)
+        layout.addWidget(epochs_input)
+
+        imgsz_label = QLabel("Image Size:")
+        imgsz_input = QLineEdit("640")
+        layout.addWidget(imgsz_label)
+        layout.addWidget(imgsz_input)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        dialog.setLayout(layout)
+
+        if dialog.exec_() == QDialog.Accepted:
+            epochs = int(epochs_input.text())
+            imgsz = int(imgsz_input.text())
+            self.start_training(epochs, imgsz)
+
+    def initialize_yolo_trainer(self):
+        if hasattr(self, 'current_project_dir'):
+            self.yolo_trainer = YOLOTrainer(self.current_project_dir, self)
+        else:
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+
+    def start_training(self, epochs, imgsz):
+        if not hasattr(self, 'training_dialog'):
+            self.training_dialog = TrainingInfoDialog(self)
+        self.training_dialog.show()
+    
+        self.yolo_trainer.progress_signal.connect(self.training_dialog.update_info)
+        self.yolo_trainer.set_progress_callback(self.training_dialog.update_info)
+        self.training_dialog.stop_signal.connect(self.yolo_trainer.stop_training_signal)
+    
+        self.training_thread = TrainingThread(self.yolo_trainer, epochs, imgsz)
+        self.training_thread.finished.connect(self.training_finished)
+        self.training_thread.start()
+
+    def training_finished(self, results):
+        self.training_dialog.stop_button.setEnabled(True)
+        self.training_dialog.stop_button.setText("Stop Training")
+        self.yolo_trainer.progress_signal.disconnect(self.training_dialog.update_info)
+        self.training_dialog.stop_signal.disconnect(self.yolo_trainer.stop_training_signal)
+
+        if isinstance(results, str):
+            QMessageBox.critical(self, "Training Error", f"An error occurred during training: {results}")
+        else:
+            QMessageBox.information(self, "Training Complete", "YOLO model training completed successfully.")
+
+    def set_confidence_threshold(self):
+        if not hasattr(self, 'current_project_file'):
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+            return
+    
+        if not self.yolo_trainer:
+            self.initialize_yolo_trainer()
+    
+        current_threshold = self.yolo_trainer.conf_threshold
+        new_threshold, ok = QInputDialog.getDouble(self, "Set Confidence Threshold", 
+                                                   "Enter confidence threshold (0-1):", 
+                                                   current_threshold, 0, 1, 2)
+        if ok:
+            self.yolo_trainer.set_conf_threshold(new_threshold)
+            QMessageBox.information(self, "Threshold Updated", f"Confidence threshold set to {new_threshold}")
+
+    def show_predict_dialog(self):
+        if not self.yolo_trainer or not self.yolo_trainer.model:
+            QMessageBox.warning(self, "No Model", "Please load a YOLO model first.")
+            return
+    
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Predict with YOLO Model")
+        layout = QVBoxLayout()
+    
+        image_list = QListWidget()
+        for image_name in self.image_paths.keys():
+            image_list.addItem(image_name)
+        layout.addWidget(QLabel("Select images for prediction:"))
+        layout.addWidget(image_list)
+    
+        conf_label = QLabel("Confidence Threshold:")
+        conf_input = QDoubleSpinBox()
+        conf_input.setRange(0, 1)
+        conf_input.setSingleStep(0.01)
+        conf_input.setValue(self.yolo_trainer.conf_threshold)
+        layout.addWidget(conf_label)
+        layout.addWidget(conf_input)
+    
+        button_box = QDialogButtonBox(QDialogButtonBox.Cancel)
+        predict_button = QPushButton("Predict")
+        button_box.addButton(predict_button, QDialogButtonBox.AcceptRole)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+    
+        dialog.setLayout(layout)
+    
+        if dialog.exec_() == QDialog.Accepted:
+            selected_images = [item.text() for item in image_list.selectedItems()]
+            conf = conf_input.value()
+            self.yolo_trainer.set_conf_threshold(conf)
+            self.run_predictions(selected_images)
+
+    def run_predictions(self, selected_images):
+        for image_name in selected_images:
+            image_path = self.image_paths[image_name]
+            results = self.yolo_trainer.predict(image_path)
+            self.process_yolo_results(results, image_name)
+
+    def process_yolo_results(self, results, image_name):
+        image_path = self.image_paths[image_name]
+        image = cv2.imread(image_path)
+        if image is None:
+            QMessageBox.warning(self, "Error", f"Failed to load image: {image_name}")
+            return
+        original_height, original_width = image.shape[:2]
+    
+        temp_annotations = {}
+    
+        try:
+            results, input_size, original_size = results  # Unpack the results, input size, and original size
+            input_height, input_width = input_size
+            orig_height, orig_width = original_size
+    
+            scale_x = original_width / orig_width
+            scale_y = original_height / orig_height
+    
+            for result in results:
+                boxes = result.boxes
+                masks = result.masks
+    
+                if masks is None:
+                    print(f"No masks found for {image_name}")
+                    continue
+    
+                for mask, box in zip(masks, boxes):
+                    try:
+                        class_id = int(box.cls)
+                        class_name = self.yolo_trainer.class_names[class_id]
+                        score = float(box.conf)
+    
+                        mask_array = mask.data.cpu().numpy()[0]
+                        # Resize mask to original image size
+                        mask_array = cv2.resize(mask_array, (orig_width, orig_height))
+                        contours, _ = cv2.findContours((mask_array > 0.5).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        
+                        if contours:
+                            epsilon = 0.005 * cv2.arcLength(contours[0], True)
+                            approx = cv2.approxPolyDP(contours[0], epsilon, True)
+                            polygon = approx.flatten().tolist()
+    
+                            # Scale the polygon coordinates
+                            scaled_polygon = []
+                            for i in range(0, len(polygon), 2):
+                                x = polygon[i] * scale_x
+                                y = polygon[i+1] * scale_y
+                                scaled_polygon.extend([x, y])
+    
+                            temp_class_name = f"Temp-{class_name}"
+                            if temp_class_name not in temp_annotations:
+                                temp_annotations[temp_class_name] = []
+    
+                            temp_annotation = {
+                                "segmentation": scaled_polygon,
+                                "category_name": temp_class_name,
+                                "score": score,
+                                "temp": True
+                            }
+                            temp_annotations[temp_class_name].append(temp_annotation)
+                    except IndexError:
+                        QMessageBox.warning(self, "Class Mismatch", 
+                            "There is a mismatch between the model and the YAML file classes. "
+                            "Please check that the YAML file corresponds to the loaded model.")
+                        return
+    
+        except Exception as e:
+            QMessageBox.warning(self, "Prediction Error", 
+                f"An error occurred during prediction: {str(e)}\n\n"
+                "This might be due to a mismatch between the model and the YAML file classes. "
+                "Please check that the YAML file corresponds to the loaded model.")
+            return
+    
+        self.add_temp_classes(temp_annotations)
+        self.update_class_list()
+        self.image_label.update()
+    
+        if temp_annotations:
+            total_predictions = sum(len(anns) for anns in temp_annotations.values())
+            QMessageBox.information(self, "Review Predictions", 
+                                    f"Found {total_predictions} predictions for {len(temp_annotations)} classes.\n"
+                                    "Use class visibility checkboxes to review.\n"
+                                    "Press Enter to accept or Esc to reject visible predictions.")
+        else:
+            QMessageBox.information(self, "No Predictions", 
+                                    "No predictions were found for this image.")
+        
+        # Deactivate SAM tool
+        self.deactivate_sam_magic_wand()
+            
+        
+        
+    def add_temp_classes(self, temp_annotations):
+        for temp_class_name, annotations in temp_annotations.items():
+            if temp_class_name not in self.image_label.class_colors:
+                color = QColor(Qt.GlobalColor(len(self.image_label.class_colors) % 16 + 7))
+                self.image_label.class_colors[temp_class_name] = color
+            self.image_label.annotations[temp_class_name] = annotations
+        
+        self.update_class_list()
+        
+    def verify_current_class(self):
+        if self.current_class is None or self.current_class not in self.class_mapping:
+            if self.class_list.count() > 0:
+                self.class_list.setCurrentRow(0)
+                self.on_class_selected(self.class_list.item(0))
+            else:
+                self.current_class = None
+                self.disable_annotation_tools()
+            
+    def accept_visible_temp_classes(self):
+        visible_temp_classes = [item.text() for item in self.class_list.findItems("Temp-*", Qt.MatchWildcard) 
+                                if item.checkState() == Qt.Checked]
+        
+        for temp_class_name in visible_temp_classes:
+            permanent_class_name = temp_class_name[5:]  # Remove "Temp-" prefix
+            if permanent_class_name not in self.image_label.annotations:
+                self.add_class(permanent_class_name, self.image_label.class_colors[temp_class_name])
+            
+            # Get the current maximum number for this class
+            current_max = max([ann.get('number', 0) for ann in self.image_label.annotations.get(permanent_class_name, [])] + [0])
+            
+            for annotation in self.image_label.annotations[temp_class_name]:
+                current_max += 1
+                annotation['category_name'] = permanent_class_name
+                annotation['number'] = current_max
+                self.image_label.annotations.setdefault(permanent_class_name, []).append(annotation)
+            
+            del self.image_label.annotations[temp_class_name]
+            del self.image_label.class_colors[temp_class_name]
+        
+        self.update_class_list()
+        current_name = self.current_slice or self.image_file_name
+        self.all_annotations[current_name] = self.image_label.annotations
+        self.update_annotation_list()
+        self.image_label.update()
+        self.save_current_annotations()
+    
+        # Select the first primary class
+        self.select_first_primary_class()
+        self.verify_current_class()
+    
+        QMessageBox.information(self, "Annotations Accepted", "Temporary annotations have been accepted and added to the permanent classes.")
+    
+    def select_first_primary_class(self):
+        for i in range(self.class_list.count()):
+            item = self.class_list.item(i)
+            if not item.text().startswith("Temp-"):
+                self.class_list.setCurrentItem(item)
+                self.on_class_selected(item)
+                break
+        
+    def reject_visible_temp_classes(self):
+        visible_temp_classes = [item.text() for item in self.class_list.findItems("Temp-*", Qt.MatchWildcard) 
+                                if item.checkState() == Qt.Checked]
+        
+        for temp_class_name in visible_temp_classes:
+            if temp_class_name in self.image_label.annotations:
+                del self.image_label.annotations[temp_class_name]
+            if temp_class_name in self.image_label.class_colors:
+                del self.image_label.class_colors[temp_class_name]
+        
+        self.update_class_list()
+        self.image_label.update()
+    
+    def is_class_visible(self, class_name):
+        items = self.class_list.findItems(class_name, Qt.MatchExactly)
+        if items:
+            return items[0].checkState() == Qt.Checked
+        return False
+    
+    def check_temp_annotations(self):
+        temp_classes = [class_name for class_name in self.image_label.annotations.keys() if class_name.startswith("Temp-")]
+        if temp_classes:
+            reply = QMessageBox.question(self, 'Temporary Annotations',
+                                         "There are temporary annotations that will be discarded. Do you want to continue?",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                for temp_class in temp_classes:
+                    del self.image_label.annotations[temp_class]
+                    del self.image_label.class_colors[temp_class]
+                self.update_class_list()
+                self.update_annotation_list()
+                return True
+            return False
+        return True
+
+    def remove_all_temp_annotations(self):
+        for image_name in list(self.all_annotations.keys()):
+            for class_name in list(self.all_annotations[image_name].keys()):
+                if class_name.startswith("Temp-"):
+                    del self.all_annotations[image_name][class_name]
+            if not self.all_annotations[image_name]:
+                del self.all_annotations[image_name]
+        
+        for class_name in list(self.image_label.class_colors.keys()):
+            if class_name.startswith("Temp-"):
+                del self.image_label.class_colors[class_name]
+        
+        self.update_class_list()
+        self.update_annotation_list()
+        self.image_label.update()

@@ -12,13 +12,10 @@ If you find this project helpful, consider supporting it:
 
 [![Donate](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate/?business=FGQL3CNJGJP9C&no_recurring=0&item_name=If+you+find+this+Image+Annotator+project+helpful%2C+consider+supporting+it%3A&currency_code=USD)
 
-
-
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
 ## Watch the demo (of v0.5.9):
 [![Watch the demo video](https://img.youtube.com/vi/BupyYUw2boI/maxresdefault.jpg)](https://youtu.be/BupyYUw2boI)
-
 
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
@@ -27,13 +24,13 @@ Dr. Sreenivas Bhattiprolu
 
 - Semi-automated annotations with SAM-2 assistance (Segment Anything Model) — Because who doesn't love a helpful AI sidekick?
 - Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge.
-- New: Paint brush and Eraser tools with adjustable pen sizes (use - and = on your keyboard)
+- Paint brush and Eraser tools with adjustable pen sizes (use - and = on your keyboard)
 - Merge annotations - For when SAM-2's guesswork needs a little human touch. 
 - Save and load projects for continued work.
-- New: Save As... and Autosave functionality. 
-- New: A secret game, for when you are bored.
+- Save As... and Autosave functionality. 
+- A secret game, for when you are bored.
 - Import existing COCO JSON annotations with images.
-- Export annotations to various formats (COCO JSON, YOLO v8, Labeled images, Semantic labels, Pascal VOC).
+- Export annotations to various formats (COCO JSON, YOLO v8/v11, Labeled images, Semantic labels, Pascal VOC).
 - Handle multi-dimensional images (TIFF stacks and CZI files).
 - Zoom and pan for detailed annotations.
 - Support for multiple classes with customizable colors.
@@ -41,6 +38,11 @@ Dr. Sreenivas Bhattiprolu
 - Change the application font size on the fly — Make your annotations as big or small as your caffeine level requires.
 - Dark mode for those late-night annotation marathons — Who needs sleep when you have dark mode?
 - Pick appropriate pre-trained SAM2 model for flexible and improved semi-automated annotations.
+- Change the class of an annotation to a different class.
+- Turn visibility of a class ON and OFF.
+- YOLO (beta) training using current annotations and loading trained model to segment images.
+- Area measurements for annotations displayed next to the Annotation name.
+- Sort annotations by name/number or area.
 - Additional supporting tools:
   - Annotation statistics for current annotations
   - COCO JSON combiner
@@ -50,7 +52,7 @@ Dr. Sreenivas Bhattiprolu
   - Image augmenter
 
 ## Operating System Requirements
-This application is built using PyQt5 and has been tested on macOS and Windows. It may experience compatibility issues on Linux systems, particularly related to the XCB plugin for PyQt5.
+This application is built using PyQt5 and has been tested on macOS and Windows. It may experience compatibility issues on Linux systems, particularly related to the XCB plugin for PyQt5. Extensive testing on Linux systems has not been done yet.
 
 ## Installation
 
@@ -92,14 +94,20 @@ The application uses the Ultralytics library, so there's no need to separately i
      - When SAM2 auto-detect partial objects, use polygon or paint brush tools to manually define the remaining region and use the Merge tool to combine both annotations into one.
      - When SAM2 over-annotates objects, extending the annotation beyond object's boundaries, use the Eraser tool to clean up the edges. 
      - Both paint brush and eraser tools can be adjusted for pen size by using - or = keys on your keyboard.  
-
    - Edit existing annotations by double-clicking on them.
    - Edit existing annotations using the Eraser tool. Adjust the eraser size by using - or = keys on your keyboard.
    - Merge connected annotations by selecting them from the Annotations list and clicking the Merge button. 
+   - Change the class of an annotation to a different class.
+   - Turn visibility of a class ON and OFF.
+   - Use YOLO (beta) training with current annotations and load the trained model to segment images and convert segmentations to annotations. (Currently not implemented for slices or stacks, just single images.)
+   - Accept/reject one or select class predictions at a time to add them as annotations.
+   - View area measurements for annotations displayed next to the Annotation name.
+   - Sort annotations by name/number or area.
    - Save your project using "Save Project" or Ctrl+S. Alternatively, you can use Save As... to save the project with a different name. 
    - Use "Open Project" or Ctrl+O to load a previously saved project.
    - Click "Import Annotations with Images" to load existing COCO JSON annotations along with their images.
-   - Use "Export Annotations" to save annotations in various formats (COCO JSON, YOLO v8, Labeled images, Semantic labels, Pascal VOC).
+   - Use "Export Annotations" to save annotations in various formats (COCO JSON, YOLO v8/v11, Labeled images, Semantic labels, Pascal VOC).
+     - Note: YOLO export (and import) is now compatible with YOLOv11 structure. (Project directory includes data.yaml, train, and valid directories, with train and valid both having images and labels subdirectories.)
    - Access additional tools under the Tools menu bar:
      - Annotation Statistics
      - COCO JSON Combiner
@@ -123,6 +131,13 @@ The application uses the Ultralytics library, so there's no need to separately i
    - Esc: Cancel current annotation, exit edit mode, or exit SAM-assisted annotation
    - Enter: Finish current annotation, exit edit mode, or accept SAM-generated mask
    - Up/Down Arrow Keys: Navigate through slices in multi-dimensional images
+   - - and =: Adjust pen size for paint brush and eraser tools
+
+## Known Issues and Bug Fixes
+
+- The application may not work correctly on Linux systems. Extensive testing has not been done yet.
+- When loading a YOLO model trained on different classes compared to the loaded YAML file, the application now gives a message to the user about the mismatch instead of crashing.
+- Various other bugs have been addressed to improve overall stability and performance.
 
 ## Development
 

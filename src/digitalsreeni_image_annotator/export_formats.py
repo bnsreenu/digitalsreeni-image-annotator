@@ -144,11 +144,12 @@ def create_coco_annotation(ann, image_id, annotation_id, class_name, class_mappi
 
 
 def export_yolo_v8(all_annotations, class_mapping, image_paths, slices, image_slices, output_dir):
-    # Create output directories for labels and images
-    labels_dir = os.path.join(output_dir, 'labels')
-    images_dir = os.path.join(output_dir, 'images')
-    os.makedirs(labels_dir, exist_ok=True)
-    os.makedirs(images_dir, exist_ok=True)
+    # Create output directories
+    train_dir = os.path.join(output_dir, 'train')
+    valid_dir = os.path.join(output_dir, 'valid')
+    for dir_path in [train_dir, valid_dir]:
+        os.makedirs(os.path.join(dir_path, 'images'), exist_ok=True)
+        os.makedirs(os.path.join(dir_path, 'labels'), exist_ok=True)
 
     # Create a mapping of class names to YOLO indices
     class_to_index = {name: i for i, name in enumerate(class_mapping.keys())}
@@ -161,53 +162,37 @@ def export_yolo_v8(all_annotations, class_mapping, image_paths, slices, image_sl
         if not annotations:
             continue
 
-        # Check if it's a slice (either in slice_map or has underscores and no file extension)
-        is_slice = image_name in slice_map or ('_' in image_name and '.' not in image_name)
-        
-        if is_slice:
-            qimage = slice_map.get(image_name)
+        # For simplicity, we'll put all data in the train directory
+        images_dir = os.path.join(train_dir, 'images')
+        labels_dir = os.path.join(train_dir, 'labels')
+
+        # Handle image saving (similar to before, but adjusted for new directory structure)
+        if image_name in slice_map or ('_' in image_name and '.' not in image_name):
+            # Handle slice images
+            qimage = slice_map.get(image_name) or next((s[1] for s in slices if s[0] == image_name), None)
             if qimage is None:
-                # If the slice is not in slice_map, it might be a CZI slice or a TIFF slice
-                matching_slices = [s for s in slices if s[0] == image_name]
-                if matching_slices:
-                    qimage = matching_slices[0][1]
-                else:
-                    # Check in image_slices
-                    for stack_slices in image_slices.values():
-                        matching_slices = [s for s in stack_slices if s[0] == image_name]
-                        if matching_slices:
-                            qimage = matching_slices[0][1]
-                            break
-                if qimage is None:
-                    print(f"No image data found for slice {image_name}, skipping")
-                    continue
+                for stack_slices in image_slices.values():
+                    qimage = next((s[1] for s in stack_slices if s[0] == image_name), None)
+                    if qimage:
+                        break
+            if qimage is None:
+                print(f"No image data found for slice {image_name}, skipping")
+                continue
             file_name_img = f"{image_name}.png"
-            # Save the QImage as a file
             save_path = os.path.join(images_dir, file_name_img)
             if not os.path.exists(save_path):
                 qimage.save(save_path)
-            else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
             img_width, img_height = qimage.width(), qimage.height()
         else:
-            # Check if the image_name exists in image_paths
+            # Handle regular images
             image_path = next((path for name, path in image_paths.items() if image_name in name), None)
-            if not image_path:
-                print(f"No image path found for {image_name}, skipping")
-                continue
-            if image_path.lower().endswith(('.tif', '.tiff', '.czi')):
-                print(f"Skipping main tiff/czi file: {image_name}")
+            if not image_path or image_path.lower().endswith(('.tif', '.tiff', '.czi')):
+                print(f"Skipping file: {image_name}")
                 continue
             file_name_img = image_name
-            
-            # Copy the image file
             dst_path = os.path.join(images_dir, file_name_img)
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
-            else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
-            
-            
             img = QImage(image_path)
             img_width, img_height = img.width(), img.height()
 
@@ -232,11 +217,11 @@ def export_yolo_v8(all_annotations, class_mapping, image_paths, slices, image_sl
     # Create YAML file
     names = list(class_mapping.keys())
     yaml_data = {
-        'path': '.',  # Current directory
-        'train': './images',  # Relative path to images
-        'val': './images',    # Relative path to images
-        'names': names,
-        'nc': len(names)
+        'train': os.path.abspath(os.path.join(train_dir, 'images')),
+        'val': os.path.abspath(os.path.join(train_dir, 'images')),  # Using train as val
+        'test': '../test/images',  # Placeholder
+        'nc': len(names),
+        'names': names
     }
 
     # Save YAML file in the output directory
@@ -244,8 +229,7 @@ def export_yolo_v8(all_annotations, class_mapping, image_paths, slices, image_sl
     with open(yaml_path, 'w') as f:
         yaml.dump(yaml_data, f, default_flow_style=False)
 
-    return labels_dir, yaml_path
-
+    return train_dir, yaml_path
 
 
 

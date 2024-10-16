@@ -76,50 +76,56 @@ def import_coco_json(file_path, class_mapping):
     return imported_annotations, image_info
 
 
-def import_yolo_v8(directory_path, class_mapping):
-    images_dir = os.path.join(directory_path, 'images')
-    labels_dir = os.path.join(directory_path, 'labels')
+def import_yolo_v8(yaml_file_path, class_mapping):
+    if not os.path.exists(yaml_file_path):
+        raise ValueError("The selected YAML file does not exist.")
     
-    if not os.path.exists(images_dir) or not os.path.exists(labels_dir):
-        raise ValueError("The selected directory must contain 'images' and 'labels' subdirectories.")
+    directory_path = os.path.dirname(yaml_file_path)
     
-    yaml_file = next((f for f in os.listdir(directory_path) if f.endswith('.yaml')), None)
-    if not yaml_file:
-        raise ValueError("No YAML file found in the selected directory. Please add a YAML file and try again.")
-    
-    with open(os.path.join(directory_path, yaml_file), 'r') as f:
+    with open(yaml_file_path, 'r') as f:
         yaml_data = yaml.safe_load(f)
     
     class_names = yaml_data.get('names', [])
     if not class_names:
         raise ValueError("No class names found in the YAML file.")
     
+    train_dir = os.path.join(directory_path, 'train')
+    if not os.path.exists(train_dir):
+        raise ValueError("No 'train' subdirectory found in the YAML file's directory.")
+    
     imported_annotations = {}
     image_info = {}
     
-    # First, process all label files
+    images_dir = os.path.join(train_dir, 'images')
+    labels_dir = os.path.join(train_dir, 'labels')
+    
+    if not os.path.exists(images_dir) or not os.path.exists(labels_dir):
+        raise ValueError("The 'train' directory must contain both 'images' and 'labels' subdirectories.")
+    
+    missing_images = []
+    missing_labels = []
+    
     for label_file in os.listdir(labels_dir):
         if label_file.lower().endswith('.txt'):
-            img_file = os.path.splitext(label_file)[0] + '.jpg'  # Assume .jpg, but we'll check for other formats
-            img_path = os.path.join(images_dir, img_file)
+            base_name = os.path.splitext(label_file)[0]
+            img_file = None
+            img_path = None
             
-            # Check for other image formats if .jpg doesn't exist
-            if not os.path.exists(img_path):
-                for ext in ['.png', '.jpeg', '.tiff', '.bmp', '.gif']:
-                    alt_img_file = os.path.splitext(label_file)[0] + ext
-                    alt_img_path = os.path.join(images_dir, alt_img_file)
-                    if os.path.exists(alt_img_path):
-                        img_file = alt_img_file
-                        img_path = alt_img_path
-                        break
+            # Check for various image formats
+            for ext in ['.jpg', '.jpeg', '.png', '.tiff', '.bmp', '.gif']:
+                potential_img_file = base_name + ext
+                potential_img_path = os.path.join(images_dir, potential_img_file)
+                if os.path.exists(potential_img_path):
+                    img_file = potential_img_file
+                    img_path = potential_img_path
+                    break
             
-            # Get image dimensions if the image exists
-            if os.path.exists(img_path):
-                with Image.open(img_path) as img:
-                    img_width, img_height = img.size
-            else:
-                print(f"Warning: Image not found for label {label_file}")
-                img_width, img_height = 0, 0  # Use placeholder values
+            if img_path is None:
+                missing_images.append(base_name)
+                continue
+            
+            with Image.open(img_path) as img:
+                img_width, img_height = img.size
             
             image_id = len(image_info) + 1
             image_info[image_id] = {
@@ -140,6 +146,9 @@ def import_yolo_v8(directory_path, class_mapping):
                 parts = line.strip().split()
                 if len(parts) >= 5:
                     class_id = int(parts[0])
+                    if class_id >= len(class_names):
+                        print(f"Warning: Class ID {class_id} in {label_file} is out of range. Skipping this annotation.")
+                        continue
                     class_name = class_names[class_id]
                     
                     if class_name not in imported_annotations[img_file]:
@@ -170,9 +179,29 @@ def import_yolo_v8(directory_path, class_mapping):
                     
                     imported_annotations[img_file][class_name].append(annotation)
     
+    # Check for images without labels
+    for img_file in os.listdir(images_dir):
+        base_name, ext = os.path.splitext(img_file)
+        if ext.lower() in ['.jpg', '.jpeg', '.png', '.tiff', '.bmp', '.gif']:
+            label_file = base_name + '.txt'
+            if not os.path.exists(os.path.join(labels_dir, label_file)):
+                missing_labels.append(img_file)
+    
+    if missing_images or missing_labels:
+        message = "The following issues were found:\n\n"
+        if missing_images:
+            message += f"Labels without corresponding images: {', '.join(missing_images)}\n\n"
+        if missing_labels:
+            message += f"Images without corresponding labels: {', '.join(missing_labels)}\n\n"
+        message += "Do you want to continue importing the remaining data?"
+        
+        reply = QMessageBox.question(None, "Import Issues", message, 
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.No:
+            raise ValueError("Import cancelled due to missing files.")
+    
     return imported_annotations, image_info
-
-
 
 def process_import_format(import_format, file_path, class_mapping):
     if import_format == "COCO JSON":
@@ -181,3 +210,5 @@ def process_import_format(import_format, file_path, class_mapping):
         return import_yolo_v8(file_path, class_mapping)
     else:
         raise ValueError(f"Unsupported import format: {import_format}")
+
+

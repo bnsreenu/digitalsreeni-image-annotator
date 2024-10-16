@@ -38,6 +38,13 @@ QListWidget, QTreeWidget {
     border-radius: 3px;
 }
 
+
+QListWidget::item:selected {
+    background-color: #E0E0E0;
+    color: #333333;
+}
+
+
 QLabel {
     color: #333333;
 }

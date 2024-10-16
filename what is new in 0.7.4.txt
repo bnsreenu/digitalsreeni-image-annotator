@@ -1,0 +1,26 @@
+# New Features and Enhancements
+
+1. **Enhanced Annotation Management**
+   - Easily change the class of existing annotations
+   - Toggle visibility of classes for clearer visualization
+
+2. **YOLO Integration (Beta)**
+   - Train YOLO models using current annotations
+   - Load trained models to automatically segment images
+   - Convert segmentations to annotations (single images only, not available for slices or stacks)
+   - Selectively accept or reject class predictions
+
+3. **Improved YOLO Compatibility**
+   - Updated YOLO export and import to align with YOLOv11 structure
+   - New project directory layout: data.yaml file, train and valid directories (each containing images and labels subdirectories)
+
+4. **Advanced Annotation Analysis**
+   - View area measurements for annotations, displayed next to annotation names
+   - Sort annotations by name/number or area for better organization
+
+# Bug Fixes and Known Issues
+
+- **Linux Compatibility**: The application may have limited functionality on Linux systems. Further testing is required.
+- **YOLO Model Loading**: Resolved a crash issue when loading YOLO models with mismatched classes. The application now provides a user-friendly mismatch notification.
+- Various other minor bugs have been addressed to enhance overall stability and user experience.
+- Known issue: Canceling a YOLO model training does not stop the training. 
