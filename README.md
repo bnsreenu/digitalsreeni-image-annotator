@@ -14,7 +14,7 @@ If you find this project helpful, consider supporting it:
 
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
-## Watch the demo (of v0.5.9):
+## Watch the demo (of v0.8.0):
 [![Watch the demo video](https://img.youtube.com/vi/aArn1f1YIQk/maxresdefault.jpg)](https://youtu.be/aArn1f1YIQk)
 
 @DigitalSreeni
