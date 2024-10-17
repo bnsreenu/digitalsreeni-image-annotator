@@ -15,7 +15,7 @@ If you find this project helpful, consider supporting it:
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
 ## Watch the demo (of v0.5.9):
-[![Watch the demo video](https://img.youtube.com/vi/BupyYUw2boI/maxresdefault.jpg)](https://youtu.be/BupyYUw2boI)
+[![Watch the demo video](https://img.youtube.com/vi/aArn1f1YIQk/maxresdefault.jpg)](https://youtu.be/aArn1f1YIQk)
 
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
@@ -55,6 +55,9 @@ Dr. Sreenivas Bhattiprolu
 This application is built using PyQt5 and has been tested on macOS and Windows. It may experience compatibility issues on Linux systems, particularly related to the XCB plugin for PyQt5. Extensive testing on Linux systems has not been done yet.
 
 ## Installation
+
+### Watch the installation walkthough video:
+[![Watch the installation video](https://img.youtube.com/vi/VI6V95eUUpY/maxresdefault.jpg)](https://youtu.be/VI6V95eUUpY)
 
 You can install the DigitalSreeni Image Annotator directly from PyPI:
 
