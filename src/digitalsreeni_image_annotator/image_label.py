@@ -395,7 +395,24 @@ class ImageLabel(QLabel):
             painter.restore()
     
     
-
+    # def draw_tool_size_indicator(self, painter):
+    #     if self.current_tool in ["paint_brush", "eraser"] and hasattr(self, 'cursor_pos'):
+    #         painter.save()
+    #         painter.translate(self.offset_x, self.offset_y)
+    #         painter.scale(self.zoom_factor, self.zoom_factor)
+            
+    #         if self.current_tool == "paint_brush":
+    #             size = self.main_window.paint_brush_size
+    #             color = QColor(255, 0, 0, 128)  # Semi-transparent red
+    #         else:  # eraser
+    #             size = self.main_window.eraser_size
+    #             color = QColor(0, 0, 255, 128)  # Semi-transparent blue
+            
+    #         painter.setPen(QPen(color, 1 / self.zoom_factor, Qt.SolidLine))
+    #         painter.setBrush(Qt.NoBrush)
+    #         painter.drawEllipse(QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size)
+            
+    #         painter.restore()
     
     def draw_tool_size_indicator(self, painter):
         if self.current_tool in ["paint_brush", "eraser"] and hasattr(self, 'cursor_pos'):

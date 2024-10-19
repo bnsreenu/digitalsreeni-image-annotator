@@ -58,9 +58,6 @@ class HelpWindow(QDialog):
             <li>Support for common image formats (PNG, JPG, BMP) and multi-dimensional formats (TIFF, CZI)</li>
             <li>Pick appropriate pre-trained SAM2 model for flexible and improved semi-automated annotations</li>
             <li>Additional tools for dataset management and image processing</li>
-            <li>Change class of existing annotations</li>
-            <li>Toggle visibility of classes</li>
-            <li>YOLO integration for training and prediction (beta)</li>
         </ul>
 
         <h2>Getting Started</h2>
@@ -109,44 +106,6 @@ class HelpWindow(QDialog):
                 </ul>
             </li>
         </ol>
-
-        <h2>Advanced Features</h2>
-        <h3>Changing Annotation Class</h3>
-        <p>If you've annotated objects in the wrong class, you can easily reassign them:</p>
-        <ol>
-            <li>Select one or more annotations from the list.</li>
-            <li>Click the 'Change Class' button.</li>
-            <li>Choose the new class to reassign the selected annotations.</li>
-        </ol>
-
-        <h3>Toggling Class Visibility</h3>
-        <p>To focus on specific classes of interest:</p>
-        <ol>
-            <li>Locate the checkbox next to each class name in the class list.</li>
-            <li>Toggle the checkbox to make annotations belonging to that class visible or invisible.</li>
-        </ol>
-
-        <h3>YOLO Integration (Beta)</h3>
-        <p>The new YOLO (beta) button on the main menu provides tools for training and prediction:</p>
-
-        <h4>Training</h4>
-        <ul>
-            <li><strong>Load Pre-train Model:</strong> Load a pre-trained model (e.g., yolo11n-seg) for fine-tuning.</li>
-            <li><strong>Prepare YOLO Dataset:</strong> When you have a project open with annotated images, this option writes all images, labels, and the YAML file for the current project data in a directory named 'yolo_dataset' within your project directory.</li>
-            <li><strong>Load Dataset YAML:</strong> Use this to load the previously saved dataset for fine-tuning.</li>
-            <li><strong>Train Model:</strong> Opens an interface to define:
-                <ul>
-                    <li>Number of epochs</li>
-                    <li>Image size for training (you can enter the long or short dimension for non-square images)</li>
-                </ul>
-            </li>
-        </ul>
-
-        <h4>Prediction Settings</h4>
-        <ul>
-            <li><strong>Load Model:</strong> Load a model for prediction. This can be your own trained model or any other YOLO model.</li>
-            <li><strong>Set Confidence Threshold:</strong> Adjust the confidence threshold to control prediction sensitivity.</li>
-        </ul>
 
         <h2>Exporting Annotations</h2>
         <ol>

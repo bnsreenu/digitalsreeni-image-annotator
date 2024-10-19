@@ -12,6 +12,7 @@ import numpy as np
 from tifffile import TiffFile
 from czifile import CziFile
 import cv2
+from datetime import datetime
 
 
 from .image_label import ImageLabel
@@ -230,6 +231,15 @@ class ImageAnnotator(QMainWindow):
             # Clear existing data without showing messages
             self.clear_all(new_project=True, show_messages=False)
             
+            # Prompt for initial project notes
+            notes, ok = QInputDialog.getMultiLineText(self, "Project Notes", "Enter initial project notes:")
+            if ok:
+                self.project_notes = notes
+            else:
+                self.project_notes = ""
+            
+            self.project_creation_date = datetime.now().isoformat()
+            
             # Save the empty project without showing a message
             self.save_project(show_message=False)
             
@@ -238,12 +248,25 @@ class ImageAnnotator(QMainWindow):
             self.initialize_yolo_trainer()
             self.update_window_title()
             
-          
+    def show_project_search(self):
+        from .project_search import show_project_search
+        show_project_search(self)          
+        
+
     
     def open_project(self):
+        print("open_project method called")  # Debug print
         self.remove_all_temp_annotations()  # Remove temp annotations from the previous project
         project_file, _ = QFileDialog.getOpenFileName(self, "Open Project", "", "Image Annotator Project (*.iap)")
+        print(f"Selected project file: {project_file}")  # Debug print
         if project_file:
+            self.open_specific_project(project_file)
+        else:
+            print("No project file selected")  # Debug print
+    
+    def open_specific_project(self, project_file):
+        print(f"Opening specific project: {project_file}")  # Debug print
+        if os.path.exists(project_file):
             with open(project_file, 'r') as f:
                 project_data = json.load(f)
             
@@ -255,8 +278,21 @@ class ImageAnnotator(QMainWindow):
             self.all_annotations = project_data.get('annotations', {})
             self.image_paths = project_data.get('image_paths', {})
             
+            # Load project notes and metadata
+            self.project_notes = project_data.get('notes', '')
+            self.project_creation_date = project_data.get('creation_date', '')
+            self.last_modified = project_data.get('last_modified', '')
+            
+            # Parse dates
+            if self.project_creation_date:
+                self.project_creation_date = datetime.fromisoformat(self.project_creation_date).strftime("%Y-%m-%d %H:%M:%S")
+            if self.last_modified:
+                self.last_modified = datetime.fromisoformat(self.last_modified).strftime("%Y-%m-%d %H:%M:%S")
+            
             # Load classes
-            for class_info in project_data['classes']:
+            self.class_mapping.clear()
+            self.image_label.class_colors.clear()
+            for class_info in project_data.get('classes', []):
                 self.add_class(class_info['name'], QColor(class_info['color']))
             
             # Select the last added class
@@ -313,6 +349,14 @@ class ImageAnnotator(QMainWindow):
             # Check for missing images
             if missing_images:
                 self.handle_missing_images(missing_images)
+                
+        
+            print(f"Project opened successfully: {project_file}")
+            QMessageBox.information(self, "Project Opened", f"Project opened successfully: {os.path.basename(project_file)}")
+        
+        else:
+            print(f"Project file not found: {project_file}")
+            QMessageBox.critical(self, "Error", f"Project file not found: {project_file}")
 
     def handle_missing_images(self, missing_images):
         message = "The following images have annotations but were not found in the project directory:\n\n"
@@ -555,7 +599,10 @@ class ImageAnnotator(QMainWindow):
                 for name, color in self.image_label.class_colors.items()
             ],
             'images': images_data,
-            'image_paths': {k: v for k, v in self.image_paths.items() if os.path.exists(v)}
+            'image_paths': {k: v for k, v in self.image_paths.items() if os.path.exists(v)},
+            'notes': getattr(self, 'project_notes', ''),
+            'creation_date': getattr(self, 'project_creation_date', datetime.now().isoformat()),
+            'last_modified': datetime.now().isoformat()
         }
     
         # Save project data
@@ -615,7 +662,30 @@ class ImageAnnotator(QMainWindow):
             self.save_project(show_message=False)
             print("Project auto-saved.")
 
-            
+    def show_project_details(self):
+        if not hasattr(self, 'current_project_file'):
+            QMessageBox.warning(self, "No Project", "Please open or create a project first.")
+            return
+    
+        from .project_details import ProjectDetailsDialog
+        from .annotation_statistics import AnnotationStatisticsDialog
+    
+        # Generate annotation statistics
+        stats_dialog = AnnotationStatisticsDialog(self)
+        stats_dialog.generate_statistics(self.all_annotations)
+        
+        dialog = ProjectDetailsDialog(self, stats_dialog)
+    
+        if dialog.exec_() == QDialog.Accepted:
+            if dialog.were_changes_made():
+                self.project_notes = dialog.get_notes()
+                self.save_project(show_message=False)
+                QMessageBox.information(self, "Project Details", "Project details have been updated.")
+            else:
+                print("No changes made to project details.")
+        
+        
+        
     def load_multi_slice_image(self, image_path, dimensions=None, shape=None):
         
         file_name = os.path.basename(image_path)
@@ -1858,7 +1928,18 @@ class ImageAnnotator(QMainWindow):
         close_project_action.setShortcut(QKeySequence("Ctrl+W"))
         close_project_action.triggered.connect(self.close_project)
         project_menu.addAction(close_project_action)
-    
+        
+
+        project_details_action = QAction("Project &Details", self)
+        project_details_action.setShortcut(QKeySequence("Ctrl+I"))
+        project_details_action.triggered.connect(self.show_project_details)
+        project_menu.addAction(project_details_action)
+        
+        search_projects_action = QAction("&Search Projects", self)
+        search_projects_action.setShortcut(QKeySequence("Ctrl+F"))
+        search_projects_action.triggered.connect(self.show_project_search)
+        project_menu.addAction(search_projects_action)
+            
         # Settings Menu
         settings_menu = menu_bar.addMenu("&Settings")
         
@@ -2991,6 +3072,7 @@ class ImageAnnotator(QMainWindow):
         pixmap.fill(color)
         item.setIcon(QIcon(pixmap))
         
+ 
         
         
     def update_class_list(self):

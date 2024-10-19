@@ -50,6 +50,9 @@ Dr. Sreenivas Bhattiprolu
   - Stack to slices converter
   - Image patcher
   - Image augmenter
+- NEW: Project Details: View and edit project metadata, including creation date, last modified date, image information, and custom notes.
+- NEW: Advanced Project Search: Search through multiple projects using complex queries with logical operators (AND, OR) and parentheses.
+
 
 ## Operating System Requirements
 This application is built using PyQt5 and has been tested on macOS and Windows. It may experience compatibility issues on Linux systems, particularly related to the XCB plugin for PyQt5. Extensive testing on Linux systems has not been done yet.
@@ -111,6 +114,22 @@ The application uses the Ultralytics library, so there's no need to separately i
    - Click "Import Annotations with Images" to load existing COCO JSON annotations along with their images.
    - Use "Export Annotations" to save annotations in various formats (COCO JSON, YOLO v8/v11, Labeled images, Semantic labels, Pascal VOC).
      - Note: YOLO export (and import) is now compatible with YOLOv11 structure. (Project directory includes data.yaml, train, and valid directories, with train and valid both having images and labels subdirectories.)
+   - Project Details:
+     - Access project details by selecting "Project Details" from the Project menu.
+     - View project metadata such as creation date, last modified date, and image information.
+     - Add or edit custom project notes.
+     - Project details are automatically saved when you make changes to the notes.
+   - Advanced Project Search:
+     - Access the search functionality by selecting "Search Projects" from the Project menu.
+     - Search through multiple projects using complex queries.
+     - Use logical operators (AND, OR) and parentheses for advanced search criteria.
+     - Search covers project name, class names, image names, and project notes.
+     - Example queries:
+       - "cells AND dog": Find projects containing both "cells" and "dog"
+       - "cells OR bacteria": Find projects containing either "cells" or "bacteria"
+       - "cells AND (dog OR monkey)": Find projects containing "cells" and either "dog" or "monkey"
+       - "(project1 OR project2) AND (cells OR bacteria)": More complex nested queries
+     - Double-click on search results to open the corresponding project.
    - Access additional tools under the Tools menu bar:
      - Annotation Statistics
      - COCO JSON Combiner

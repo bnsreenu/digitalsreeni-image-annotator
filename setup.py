@@ -10,7 +10,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="digitalsreeni-image-annotator",
-    version="0.7.4",  # Updated version number
+    version="0.8.0",  # Updated version number
     author="Dr. Sreenivas Bhattiprolu",
     author_email="digitalsreeni@gmail.com",
     description="A tool for annotating images using manual and automated tools, supporting multi-dimensional images and SAM2-assisted annotations",
