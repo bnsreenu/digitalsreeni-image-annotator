@@ -131,6 +131,9 @@ class HelpWindow(QDialog):
             <li><strong>Stack to Slices:</strong> Converts multi-dimensional image stacks into individual 2D slices.</li>
             <li><strong>Image Patcher:</strong> Splits large images into smaller patches with or without overlap.</li>
             <li><strong>Image Augmenter:</strong> Applies various transformations to augment your image dataset.</li>
+            <li><strong>Slice Registration:</strong> Aligns images in a stack with advanced registration options. </li>
+            <li><strong>Stack Interpolator:</strong> Adjusts Z-spacing in image stacks. Excellent tool to generate isotropic volumes from non-isotropic data.</li>
+            <li><strong>DICOM Converter:</strong> Converts DICOM files to TIFF format. </li>
         </ul>
 
         <h2>Keyboard Shortcuts</h2>

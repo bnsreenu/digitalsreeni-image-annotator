@@ -28,9 +28,12 @@ from .coco_json_combiner import show_coco_json_combiner
 from .stack_to_slices import show_stack_to_slices
 from .image_patcher import show_image_patcher
 from .image_augmenter import show_image_augmenter
+from .slice_registration import SliceRegistrationTool
 from .sam_utils import SAMUtils
 from .snake_game import SnakeGame
 from .yolo_trainer import YOLOTrainer, TrainingInfoDialog, LoadPredictionModelDialog
+from .stack_interpolator import StackInterpolator
+from .dicom_converter import DicomConverter
 
 from shapely.geometry import Polygon, MultiPolygon, Point
 from shapely.ops import unary_union
@@ -1981,8 +1984,18 @@ class ImageAnnotator(QMainWindow):
         image_augmenter_action = QAction("Image Augmenter", self)
         image_augmenter_action.triggered.connect(self.show_image_augmenter)
         tools_menu.addAction(image_augmenter_action)
-    
+        
+        slice_registration_action = QAction("Slice Registration", self)
+        slice_registration_action.triggered.connect(self.show_slice_registration)
+        tools_menu.addAction(slice_registration_action)
 
+        stack_interpolator_action = QAction("Stack Interpolator", self)
+        stack_interpolator_action.triggered.connect(self.show_stack_interpolator)
+        tools_menu.addAction(stack_interpolator_action)
+
+        dicom_converter_action = QAction("DICOM Converter", self)
+        dicom_converter_action.triggered.connect(self.show_dicom_converter)
+        tools_menu.addAction(dicom_converter_action)
     
         # Help Menu
         help_menu = menu_bar.addMenu("&Help")
@@ -2369,7 +2382,17 @@ class ImageAnnotator(QMainWindow):
     def show_image_augmenter(self):
         self.image_augmenter_dialog = show_image_augmenter(self)
 
-        
+    def show_slice_registration(self):
+        self.slice_registration_dialog = SliceRegistrationTool(self)
+        self.slice_registration_dialog.show_centered(self)
+    
+    def show_stack_interpolator(self):
+        self.stack_interpolator_dialog = StackInterpolator(self)
+        self.stack_interpolator_dialog.show_centered(self)
+
+    def show_dicom_converter(self):
+        self.dicom_converter_dialog = DicomConverter(self)
+        self.dicom_converter_dialog.show_centered(self)
 
 ###################################################################
 

@@ -50,8 +50,18 @@ Dr. Sreenivas Bhattiprolu
   - Stack to slices converter
   - Image patcher
   - Image augmenter
-- NEW: Project Details: View and edit project metadata, including creation date, last modified date, image information, and custom notes.
-- NEW: Advanced Project Search: Search through multiple projects using complex queries with logical operators (AND, OR) and parentheses.
+- Project Details: View and edit project metadata, including creation date, last modified date, image information, and custom notes.
+- Advanced Project Search: Search through multiple projects using complex queries with logical operators (AND, OR) and parentheses.
+- Slice Registration
+    - Align image slices in a stack with multiple registration methods
+    - Support for various reference frames and transformation types
+  - Stack Interpolation
+    - Adjust Z-spacing in image stacks
+    - Multiple interpolation methods with memory-efficient processing
+  - DICOM Converter
+    - Convert DICOM files to TIFF format (single stack or individual slices)
+    - Preserve metadata and physical dimensions
+    - Export metadata to JSON for reference
 
 
 ## Operating System Requirements
