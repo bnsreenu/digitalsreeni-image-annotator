@@ -41,11 +41,11 @@ from shapely.validation import make_valid
 import shapely
 
 from .export_formats import (
-    export_coco_json, export_yolo_v8, export_labeled_images, 
+    export_coco_json, export_yolo_v4, export_yolo_v5plus, export_labeled_images,
     export_semantic_labels, export_pascal_voc_bbox, export_pascal_voc_both
 )
 
-from .import_formats import import_coco_json, import_yolo_v8
+from .import_formats import import_coco_json, import_yolo_v4, import_yolo_v5plus
 from .import_formats import process_import_format
 
 import shutil 
@@ -114,6 +114,10 @@ class DimensionDialog(QDialog):
 class ImageAnnotator(QMainWindow):
     def __init__(self):
         super().__init__()
+        
+        self.is_loading_project = False
+        self.backup_project_path = None
+        
         self.setWindowTitle("Image Annotator")
         self.setGeometry(100, 100, 1400, 800)
     
@@ -263,103 +267,145 @@ class ImageAnnotator(QMainWindow):
         project_file, _ = QFileDialog.getOpenFileName(self, "Open Project", "", "Image Annotator Project (*.iap)")
         print(f"Selected project file: {project_file}")  # Debug print
         if project_file:
-            self.open_specific_project(project_file)
+            try:
+                self.backup_project_before_open(project_file)
+                self.open_specific_project(project_file)
+            except Exception as e:
+                self.restore_project_from_backup()
+                QMessageBox.critical(self, "Error", f"An error occurred while opening the project: {str(e)}\n"
+                                                  f"The project file has been restored from backup.")
         else:
             print("No project file selected")  # Debug print
-    
+
+
+    def backup_project_before_open(self, project_file):
+        """Create a backup of the project file before opening it."""
+        import shutil
+        import os
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = os.path.join(os.path.dirname(project_file), ".project_backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        self.backup_project_path = os.path.join(backup_dir, 
+            f"{os.path.basename(project_file)}.{timestamp}.backup")
+        shutil.copy2(project_file, self.backup_project_path)
+
+    def restore_project_from_backup(self):
+        """Restore the project file from its backup if available."""
+        if self.backup_project_path and os.path.exists(self.backup_project_path):
+            try:
+                shutil.copy2(self.backup_project_path, self.current_project_file)
+                print(f"Project restored from backup: {self.backup_project_path}")
+            except Exception as e:
+                print(f"Failed to restore from backup: {str(e)}")
+            
+            
+
     def open_specific_project(self, project_file):
         print(f"Opening specific project: {project_file}")  # Debug print
         if os.path.exists(project_file):
-            with open(project_file, 'r') as f:
-                project_data = json.load(f)
-            
-            self.clear_all(show_messages=False)
-            self.current_project_file = project_file
-            self.current_project_dir = os.path.dirname(project_file)
-            
-            self.all_images = project_data.get('images', [])
-            self.all_annotations = project_data.get('annotations', {})
-            self.image_paths = project_data.get('image_paths', {})
-            
-            # Load project notes and metadata
-            self.project_notes = project_data.get('notes', '')
-            self.project_creation_date = project_data.get('creation_date', '')
-            self.last_modified = project_data.get('last_modified', '')
-            
-            # Parse dates
-            if self.project_creation_date:
-                self.project_creation_date = datetime.fromisoformat(self.project_creation_date).strftime("%Y-%m-%d %H:%M:%S")
-            if self.last_modified:
-                self.last_modified = datetime.fromisoformat(self.last_modified).strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Load classes
-            self.class_mapping.clear()
-            self.image_label.class_colors.clear()
-            for class_info in project_data.get('classes', []):
-                self.add_class(class_info['name'], QColor(class_info['color']))
-            
-            # Select the last added class
-            if self.class_list.count() > 0:
-                last_class_index = self.class_list.count() - 1
-                self.select_class(last_class_index)
-            
-            # Load all annotations first
-            self.all_annotations.clear()
-            for image_info in project_data['images']:
-                if image_info.get('is_multi_slice', False):
-                    for slice_info in image_info.get('slices', []):
-                        self.all_annotations[slice_info['name']] = slice_info['annotations']
-                else:
-                    self.all_annotations[image_info['file_name']] = image_info.get('annotations', {})
-            
-            # Now load images
-            missing_images = []
-            for image_info in project_data['images']:
-                image_path = os.path.join(self.current_project_dir, "images", image_info['file_name'])
+            try:
+                self.is_loading_project = True  # Set loading flag
                 
-                if not os.path.exists(image_path):
-                    missing_images.append(image_info['file_name'])
-                    continue
+                with open(project_file, 'r') as f:
+                    project_data = json.load(f)
                 
-                # Update image_paths
-                self.image_paths[image_info['file_name']] = image_path
+                self.clear_all(show_messages=False)
+                self.current_project_file = project_file
+                self.current_project_dir = os.path.dirname(project_file)
                 
-                if image_info.get('is_multi_slice', False):
-                    # Load multi-slice image with stored dimensions
-                    dimensions = image_info.get('dimensions', [])
-                    shape = image_info.get('shape', [])
-                    self.load_multi_slice_image(image_path, dimensions, shape)
-                else:
-                    self.add_images_to_list([image_path])
-            
-            self.update_ui()
-            
-            self.remove_all_temp_annotations()  #To make sure we have no temp annotations from any previous unfinished work
-            
-            # Select the first image if available
-            if self.image_list.count() > 0:
-                self.image_list.setCurrentRow(0)
-                self.switch_image(self.image_list.item(0))
+                # Load project notes and metadata
+                self.project_notes = project_data.get('notes', '')
+                self.project_creation_date = project_data.get('creation_date', '')
+                self.last_modified = project_data.get('last_modified', '')
                 
-            # Select the first class if available
-            if self.class_list.count() > 0:
-                self.class_list.setCurrentRow(0)
-                self.on_class_selected()
-                        
-            self.initialize_yolo_trainer()    
-            self.update_window_title()
-            
-            # Check for missing images
-            if missing_images:
-                self.handle_missing_images(missing_images)
+                # Parse dates
+                if self.project_creation_date:
+                    self.project_creation_date = datetime.fromisoformat(self.project_creation_date).strftime("%Y-%m-%d %H:%M:%S")
+                if self.last_modified:
+                    self.last_modified = datetime.fromisoformat(self.last_modified).strftime("%Y-%m-%d %H:%M:%S")
                 
-        
-            print(f"Project opened successfully: {project_file}")
-            QMessageBox.information(self, "Project Opened", f"Project opened successfully: {os.path.basename(project_file)}")
-        
+                # Load all data without triggering auto-saves
+                self.load_project_data(project_data)
+                
+                # Now save once after everything is loaded
+                self.is_loading_project = False  # Clear loading flag
+                self.save_project(show_message=False)  # Save once after loading
+                
+                self.initialize_yolo_trainer()    
+                self.update_window_title()
+                
+                print(f"Project opened successfully: {project_file}")
+                QMessageBox.information(self, "Project Opened", f"Project opened successfully: {os.path.basename(project_file)}")
+                
+            except Exception as e:
+                self.is_loading_project = False  # Make sure to clear flag on error
+                raise e
         else:
             print(f"Project file not found: {project_file}")
             QMessageBox.critical(self, "Error", f"Project file not found: {project_file}")
+
+    def load_project_data(self, project_data):
+        """Load project data without triggering auto-saves."""
+        # Load classes
+        self.class_mapping.clear()
+        self.image_label.class_colors.clear()
+        for class_info in project_data.get('classes', []):
+            self.add_class(class_info['name'], QColor(class_info['color']))
+    
+        # Load images
+        self.all_images = project_data.get('images', [])
+        self.image_paths = project_data.get('image_paths', {})
+        
+        # Load all annotations first
+        self.all_annotations.clear()
+        for image_info in project_data['images']:
+            if image_info.get('is_multi_slice', False):
+                for slice_info in image_info.get('slices', []):
+                    self.all_annotations[slice_info['name']] = slice_info['annotations']
+            else:
+                self.all_annotations[image_info['file_name']] = image_info.get('annotations', {})
+    
+        # Handle missing images
+        missing_images = []
+        for image_info in project_data['images']:
+            image_path = os.path.join(self.current_project_dir, "images", image_info['file_name'])
+            
+            if not os.path.exists(image_path):
+                missing_images.append(image_info['file_name'])
+                continue
+    
+            # Update image_paths
+            self.image_paths[image_info['file_name']] = image_path
+    
+            if image_info.get('is_multi_slice', False):
+                dimensions = image_info.get('dimensions', [])
+                shape = image_info.get('shape', [])
+                self.load_multi_slice_image(image_path, dimensions, shape)
+            else:
+                self.add_images_to_list([image_path])
+    
+
+        # Update UI
+        self.update_ui()
+        
+        # Handle missing images if any
+        if missing_images:
+            self.handle_missing_images(missing_images)
+            
+        # Select the first image if available
+        if self.image_list.count() > 0:
+            self.image_list.setCurrentRow(0)
+            first_item = self.image_list.item(0)
+            if first_item:
+                self.switch_image(first_item)
+        
+        # Select the first class if available
+        if self.class_list.count() > 0:
+            self.class_list.setCurrentRow(0)
+            self.on_class_selected()
+    
+
 
     def handle_missing_images(self, missing_images):
         message = "The following images have annotations but were not found in the project directory:\n\n"
@@ -652,6 +698,9 @@ class ImageAnnotator(QMainWindow):
                 self.current_project_file = new_project_file
 
     def auto_save(self):
+        if self.is_loading_project:
+            return  # Skip auto-save during project loading
+            
         if not hasattr(self, 'current_project_file'):
             reply = QMessageBox.question(self, 'No Project', 
                                          "You need to save the project before auto-saving. Would you like to save now?",
@@ -660,7 +709,7 @@ class ImageAnnotator(QMainWindow):
                 self.save_project()
             else:
                 return
-        
+            
         if hasattr(self, 'current_project_file'):
             self.save_project(show_message=False)
             print("Project auto-saved.")
@@ -935,8 +984,10 @@ class ImageAnnotator(QMainWindow):
         if first_added_item:
             self.image_list.setCurrentItem(first_added_item)
             self.switch_image(first_added_item)
-        self.auto_save()  # Auto-save after adding images
-    
+
+        if not self.is_loading_project:
+            self.auto_save()
+        
 
     def update_all_images(self, new_image_info):
         for info in new_image_info:
@@ -1515,7 +1566,7 @@ class ImageAnnotator(QMainWindow):
             images_dir = os.path.join(json_dir, 'images')
             imported_annotations, image_info = import_coco_json(file_name, self.class_mapping)
         
-        elif import_format == "YOLO v8":
+        elif import_format in ["YOLO (v4 and earlier)", "YOLO (v5+)"]:
             yaml_file, _ = QFileDialog.getOpenFileName(self, "Select YOLO Dataset YAML", "", "YAML Files (*.yaml *.yml)")
             if not yaml_file:
                 print("No YAML file selected, returning")
@@ -1525,7 +1576,10 @@ class ImageAnnotator(QMainWindow):
             try:
                 imported_annotations, image_info = process_import_format(import_format, yaml_file, self.class_mapping)
                 yaml_dir = os.path.dirname(yaml_file)
-                images_dir = os.path.join(yaml_dir, 'train', 'images')
+                if import_format == "YOLO (v4 and earlier)":
+                    images_dir = os.path.join(yaml_dir, 'train', 'images')
+                else:  # YOLO (v5+)
+                    images_dir = os.path.join(yaml_dir, 'images', 'train')  # Preferring train over val
             except ValueError as e:
                 QMessageBox.warning(self, "Import Error", str(e))
                 return
@@ -1571,7 +1625,7 @@ class ImageAnnotator(QMainWindow):
                 message += f"\n... and {len(images_not_found) - 10} more."
             message += "\n\nDo you want to proceed and ignore annotations for these missing images?"
             reply = QMessageBox.question(self, "Missing Images", message, 
-                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             
             if reply == QMessageBox.No:
                 print("Import cancelled due to missing images")
@@ -1616,7 +1670,6 @@ class ImageAnnotator(QMainWindow):
             self.image_list.setCurrentRow(0)
             self.switch_image(self.image_list.item(0))
             
-            
         # Select the first class if available
         if self.class_list.count() > 0:
             self.class_list.setCurrentRow(0)
@@ -1632,7 +1685,7 @@ class ImageAnnotator(QMainWindow):
         print("Import complete, showing message")
         QMessageBox.information(self, "Import Complete", message)
         self.auto_save()  # Auto-save after importing annotations
-    
+        
     
     
     def export_annotations(self):
@@ -1641,7 +1694,7 @@ class ImageAnnotator(QMainWindow):
         export_format = self.export_format_selector.currentText()
         
         supported_formats = [
-            "COCO JSON", "YOLO v8", "Labeled Images", 
+            "COCO JSON", "YOLO (v4 and earlier)", "YOLO (v5+)", "Labeled Images", 
             "Semantic Labels", "Pascal VOC (BBox)", "Pascal VOC (BBox + Segmentation)"
         ]
         
@@ -1665,30 +1718,44 @@ class ImageAnnotator(QMainWindow):
             json_file, images_dir = export_coco_json(self.all_annotations, self.class_mapping, 
                                                      self.image_paths, self.slices, self.image_slices, 
                                                      output_dir, json_filename)
-            message = f"Annotations have been exported successfully in COCO JSON format.\n"
+            message = "Annotations have been exported successfully in COCO JSON format.\n"
             message += f"JSON file: {json_file}\nImages directory: {images_dir}"
         
-        elif export_format == "YOLO v8":
-            labels_dir, yaml_path = export_yolo_v8(self.all_annotations, self.class_mapping, self.image_paths, self.slices, self.image_slices, file_name)
-            message = f"Annotations have been exported successfully in YOLO v8 format.\nLabels: {labels_dir}\nYAML: {yaml_path}"
+        elif export_format == "YOLO (v4 and earlier)":
+            labels_dir, yaml_path = export_yolo_v4(self.all_annotations, self.class_mapping, 
+                                                 self.image_paths, self.slices, self.image_slices, file_name)
+            message = "Annotations have been exported successfully in YOLO (v4 and earlier) format.\n"
+            message += f"Labels: {labels_dir}\nYAML: {yaml_path}"
+        
+        elif export_format == "YOLO (v5+)":
+            output_dir, yaml_path = export_yolo_v5plus(self.all_annotations, self.class_mapping, 
+                                                     self.image_paths, self.slices, self.image_slices, file_name)
+            message = "Annotations have been exported successfully in YOLO (v5+) format.\n"
+            message += f"Output directory: {output_dir}\nYAML: {yaml_path}"
         
         elif export_format == "Labeled Images":
-            labeled_images_dir = export_labeled_images(self.all_annotations, self.class_mapping, self.image_paths, self.slices, self.image_slices, file_name)
+            labeled_images_dir = export_labeled_images(self.all_annotations, self.class_mapping, 
+                                                     self.image_paths, self.slices, self.image_slices, file_name)
             message = f"Labeled images have been exported successfully.\nLabeled Images: {labeled_images_dir}\n"
             message += f"A class summary has been saved in: {os.path.join(labeled_images_dir, 'class_summary.txt')}"
         
         elif export_format == "Semantic Labels":
-            semantic_labels_dir = export_semantic_labels(self.all_annotations, self.class_mapping, self.image_paths, self.slices, self.image_slices, file_name)
+            semantic_labels_dir = export_semantic_labels(self.all_annotations, self.class_mapping, 
+                                                       self.image_paths, self.slices, self.image_slices, file_name)
             message = f"Semantic labels have been exported successfully.\nSemantic Labels: {semantic_labels_dir}\n"
             message += f"A class-pixel mapping has been saved in: {os.path.join(semantic_labels_dir, 'class_pixel_mapping.txt')}"
         
         elif export_format == "Pascal VOC (BBox)":
-            voc_dir = export_pascal_voc_bbox(self.all_annotations, self.class_mapping, self.image_paths, self.slices, self.image_slices, file_name)
-            message = f"Annotations have been exported successfully in Pascal VOC format (BBox only).\nPascal VOC Annotations: {voc_dir}"
+            voc_dir = export_pascal_voc_bbox(self.all_annotations, self.class_mapping, 
+                                           self.image_paths, self.slices, self.image_slices, file_name)
+            message = "Annotations have been exported successfully in Pascal VOC format (BBox only).\n"
+            message += f"Pascal VOC Annotations: {voc_dir}"
         
         elif export_format == "Pascal VOC (BBox + Segmentation)":
-            voc_dir = export_pascal_voc_both(self.all_annotations, self.class_mapping, self.image_paths, self.slices, self.image_slices, file_name)
-            message = f"Annotations have been exported successfully in Pascal VOC format (BBox + Segmentation).\nPascal VOC Annotations: {voc_dir}"
+            voc_dir = export_pascal_voc_both(self.all_annotations, self.class_mapping, 
+                                           self.image_paths, self.slices, self.image_slices, file_name)
+            message = "Annotations have been exported successfully in Pascal VOC format (BBox + Segmentation).\n"
+            message += f"Pascal VOC Annotations: {voc_dir}"
     
         QMessageBox.information(self, "Export Complete", message)
     
@@ -2024,14 +2091,16 @@ class ImageAnnotator(QMainWindow):
             label.setAlignment(Qt.AlignLeft)
             return label
     
-        # New code for import functionality
+        # Import functionality
         self.import_button = QPushButton("Import Annotations with Images")
         self.import_button.clicked.connect(self.import_annotations)
         self.sidebar_layout.addWidget(self.import_button)
         
         self.import_format_selector = QComboBox()
         self.import_format_selector.addItem("COCO JSON")
-        self.import_format_selector.addItem("YOLO v8")
+        self.import_format_selector.addItem("YOLO (v4 and earlier)")  # Modified name
+        self.import_format_selector.addItem("YOLO (v5+)")  # New format
+        
         self.sidebar_layout.addWidget(self.import_format_selector)
         
         # Add spacing
@@ -2158,7 +2227,8 @@ class ImageAnnotator(QMainWindow):
         # Add export format selector 
         self.export_format_selector = QComboBox()
         self.export_format_selector.addItem("COCO JSON")
-        self.export_format_selector.addItem("YOLO v8")
+        self.export_format_selector.addItem("YOLO (v4 and earlier)")  # Modified name
+        self.export_format_selector.addItem("YOLO (v5+)")  # New format
         self.export_format_selector.addItem("Labeled Images")
         self.export_format_selector.addItem("Semantic Labels")
         self.export_format_selector.addItem("Pascal VOC (BBox)")
@@ -3082,7 +3152,9 @@ class ImageAnnotator(QMainWindow):
             self.class_list.setCurrentItem(item)
             self.current_class = class_name
             print(f"Class added successfully: {class_name}")
-            self.auto_save()  # Auto-save after adding a class
+            
+            if not self.is_loading_project:
+                self.auto_save()
         except Exception as e:
             print(f"Error adding class: {e}")
             import traceback

@@ -2,7 +2,9 @@ import os
 import numpy as np
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, 
                              QSpinBox, QProgressBar, QMessageBox, QListWidget, QDialogButtonBox,
-                             QGridLayout, QComboBox, QApplication)
+                             QGridLayout, QComboBox, QApplication, QScrollArea, QWidget)
+
+
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtCore import QTimer, QEventLoop
 from tifffile import TiffFile, imsave
@@ -130,7 +132,7 @@ class ImagePatcherTool(QDialog):
     def initUI(self):
         layout = QVBoxLayout()
         self.setLayout(layout)
-
+    
         # Input files selection
         input_layout = QHBoxLayout()
         self.input_label = QLabel("Input Files:")
@@ -139,7 +141,7 @@ class ImagePatcherTool(QDialog):
         input_layout.addWidget(self.input_label)
         input_layout.addWidget(self.input_button)
         layout.addLayout(input_layout)
-
+    
         # Output directory selection
         output_layout = QHBoxLayout()
         self.output_label = QLabel("Output Directory:")
@@ -148,7 +150,7 @@ class ImagePatcherTool(QDialog):
         output_layout.addWidget(self.output_label)
         output_layout.addWidget(self.output_button)
         layout.addLayout(output_layout)
-
+    
         # Patch size inputs
         patch_layout = QHBoxLayout()
         patch_layout.addWidget(QLabel("Patch Size (W x H):"))
@@ -161,7 +163,7 @@ class ImagePatcherTool(QDialog):
         patch_layout.addWidget(self.patch_w)
         patch_layout.addWidget(self.patch_h)
         layout.addLayout(patch_layout)
-
+    
         # Overlap inputs
         overlap_layout = QHBoxLayout()
         overlap_layout.addWidget(QLabel("Overlap (X, Y):"))
@@ -174,24 +176,40 @@ class ImagePatcherTool(QDialog):
         overlap_layout.addWidget(self.overlap_x)
         overlap_layout.addWidget(self.overlap_y)
         layout.addLayout(overlap_layout)
-
-        # Patch info label
+    
+        # Create a scroll area for patch info
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumHeight(200)  # Set a minimum height for the scroll area
+        
+        # Create a widget to hold the patch info label
+        self.patch_info_container = QWidget()
+        patch_info_layout = QVBoxLayout(self.patch_info_container)
+        
+        # Add the patch info label to the container
         self.patch_info_label = QLabel()
-        self.patch_info_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.patch_info_label)
-
+        self.patch_info_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        patch_info_layout.addWidget(self.patch_info_label)
+        
+        # Set the container as the scroll area's widget
+        scroll_area.setWidget(self.patch_info_container)
+        
+        # Add the scroll area to the main layout
+        layout.addWidget(scroll_area)
+    
         # Start button
         self.start_button = QPushButton("Start Patching")
         self.start_button.clicked.connect(self.start_patching)
         layout.addWidget(self.start_button)
-
+    
         # Progress bar
         self.progress_bar = QProgressBar()
         layout.addWidget(self.progress_bar)
-
+    
         self.setWindowTitle('Image Patcher Tool')
-        self.setGeometry(300, 300, 400, 300)
-
+        self.setMinimumWidth(500)  # Set a minimum width for the dialog
+        self.setMinimumHeight(600)  # Set a minimum height for the dialog
+    
         # Connect value changed signals
         self.patch_w.valueChanged.connect(self.update_patch_info)
         self.patch_h.valueChanged.connect(self.update_patch_info)
@@ -322,14 +340,15 @@ class ImagePatcherTool(QDialog):
         if not self.input_files:
             self.patch_info_label.setText("No input files selected")
             return
-
+    
         patch_info = self.get_patch_info()
         if patch_info:
-            info_text = "Patch Information:\n\n"
+            info_text = "<html><body><p><b>Patch Information:</b></p>"
             for file_name, info in patch_info.items():
-                info_text += f"File: {file_name}\n"
-                info_text += f"Patches in X: {info['patches_x']}, Y: {info['patches_y']}\n"
-                info_text += f"Leftover pixels in X: {info['leftover_x']}, Y: {info['leftover_y']}\n\n"
+                info_text += f"<p><b>File:</b> {file_name}<br>"
+                info_text += f"<b>Patches:</b> X: {info['patches_x']}, Y: {info['patches_y']}<br>"
+                info_text += f"<b>Leftover pixels:</b> X: {info['leftover_x']}, Y: {info['leftover_y']}</p>"
+            info_text += "</body></html>"
             self.patch_info_label.setText(info_text)
         else:
             self.patch_info_label.setText("Unable to calculate patch information")

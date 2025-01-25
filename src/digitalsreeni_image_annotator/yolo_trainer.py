@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
 import yaml
 import numpy as np
 from pathlib import Path
-from .export_formats import export_yolo_v8
+from .export_formats import export_yolo_v5plus
 
 
 from collections import deque
@@ -129,7 +129,7 @@ class YOLOTrainer(QObject):
         return False
 
     def prepare_dataset(self):
-        train_dir, yaml_path = export_yolo_v8(
+        output_dir, yaml_path = export_yolo_v5plus(
             self.main_window.all_annotations,
             self.main_window.class_mapping,
             self.main_window.image_paths,
@@ -142,9 +142,9 @@ class YOLOTrainer(QObject):
         with yaml_path.open('r') as f:
             yaml_content = yaml.safe_load(f)
         
-        # Use relative paths
-        yaml_content['train'] = 'train/images'
-        yaml_content['val'] = 'train/images'
+        # Update paths for new YOLO v5+ structure
+        yaml_content['train'] = 'images/train'  # Changed from train/images
+        yaml_content['val'] = 'images/val'      # Changed from train/images
         yaml_content['test'] = '../test/images'
         
         with yaml_path.open('w') as f:
@@ -221,15 +221,20 @@ class YOLOTrainer(QObject):
                 yaml_content = yaml.safe_load(f)
             print(f"YAML content: {yaml_content}")
             
-            # Construct full paths for training
-            full_train_path = str(yaml_dir / yaml_content['train'])
-            full_val_path = str(yaml_dir / yaml_content['val'])
+            # For now, use train as val since we don't have separate validation set
+            train_dir = str(yaml_dir / 'images' / 'train')
             
-            # Update YAML content with full paths
-            yaml_content['train'] = full_train_path
-            yaml_content['val'] = full_val_path
+            # Update YAML content with correct paths
+            yaml_content['train'] = train_dir
+            yaml_content['val'] = train_dir  # Use same directory for validation
             
-            # Write updated YAML with full paths
+            # Create the val directory structure if it doesn't exist
+            val_img_dir = yaml_dir / 'images' / 'val'
+            val_label_dir = yaml_dir / 'labels' / 'val'
+            val_img_dir.mkdir(parents=True, exist_ok=True)
+            val_label_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Write updated YAML with adjusted paths
             temp_yaml_path = yaml_dir / 'temp_train.yaml'
             with temp_yaml_path.open('w') as f:
                 yaml.dump(yaml_content, f, default_flow_style=False)
@@ -253,17 +258,31 @@ class YOLOTrainer(QObject):
         with yaml_path.open('r') as f:
             yaml_content = yaml.safe_load(f)
         
-        train_images_dir = yaml_dir / yaml_content['train']
-        train_labels_dir = train_images_dir.parent / 'labels'
+        # Use paths from YAML content
+        train_images_dir = yaml_dir / yaml_content.get('train', 'images/train')
+        val_images_dir = yaml_dir / yaml_content.get('val', 'images/val')
+        train_labels_dir = yaml_dir / 'labels' / 'train'  # Labels directory corresponds to images
+        val_labels_dir = yaml_dir / 'labels' / 'val'      # Labels directory corresponds to images
         
+        # Check both train and val directories
+        missing_dirs = []
         if not train_images_dir.exists():
-            raise FileNotFoundError(f"Training images directory not found: {train_images_dir}")
+            missing_dirs.append(f"Training images directory: {train_images_dir}")
         if not train_labels_dir.exists():
-            raise FileNotFoundError(f"Training labels directory not found: {train_labels_dir}")
+            missing_dirs.append(f"Training labels directory: {train_labels_dir}")
+        if not val_images_dir.exists():
+            missing_dirs.append(f"Validation images directory: {val_images_dir}")
+        if not val_labels_dir.exists():
+            missing_dirs.append(f"Validation labels directory: {val_labels_dir}")
         
-        print(f"Dataset structure verified. Images: {train_images_dir}, Labels: {train_labels_dir}")
-            
-
+        if missing_dirs:
+            raise FileNotFoundError(f"The following directories were not found:\n" + "\n".join(missing_dirs))
+        
+        print(f"Dataset structure verified:")
+        print(f"Train images: {train_images_dir}")
+        print(f"Train labels: {train_labels_dir}")
+        print(f"Val images: {val_images_dir}")
+        print(f"Val labels: {val_labels_dir}")
 
     def check_ultralytics_settings(self):
         settings_path = Path.home() / ".config" / "Ultralytics" / "settings.yaml"

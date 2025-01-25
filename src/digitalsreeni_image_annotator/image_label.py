@@ -395,25 +395,9 @@ class ImageLabel(QLabel):
             painter.restore()
     
     
-    # def draw_tool_size_indicator(self, painter):
-    #     if self.current_tool in ["paint_brush", "eraser"] and hasattr(self, 'cursor_pos'):
-    #         painter.save()
-    #         painter.translate(self.offset_x, self.offset_y)
-    #         painter.scale(self.zoom_factor, self.zoom_factor)
-            
-    #         if self.current_tool == "paint_brush":
-    #             size = self.main_window.paint_brush_size
-    #             color = QColor(255, 0, 0, 128)  # Semi-transparent red
-    #         else:  # eraser
-    #             size = self.main_window.eraser_size
-    #             color = QColor(0, 0, 255, 128)  # Semi-transparent blue
-            
-    #         painter.setPen(QPen(color, 1 / self.zoom_factor, Qt.SolidLine))
-    #         painter.setBrush(Qt.NoBrush)
-    #         painter.drawEllipse(QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size)
-            
-    #         painter.restore()
-    
+
+        
+
     def draw_tool_size_indicator(self, painter):
         if self.current_tool in ["paint_brush", "eraser"] and hasattr(self, 'cursor_pos'):
             painter.save()
@@ -427,27 +411,41 @@ class ImageLabel(QLabel):
                 size = self.main_window.eraser_size
                 color = QColor(0, 0, 255, 128)  # Semi-transparent blue
             
-            # Draw filled circle
+            # Draw filled circle with lower opacity
+            painter.setOpacity(0.3)
             painter.setPen(Qt.NoPen)
             painter.setBrush(color)
             painter.drawEllipse(QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size)
             
-            # Draw circle outline
+            # Draw circle outline with full opacity
+            painter.setOpacity(1.0)
             painter.setPen(QPen(color.darker(150), 1 / self.zoom_factor, Qt.SolidLine))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size)
             
-            # Draw text to show current size
-            font = QFont("Arial")
-            font.setPointSizeF(10 / self.zoom_factor)
+            # Draw size text
+            # Reset the transform to ensure text is drawn at screen coordinates
+            painter.resetTransform()
+            font = QFont()
+            font.setPointSize(10)
             painter.setFont(font)
-            painter.setPen(Qt.black)  # Set text color to black for better visibility
-            text_rect = QRectF(self.cursor_pos[0] + size + 5, self.cursor_pos[1] - 10, 50, 20)
-            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, f"Size: {size}")
+            painter.setPen(QPen(Qt.black))  # Use black color for better visibility
+            
+            # Convert cursor position back to screen coordinates
+            screen_x = self.cursor_pos[0] * self.zoom_factor + self.offset_x
+            screen_y = self.cursor_pos[1] * self.zoom_factor + self.offset_y
+            
+            # Position text above the circle
+            text_rect = QRectF(screen_x + (size * self.zoom_factor), 
+                              screen_y - (size * self.zoom_factor),
+                              100, 20)
+            
+            text = f"Size: {size}"
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
             
             painter.restore()
-        
-    
+
+
     def draw_paint_mask(self, painter):
         if self.paint_mask is not None:
             mask_image = QImage(self.paint_mask.data, self.paint_mask.shape[1], self.paint_mask.shape[0], self.paint_mask.shape[1], QImage.Format_Grayscale8)
