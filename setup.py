@@ -10,7 +10,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="digitalsreeni-image-annotator",
-    version="0.8.11",  # Updated version number
+    version="0.8.12",  # Updated version number
     author="Dr. Sreenivas Bhattiprolu",
     author_email="digitalsreeni@gmail.com",
     description="A tool for annotating images using manual and automated tools, supporting multi-dimensional images and SAM2-assisted annotations",
@@ -37,7 +37,7 @@ setup(
         "opencv-python==4.10.0.84",
         "pyyaml==6.0.2",
         "scikit-image==0.24.0",
-        "ultralytics==8.23.27",
+        "ultralytics==8.3.27",
         "plotly==5.24.1",
         "shapely==2.0.6", 
         "pystackreg==0.2.8",
