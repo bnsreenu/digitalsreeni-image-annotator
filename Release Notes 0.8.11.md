@@ -1,5 +1,5 @@
 # Release Notes
-## Version 0.8.9
+## Version 0.8.11
 
 ### New Features and Enhancements
 - Same as version 0.8.9 except changed the requirements file to define specific version numbers for the libraies used.
