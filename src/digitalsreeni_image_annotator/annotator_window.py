@@ -2120,7 +2120,22 @@ class ImageAnnotator(QMainWindow):
         self.class_list.customContextMenuRequested.connect(self.show_class_context_menu)
         self.class_list.itemClicked.connect(self.on_class_selected)
         self.sidebar_layout.addWidget(self.class_list)
-        
+
+
+        button_layout_class_list = QHBoxLayout()
+        self.clrButton =QPushButton(self.class_list)
+        self.clrButton.setText("clear all")
+        self.clrButton.setEnabled(False)
+        self.allButton = QPushButton(self.class_list)
+        self.allButton.setText("select all")
+        self.allButton.setEnabled(False)
+        button_layout_class_list.addWidget(self.clrButton)
+        button_layout_class_list.addWidget(self.allButton)
+        self.clrButton.clicked.connect(lambda : self.toggle_all_class(Qt.Unchecked))
+        self.allButton.clicked.connect(lambda : self.toggle_all_class(Qt.Checked))
+        self.sidebar_layout.addLayout(button_layout_class_list)
+
+      
         # Annotation section
         self.sidebar_layout.addWidget(create_section_header("Annotation"))
         annotation_widget = QWidget()
@@ -2511,6 +2526,9 @@ class ImageAnnotator(QMainWindow):
     
         # Reset class-related data
         self.class_list.clear()
+        self.allButton.setEnabled(False)
+        self.clrButton.setEnabled(False)
+        
         self.image_label.class_colors.clear()
         self.class_mapping.clear()
     
@@ -2833,7 +2851,9 @@ class ImageAnnotator(QMainWindow):
             self.update_annotation_list()  # This will repopulate the annotation list
             self.image_label.update()  # Force a redraw of the image label
 
-
+            if self.class_list.count() > 0:
+                self.allButton.setEnabled(True)
+                self.clrButton.setEnabled(True)
 
 
     def clear_highlighted_annotation(self):
@@ -3160,7 +3180,9 @@ class ImageAnnotator(QMainWindow):
             import traceback
             traceback.print_exc()
 
-
+        if self.class_list.count() > 0:
+            self.allButton.setEnabled(True)
+            self.clrButton.setEnabled(True)
     
     def update_class_item_color(self, item, color):
         pixmap = QPixmap(16, 16)
@@ -3197,7 +3219,11 @@ class ImageAnnotator(QMainWindow):
         elif self.class_list.count() > 0:
             # If no class is selected, select the first one
             self.class_list.setCurrentItem(self.class_list.item(0))
-    
+
+        if self.class_list.count() > 0:
+            self.allButton.setEnabled(True)
+            self.clrButton.setEnabled(True)
+          
         print(f"Updated class list with {self.class_list.count()} items")
         
     def update_class_selection(self):
@@ -3216,6 +3242,13 @@ class ImageAnnotator(QMainWindow):
         item.setData(Qt.UserRole, is_visible)
         self.image_label.update()
     
+
+    def toggle_all_class(self, checked):
+        for i in range(self.class_list.count()):
+            item = self.class_list.item(i)
+            item.setCheckState(checked)
+        # Update image annotations
+        self.image_label.update()
     
         
     def change_annotation_class(self):
