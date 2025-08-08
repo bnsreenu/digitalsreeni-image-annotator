@@ -1078,14 +1078,14 @@ class ImageAnnotator(QMainWindow):
             # If the user chooses not to discard temp annotations, revert the selection
             self.image_list.setCurrentItem(current_item)
             return
-    
+
         self.save_current_annotations()
         self.image_label.clear_temp_sam_prediction()
         self.image_label.exit_editing_mode()
-    
+
         file_name = item.text()
         print(f"\nSwitching to image: {file_name}")
-    
+
         image_info = next((img for img in self.all_images if img["file_name"] == file_name), None)
         
         if image_info:
@@ -1094,7 +1094,7 @@ class ImageAnnotator(QMainWindow):
             
             if not image_path:
                 image_path = os.path.join(self.current_project_dir, "images", file_name)
-    
+
             if image_path and os.path.exists(image_path):
                 if image_info.get('is_multi_slice', False):
                     base_name = os.path.splitext(file_name)[0]
@@ -1121,6 +1121,8 @@ class ImageAnnotator(QMainWindow):
                 self.image_label.reset_annotation_state()
                 self.image_label.clear_current_annotation()
                 self.update_image_info()
+
+                self.adjust_zoom_to_fit()
             else:
                 self.current_image = None
                 self.image_label.clear()
@@ -1129,7 +1131,6 @@ class ImageAnnotator(QMainWindow):
                 self.update_image_info()
             
             self.image_list.setCurrentItem(item)
-            self.set_zoom(1.0)
             self.image_label.update()
             self.update_slice_list_colors()
         else:
@@ -1138,6 +1139,20 @@ class ImageAnnotator(QMainWindow):
             self.image_label.clear()
             self.update_image_info()
             self.clear_slice_list()
+
+    def adjust_zoom_to_fit(self):
+        if not self.current_image:
+            return
+
+        # Get the dimensions of the image and the display area
+        image_width = self.current_image.width()
+        image_height = self.current_image.height()
+        display_width = self.scroll_area.viewport().width()
+        display_height = self.scroll_area.viewport().height()
+
+        # Calculate and apply the zoom factor to fit the longest side
+        zoom_factor = min(display_width / image_width, display_height / image_height)
+        self.set_zoom(zoom_factor)
         
             
     def activate_current_slice(self):
