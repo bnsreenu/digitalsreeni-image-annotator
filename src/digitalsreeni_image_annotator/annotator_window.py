@@ -2433,6 +2433,7 @@ class ImageAnnotator(QMainWindow):
 
         self.image_list = QListWidget()
         self.image_list.itemClicked.connect(self.switch_image)
+        self.image_list.currentRowChanged.connect(lambda row: self.switch_image(self.image_list.currentItem()))
         self.image_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.image_list.customContextMenuRequested.connect(self.show_image_context_menu)
         self.image_list_layout.addWidget(self.image_list)
