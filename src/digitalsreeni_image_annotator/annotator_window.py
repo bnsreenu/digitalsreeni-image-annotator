@@ -1050,8 +1050,11 @@ class ImageAnnotator(QMainWindow):
             self.save_current_annotations()
             self.update_slice_list_colors()
             self.image_label.temp_sam_prediction = None
+            # --- Clear points after accepting
+            self.image_label.sam_positive_points = []
+            self.image_label.sam_negative_points = []
             self.image_label.update()
-            print("SAM prediction accepted and added to annotations.")
+            print("SAM prediction accepted, points cleared, and added to annotations.")
 
     def setup_slice_list(self):
         self.slice_list = QListWidget()
