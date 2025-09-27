@@ -1003,14 +1003,22 @@ class ImageAnnotator(QMainWindow):
             x1, y1, x2, y2 = self.image_label.sam_bbox
             bbox = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
             prediction = self.sam_utils.apply_sam_prediction(self.current_image, bbox)
+            self.image_label.sam_bbox = None
         elif self.image_label.current_tool == "sam_points":
-            if not self.image_label.sam_positive_points:
+            # Always use all points!
+            pos_points = self.image_label.sam_positive_points
+            neg_points = self.image_label.sam_negative_points
+            print(
+                f"[SAM-POINTS] Predicting with {len(pos_points)} positive points: {pos_points} "
+                f"and {len(neg_points)} negative points: {neg_points}"
+            )
+            if not pos_points:
                 print("No positive points for SAM-points")
                 return
             prediction = self.sam_utils.apply_sam_points(
                 self.current_image,
-                self.image_label.sam_positive_points,
-                self.image_label.sam_negative_points,
+                pos_points,
+                neg_points,
             )
         else:
             return
@@ -1026,10 +1034,11 @@ class ImageAnnotator(QMainWindow):
             self.image_label.update()
         else:
             print("Failed to generate prediction")
-        self.image_label.sam_bbox = None
-        self.image_label.sam_positive_points = []
-        self.image_label.sam_negative_points = []
-        self.image_label.update()
+
+        # Only clear box/points for box mode, not for points mode!
+        if self.image_label.current_tool == "sam_box":
+            self.image_label.sam_bbox = None
+            self.image_label.update()
 
     def accept_sam_prediction(self):
         if self.image_label.temp_sam_prediction:

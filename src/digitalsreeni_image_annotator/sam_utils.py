@@ -35,13 +35,16 @@ class SAMUtils:
             for x, y in negative_points:
                 points.append([x, y])
                 labels.append(0)
+            print(f"SAM input points: {points}, labels: {labels}")
             if not points:
+                print("No points provided to SAM.")
                 return None
             results = self.sam_model(image_np, points=points, labels=labels)
             mask = results[0].masks.data[0].cpu().numpy()
             if mask is not None:
                 contours = self.mask_to_polygon(mask)
                 if not contours:
+                    print("No valid contours found in mask.")
                     return None
                 prediction = {
                     "segmentation": contours[0],
@@ -49,6 +52,7 @@ class SAMUtils:
                 }
                 return prediction
             else:
+                print("No mask returned by SAM model.")
                 return None
         except Exception as e:
             print(f"Error in applying SAM points: {str(e)}")

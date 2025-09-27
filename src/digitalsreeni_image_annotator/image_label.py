@@ -797,15 +797,18 @@ class ImageLabel(QLabel):
             pos = self.get_image_coordinates(event.pos())
             # --- Immediate SAM-points prediction on click ---
             if self.sam_points_active:
+                print(f"sam_points_active: {self.sam_points_active}")
                 if event.button() == Qt.LeftButton:
                     self.sam_positive_points.append(pos)
                     self.update()
                     self.main_window.apply_sam_prediction()
+                    print(f"sam_positive_points: {self.sam_positive_points}")
                     return
                 elif event.button() == Qt.RightButton:
                     self.sam_negative_points.append(pos)
                     self.update()
                     self.main_window.apply_sam_prediction()
+                    print(f"sam_negative_points: {self.sam_negative_points}")
                     return
             # --- End immediate SAM-points handling ---
 
