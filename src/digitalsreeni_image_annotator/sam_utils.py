@@ -27,19 +27,15 @@ class SAMUtils:
     def apply_sam_points(self, image, positive_points, negative_points):
         try:
             image_np = self.qimage_to_numpy(image)
-            points = []
-            labels = []
-            for x, y in positive_points:
-                points.append([x, y])
-                labels.append(1)
-            for x, y in negative_points:
-                points.append([x, y])
-                labels.append(0)
-            print(f"SAM input points: {points}, labels: {labels}")
-            if not points:
+            # Build a single object prompt with all points
+            all_points = [list(positive_points) + list(negative_points)]
+            all_labels = [([1] * len(positive_points)) + ([0] * len(negative_points))]
+            print(f"SAM input points: {all_points}, labels: {all_labels}")
+            if not all_points[0]:
                 print("No points provided to SAM.")
                 return None
-            results = self.sam_model(image_np, points=points, labels=labels)
+            # The correct shape for a single object is: [ [ [x1,y1], [x2,y2], ... ] ], [ [1,0,...] ]
+            results = self.sam_model(image_np, points=all_points, labels=all_labels)
             mask = results[0].masks.data[0].cpu().numpy()
             if mask is not None:
                 contours = self.mask_to_polygon(mask)
