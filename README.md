@@ -15,6 +15,7 @@ If you find this project helpful, consider supporting it:
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
 ## Watch the demo (of v0.8.0):
+
 [![Watch the demo video](https://img.youtube.com/vi/aArn1f1YIQk/maxresdefault.jpg)](https://youtu.be/aArn1f1YIQk)
 
 @DigitalSreeni
@@ -25,9 +26,9 @@ Dr. Sreenivas Bhattiprolu
 - Semi-automated annotations with SAM-2 assistance (Segment Anything Model) — Because who doesn't love a helpful AI sidekick?
 - Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge.
 - Paint brush and Eraser tools with adjustable pen sizes (use - and = on your keyboard)
-- Merge annotations - For when SAM-2's guesswork needs a little human touch. 
+- Merge annotations - For when SAM-2's guesswork needs a little human touch.
 - Save and load projects for continued work.
-- Save As... and Autosave functionality. 
+- Save As... and Autosave functionality.
 - A secret game, for when you are bored.
 - Import existing COCO JSON annotations with images.
 - Export annotations to various formats (COCO JSON, YOLO v8/v11, Labeled images, Semantic labels, Pascal VOC).
@@ -53,8 +54,8 @@ Dr. Sreenivas Bhattiprolu
 - Project Details: View and edit project metadata, including creation date, last modified date, image information, and custom notes.
 - Advanced Project Search: Search through multiple projects using complex queries with logical operators (AND, OR) and parentheses.
 - Slice Registration
-    - Align image slices in a stack with multiple registration methods
-    - Support for various reference frames and transformation types
+  - Align image slices in a stack with multiple registration methods
+  - Support for various reference frames and transformation types
   - Stack Interpolation
     - Adjust Z-spacing in image stacks
     - Multiple interpolation methods with memory-efficient processing
@@ -63,13 +64,14 @@ Dr. Sreenivas Bhattiprolu
     - Preserve metadata and physical dimensions
     - Export metadata to JSON for reference
 
-
 ## Operating System Requirements
+
 This application is built using PyQt5 and has been tested on macOS and Windows. It may experience compatibility issues on Linux systems, particularly related to the XCB plugin for PyQt5. Extensive testing on Linux systems has not been done yet.
 
 ## Installation
 
 ### Watch the installation walkthough video:
+
 [![Watch the installation video](https://img.youtube.com/vi/VI6V95eUUpY/maxresdefault.jpg)](https://youtu.be/VI6V95eUUpY)
 
 You can install the DigitalSreeni Image Annotator directly from PyPI:
@@ -83,43 +85,49 @@ The application uses the Ultralytics library, so there's no need to separately i
 ## Usage
 
 1. Run the DigitalSreeni Image Annotator application:
+
    ```bash
    digitalsreeni-image-annotator
    ```
+
    or
-    ```bash
-    sreeni
-    ```
+
+   ```bash
+   sreeni
+   ```
+
    or
+
    ```bash
    python -m digitalsreeni_image_annotator.main
    ```
 
 2. Using the application:
+
    - Click "New Project" or use Ctrl+N to start a new project.
    - Use "Add New Images" to import images, including TIFF stacks and CZI files.
    - Add classes using the "Add Classes" button.
    - Select a class and use the Polygon or Rectangle or Paint Brush tool to create manual annotations.
    - To use SAM2-assisted annotation:
-     - Select a model from the "Pick a SAM Model" dropdown. It's recommended to use smaller models like SAM2 tiny or SAM2 small. SAM2 large is not recommended as it may crash the application on systems with limited resources.  
+     - Select a model from the "Pick a SAM Model" dropdown. It's recommended to use smaller models like SAM2 tiny or SAM2 small. SAM2 large is not recommended as it may crash the application on systems with limited resources.
      - Note: When you select a model for the first time, the application needs to download it. This process may take a few seconds to a minute, depending on your internet connection speed. Subsequent uses of the same model will be faster as it will already be cached locally, in your working directory.
      - Click the "SAM-Assisted" button to activate the tool.
      - Draw a rectangle around objects of interest to allow SAM2 to automatically detect objects.
      - Note that SAM2 provides various outputs with different scores, and only the top-scoring region will be displayed. If the desired result isn't achieved on the first try, draw again.
      - For low-quality images where SAM2 may not auto-detect objects, manual tools may be necessary.
      - When SAM2 auto-detect partial objects, use polygon or paint brush tools to manually define the remaining region and use the Merge tool to combine both annotations into one.
-     - When SAM2 over-annotates objects, extending the annotation beyond object's boundaries, use the Eraser tool to clean up the edges. 
-     - Both paint brush and eraser tools can be adjusted for pen size by using - or = keys on your keyboard.  
+     - When SAM2 over-annotates objects, extending the annotation beyond object's boundaries, use the Eraser tool to clean up the edges.
+     - Both paint brush and eraser tools can be adjusted for pen size by using - or = keys on your keyboard.
    - Edit existing annotations by double-clicking on them.
    - Edit existing annotations using the Eraser tool. Adjust the eraser size by using - or = keys on your keyboard.
-   - Merge connected annotations by selecting them from the Annotations list and clicking the Merge button. 
+   - Merge connected annotations by selecting them from the Annotations list and clicking the Merge button.
    - Change the class of an annotation to a different class.
    - Turn visibility of a class ON and OFF.
    - Use YOLO (beta) training with current annotations and load the trained model to segment images and convert segmentations to annotations. (Currently not implemented for slices or stacks, just single images.)
    - Accept/reject one or select class predictions at a time to add them as annotations.
    - View area measurements for annotations displayed next to the Annotation name.
    - Sort annotations by name/number or area.
-   - Save your project using "Save Project" or Ctrl+S. Alternatively, you can use Save As... to save the project with a different name. 
+   - Save your project using "Save Project" or Ctrl+S. Alternatively, you can use Save As... to save the project with a different name.
    - Use "Open Project" or Ctrl+O to load a previously saved project.
    - Click "Import Annotations with Images" to load existing COCO JSON annotations along with their images.
    - Use "Export Annotations" to save annotations in various formats (COCO JSON, YOLO v8/v11, Labeled images, Semantic labels, Pascal VOC).
@@ -176,20 +184,28 @@ The application uses the Ultralytics library, so there's no need to separately i
 For development purposes, you can clone the repository and install it in editable mode:
 
 1. Clone the repository:
+
    ```bash
    git clone https://github.com/bnsreenu/digitalsreeni-image-annotator.git
    cd digitalsreeni-image-annotator
    ```
 
 2. Create a virtual environment (optional but recommended):
+
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
    ```
 
 3. Install the package and its dependencies in editable mode:
+
    ```bash
    pip install -e .
+   ```
+
+4. Start the application:
+   ```bash
+   python -m src.digitalsreeni_image_annotator.main
    ```
 
 ## Contributing
@@ -221,7 +237,7 @@ Project Link: [https://github.com/bnsreenu/digitalsreeni-image-annotator](https:
 
 If you use this software in your research, please cite it as follows:
 
-Bhattiprolu, S. (2024). DigitalSreeni Image Annotator [Computer software]. 
+Bhattiprolu, S. (2024). DigitalSreeni Image Annotator [Computer software].
 https://github.com/bnsreenu/digitalsreeni-image-annotator
 
 ```bibtex
