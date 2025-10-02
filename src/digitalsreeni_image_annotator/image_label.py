@@ -725,8 +725,9 @@ class ImageLabel(QLabel):
         else:
             pos = self.cursor_pos
             if self.sam_magic_wand_active and self.drawing_sam_bbox:
-                self.sam_bbox[2] = pos[0]
-                self.sam_bbox[3] = pos[1]
+                if self.sam_bbox is not None:
+                    self.sam_bbox[2] = pos[0]
+                    self.sam_bbox[3] = pos[1]
             elif self.editing_polygon:
                 self.handle_editing_move(pos)
             elif self.current_tool == "polygon" and self.current_annotation:
@@ -751,10 +752,11 @@ class ImageLabel(QLabel):
             pos = self.get_image_coordinates(event.pos())
             if event.button() == Qt.LeftButton:
                 if self.sam_magic_wand_active and self.drawing_sam_bbox:
-                    self.sam_bbox[2] = pos[0]
-                    self.sam_bbox[3] = pos[1]
-                    self.drawing_sam_bbox = False
-                    self.main_window.apply_sam_prediction()
+                    if self.sam_bbox is not None:
+                        self.sam_bbox[2] = pos[0]
+                        self.sam_bbox[3] = pos[1]
+                        self.drawing_sam_bbox = False
+                        self.main_window.apply_sam_prediction()
                 elif self.editing_polygon:
                     self.editing_point_index = None
                 elif self.current_tool == "rectangle" and self.drawing_rectangle:
