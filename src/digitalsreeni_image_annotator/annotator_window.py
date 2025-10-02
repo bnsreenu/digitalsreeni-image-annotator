@@ -3565,8 +3565,35 @@ class ImageAnnotator(QMainWindow):
                 QMessageBox.warning(self, "No Class Selected", "Please select a class before finishing the annotation.")
                 return
             
+            # Create a polygon from the current annotation
+            polygon = Polygon(self.image_label.current_annotation)
+            
+            # Define the image boundary as a rectangle
+            image_boundary = Polygon([(0, 0), (self.current_image.width(), 0), 
+                                       (self.current_image.width(), self.current_image.height()), 
+                                       (0, self.current_image.height())])
+            
+            # Intersect the polygon with the image boundary
+            clipped_polygon = polygon.intersection(image_boundary)
+            
+            if clipped_polygon.is_empty:
+                QMessageBox.warning(self, "Invalid Annotation", "The annotation is completely outside the image boundaries.")
+                self.image_label.clear_current_annotation()
+                self.image_label.update()
+                return
+            
+            # Convert the clipped polygon to a segmentation format
+            if isinstance(clipped_polygon, Polygon):
+                segmentation = [coord for point in clipped_polygon.exterior.coords for coord in point]
+            elif isinstance(clipped_polygon, MultiPolygon):
+                largest_polygon = max(clipped_polygon.geoms, key=lambda p: p.area)
+                segmentation = [coord for point in largest_polygon.exterior.coords for coord in point]
+            else:
+                QMessageBox.warning(self, "Invalid Annotation", "The annotation could not be processed.")
+                return
+            
             new_annotation = {
-                "segmentation": [coord for point in self.image_label.current_annotation for coord in point],
+                "segmentation": segmentation,
                 "category_id": self.class_mapping[self.current_class],
                 "category_name": self.current_class,
             }
@@ -3651,8 +3678,36 @@ class ImageAnnotator(QMainWindow):
     def finish_rectangle(self):
         if self.image_label.current_rectangle:
             x1, y1, x2, y2 = self.image_label.current_rectangle
+            
+            # Create a rectangle polygon from the annotation
+            rectangle = Polygon([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
+            
+            # Define the image boundary as a rectangle
+            image_boundary = Polygon([(0, 0), (self.current_image.width(), 0), 
+                                       (self.current_image.width(), self.current_image.height()), 
+                                       (0, self.current_image.height())])
+            
+            # Intersect the rectangle with the image boundary
+            clipped_rectangle = rectangle.intersection(image_boundary)
+            
+            if clipped_rectangle.is_empty:
+                QMessageBox.warning(self, "Invalid Annotation", "The annotation is completely outside the image boundaries.")
+                self.image_label.current_rectangle = None
+                self.image_label.update()
+                return
+            
+            # Convert the clipped rectangle to a segmentation format
+            if isinstance(clipped_rectangle, Polygon):
+                segmentation = [coord for point in clipped_rectangle.exterior.coords for coord in point]
+            elif isinstance(clipped_rectangle, MultiPolygon):
+                largest_polygon = max(clipped_rectangle.geoms, key=lambda p: p.area)
+                segmentation = [coord for point in largest_polygon.exterior.coords for coord in point]
+            else:
+                QMessageBox.warning(self, "Invalid Annotation", "The annotation could not be processed.")
+                return
+            
             new_annotation = {
-                "segmentation": [x1, y1, x2, y1, x2, y2, x1, y2],
+                "segmentation": segmentation,
                 "category_id": self.class_mapping[self.current_class],
                 "category_name": self.current_class,
             }
