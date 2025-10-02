@@ -793,49 +793,45 @@ class ImageLabel(QLabel):
             self.pan_start_pos = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
-        else:
-            pos = self.get_image_coordinates(event.pos())
-            # --- Immediate SAM-points prediction on click ---
-            if self.sam_points_active:
-                print(f"sam_points_active: {self.sam_points_active}")
-                if event.button() == Qt.LeftButton:
-                    self.sam_positive_points.append(pos)
-                    self.update()
-                    self.main_window.apply_sam_prediction()
-                    print(f"sam_positive_points: {self.sam_positive_points}")
-                    return
-                elif event.button() == Qt.RightButton:
-                    self.sam_negative_points.append(pos)
-                    self.update()
-                    self.main_window.apply_sam_prediction()
-                    print(f"sam_negative_points: {self.sam_negative_points}")
-                    return
-            # --- End immediate SAM-points handling ---
+            return
 
+        pos = self.get_image_coordinates(event.pos())
+        if self.current_tool == "sam_points" and self.sam_points_active:
             if event.button() == Qt.LeftButton:
-                if self.sam_box_active:
-                    self.sam_bbox = [pos[0], pos[1], pos[0], pos[1]]
-                    self.drawing_sam_bbox = True
-                elif self.sam_magic_wand_active:
-                    self.sam_bbox = [pos[0], pos[1], pos[0], pos[1]]
-                    self.drawing_sam_bbox = True
-                elif self.editing_polygon:
-                    self.handle_editing_click(pos, event)
-                elif self.current_tool == "polygon":
-                    if not self.drawing_polygon:
-                        self.drawing_polygon = True
-                        self.current_annotation = []
-                    self.current_annotation.append(pos)
-                elif self.current_tool == "rectangle":
-                    self.start_point = pos
-                    self.end_point = pos
-                    self.drawing_rectangle = True
-                    self.current_rectangle = None
-                elif self.current_tool == "paint_brush":
-                    self.start_painting(pos)
-                elif self.current_tool == "eraser":
-                    self.start_erasing(pos)
-            self.update()
+                self.sam_positive_points.append(pos)
+                self.update()
+                self.main_window.apply_sam_prediction()
+                return
+            elif event.button() == Qt.RightButton:
+                self.sam_negative_points.append(pos)
+                self.update()
+                self.main_window.apply_sam_prediction()
+                return
+
+        if event.button() == Qt.LeftButton:
+            if self.current_tool == "sam_box" and self.sam_box_active:
+                self.sam_bbox = [pos[0], pos[1], pos[0], pos[1]]
+                self.drawing_sam_bbox = True
+            elif self.sam_magic_wand_active:
+                self.sam_bbox = [pos[0], pos[1], pos[0], pos[1]]
+                self.drawing_sam_bbox = True
+            elif self.editing_polygon:
+                self.handle_editing_click(pos, event)
+            elif self.current_tool == "polygon":
+                if not self.drawing_polygon:
+                    self.drawing_polygon = True
+                    self.current_annotation = []
+                self.current_annotation.append(pos)
+            elif self.current_tool == "rectangle":
+                self.start_point = pos
+                self.end_point = pos
+                self.drawing_rectangle = True
+                self.current_rectangle = None
+            elif self.current_tool == "paint_brush":
+                self.start_painting(pos)
+            elif self.current_tool == "eraser":
+                self.start_erasing(pos)
+        self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if not self.original_pixmap:
@@ -850,35 +846,35 @@ class ImageLabel(QLabel):
                 scrollbar_v.setValue(scrollbar_v.value() - delta.y())
                 self.pan_start_pos = event.pos()
             event.accept()
-        else:
-            pos = self.cursor_pos
-            if (
-                self.sam_box_active
-                and self.drawing_sam_bbox
-                and self.sam_bbox is not None
-            ):
-                self.sam_bbox[2] = pos[0]
-                self.sam_bbox[3] = pos[1]
-            elif (
-                self.sam_magic_wand_active
-                and self.drawing_sam_bbox
-                and self.sam_bbox is not None
-            ):
-                self.sam_bbox[2] = pos[0]
-                self.sam_bbox[3] = pos[1]
-            elif self.editing_polygon:
-                self.handle_editing_move(pos)
-            elif self.current_tool == "polygon" and self.current_annotation:
-                self.temp_point = pos
-            elif self.current_tool == "rectangle" and self.drawing_rectangle:
-                self.end_point = pos
-                self.current_rectangle = self.get_rectangle_from_points()
-            elif (
-                self.current_tool == "paint_brush" and event.buttons() == Qt.LeftButton
-            ):
-                self.continue_painting(pos)
-            elif self.current_tool == "eraser" and event.buttons() == Qt.LeftButton:
-                self.continue_erasing(pos)
+            return
+
+        pos = self.cursor_pos
+        if (
+            self.current_tool == "sam_box"
+            and self.sam_box_active
+            and self.drawing_sam_bbox
+            and self.sam_bbox is not None
+        ):
+            self.sam_bbox[2] = pos[0]
+            self.sam_bbox[3] = pos[1]
+        elif (
+            self.sam_magic_wand_active
+            and self.drawing_sam_bbox
+            and self.sam_bbox is not None
+        ):
+            self.sam_bbox[2] = pos[0]
+            self.sam_bbox[3] = pos[1]
+        elif self.editing_polygon:
+            self.handle_editing_move(pos)
+        elif self.current_tool == "polygon" and self.current_annotation:
+            self.temp_point = pos
+        elif self.current_tool == "rectangle" and self.drawing_rectangle:
+            self.end_point = pos
+            self.current_rectangle = self.get_rectangle_from_points()
+        elif self.current_tool == "paint_brush" and event.buttons() == Qt.LeftButton:
+            self.continue_painting(pos)
+        elif self.current_tool == "eraser" and event.buttons() == Qt.LeftButton:
+            self.continue_erasing(pos)
         self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
