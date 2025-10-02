@@ -148,7 +148,7 @@ class ImageAnnotator(QMainWindow):
         self.image_slices = {}
         self.image_shapes = {}
         
-        #For paint brush and eraser
+        # For paint brush and eraser
         self.paint_brush_size = 10
         self.eraser_size = 10
         # Initialize SAM utils
@@ -165,13 +165,13 @@ class ImageAnnotator(QMainWindow):
         self.tool_group.setExclusive(False)
     
         # Font size control
-        self.font_sizes = {"Small": 8, "Medium": 10, "Large": 12, "XL": 14, "XXL": 16}   #Also, add the otions in create_menu_bar method
+        self.font_sizes = {"Small": 8, "Medium": 10, "Large": 12, "XL": 14, "XXL": 16}   # Also, add the options in create_menu_bar method
         self.current_font_size = "Medium"
     
         # Dark mode control
         self.dark_mode = False
         
-        #Default annotations sorting
+        # Default annotations sorting
         self.current_sort_method = "class"  # Default sorting method
     
         # Setup UI components
@@ -185,9 +185,12 @@ class ImageAnnotator(QMainWindow):
         
         self.class_list.itemChanged.connect(self.toggle_class_visibility)
         
-        #YOLO Trainer
+        # YOLO Trainer
         self.yolo_trainer = None
         self.setup_yolo_menu()
+        
+        # Start in maximized mode
+        self.showMaximized()
 
 
     def setup_ui(self):
