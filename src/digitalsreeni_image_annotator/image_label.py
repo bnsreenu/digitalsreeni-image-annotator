@@ -225,7 +225,7 @@ class ImageLabel(QLabel):
                 updated_annotations = []
                 max_number = max([ann.get('number', 0) for ann in annotations] + [0])
                 for annotation in annotations:
-                    if "segmentation" in annotation:
+                    if "segmentation" in annotation and annotation["segmentation"] is not None:
                         points = np.array(annotation["segmentation"]).reshape(-1, 2).astype(int)
                         mask = np.zeros_like(self.temp_eraser_mask)
                         cv2.fillPoly(mask, [points], 255)
@@ -548,7 +548,7 @@ class ImageLabel(QLabel):
                 painter.setPen(QPen(border_color, 2 / self.zoom_factor, Qt.SolidLine))
                 painter.setBrush(QBrush(fill_color))
     
-                if "segmentation" in annotation:
+                if "segmentation" in annotation and annotation["segmentation"] is not None:
                     segmentation = annotation["segmentation"]
                     if isinstance(segmentation, list) and len(segmentation) > 0:
                         if isinstance(segmentation[0], list):  # Multiple polygons
