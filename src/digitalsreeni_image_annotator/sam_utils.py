@@ -5,12 +5,12 @@ from ultralytics import SAM
 class SAMUtils:
     def __init__(self):
         self.sam_models = {
-            "SAM 2 tiny": "sam2_t.pt",
-            "SAM 2 small": "sam2_s.pt",
+            # "SAM 2 tiny": "sam2_t.pt",
+            # "SAM 2 small": "sam2_s.pt",
             "SAM 2 base": "sam2_b.pt",
             "SAM 2 large": "sam2_l.pt",
-            "SAM 2.1 tiny": "sam2.1_t.pt",
-            "SAM 2.1 small": "sam2.1_s.pt",
+            # "SAM 2.1 tiny": "sam2.1_t.pt",
+            # "SAM 2.1 small": "sam2.1_s.pt",
             "SAM 2.1 base": "sam2.1_b.pt",
             "SAM 2.1 large": "sam2.1_l.pt",
         }

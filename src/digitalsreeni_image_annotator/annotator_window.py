@@ -149,10 +149,10 @@ class ImageAnnotator(QMainWindow):
         self.image_shapes = {}
         
         # For paint brush and eraser
-        self.paint_brush_size = 10
-        self.eraser_size = 10
+        self.paint_brush_size = 6
+        self.eraser_size = 6
         # Initialize SAM utils
-        self.current_sam_model = None
+        self.current_sam_model = "SAM 2.1 base"
         self.sam_utils = SAMUtils()
     
         # Create sam_magic_wand_button
@@ -165,11 +165,11 @@ class ImageAnnotator(QMainWindow):
         self.tool_group.setExclusive(False)
     
         # Font size control
-        self.font_sizes = {"Small": 8, "Medium": 10, "Large": 12, "XL": 14, "XXL": 16}   # Also, add the options in create_menu_bar method
+        self.font_sizes = {"Small": 10, "Medium": 12, "Large": 14, "XL": 16, "XXL": 18}   # Also, add the options in create_menu_bar method
         self.current_font_size = "Medium"
     
         # Dark mode control
-        self.dark_mode = False
+        self.dark_mode = True
         
         # Default annotations sorting
         self.current_sort_method = "class"  # Default sorting method
@@ -2174,9 +2174,12 @@ class ImageAnnotator(QMainWindow):
         button_layout_bottom = QHBoxLayout()
         self.paint_brush_button = QPushButton("Paint Brush")
         self.paint_brush_button.setCheckable(True)
+        self.line_brush_button = QPushButton("Line Brush")
+        self.line_brush_button.setCheckable(True)
         self.eraser_button = QPushButton("Eraser")
         self.eraser_button.setCheckable(True)
         button_layout_bottom.addWidget(self.paint_brush_button)
+        button_layout_bottom.addWidget(self.line_brush_button)
         button_layout_bottom.addWidget(self.eraser_button)
     
         manual_layout.addLayout(button_layout_top)
@@ -2209,12 +2212,14 @@ class ImageAnnotator(QMainWindow):
         self.tool_group.addButton(self.polygon_button)
         self.tool_group.addButton(self.rectangle_button)
         self.tool_group.addButton(self.paint_brush_button)
+        self.tool_group.addButton(self.line_brush_button)
         self.tool_group.addButton(self.eraser_button)
         self.tool_group.addButton(self.sam_magic_wand_button)
-    
+
         self.polygon_button.clicked.connect(self.toggle_tool)
         self.rectangle_button.clicked.connect(self.toggle_tool)
         self.paint_brush_button.clicked.connect(self.toggle_tool)
+        self.line_brush_button.clicked.connect(self.toggle_tool)
         self.eraser_button.clicked.connect(self.toggle_tool)
         self.sam_magic_wand_button.clicked.connect(self.toggle_tool)
     
@@ -2378,7 +2383,7 @@ class ImageAnnotator(QMainWindow):
             font.setPointSize(font_size)
             widget.setFont(font)
         
-        self.image_label.setFont(QFont("Arial", font_size))
+        self.image_label.setFont(QFont("Fira Code", font_size))
         self.update()
 
         
@@ -3371,6 +3376,9 @@ class ImageAnnotator(QMainWindow):
             elif sender == self.paint_brush_button:
                 self.image_label.current_tool = "paint_brush"
                 self.image_label.setFocus()  # Set focus on the image label
+            elif sender == self.line_brush_button:
+                self.image_label.current_tool = "line_brush"
+                self.image_label.setFocus()  # Set focus on the image label
             elif sender == self.eraser_button:
                 self.image_label.current_tool = "eraser"
                 self.image_label.setFocus()  # Set focus on the image label
@@ -3383,16 +3391,8 @@ class ImageAnnotator(QMainWindow):
         self.update_ui_for_current_tool()
 
     def wheelEvent(self, event):
-        if event.modifiers() == Qt.ControlModifier:
-            delta = event.angleDelta().y()
-            if self.image_label.current_tool == "paint_brush":
-                self.paint_brush_size = max(1, self.paint_brush_size + delta // 120)
-                print(f"Paint brush size: {self.paint_brush_size}")
-            elif self.image_label.current_tool == "eraser":
-                self.eraser_size = max(1, self.eraser_size + delta // 120)
-                print(f"Eraser size: {self.eraser_size}")
-        else:
-            super().wheelEvent(event)
+        # Wheel events for brush size adjustment are now handled in image_label.py
+        super().wheelEvent(event)
 
 
     def update_ui_for_current_tool(self):

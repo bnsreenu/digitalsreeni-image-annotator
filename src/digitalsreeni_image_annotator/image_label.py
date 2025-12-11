@@ -67,6 +67,12 @@ class ImageLabel(QLabel):
         self.is_erasing = False
         self.cursor_pos = None
 
+        # Line Brush
+        self.drawing_line = False
+        self.line_start_point = None
+        self.line_end_point = None
+        self.temp_line_mask = None
+
         #SAM
         self.sam_magic_wand_active = False
         self.sam_bbox = None
@@ -193,8 +199,62 @@ class ImageLabel(QLabel):
     
     def discard_paint_annotation(self):
         self.temp_paint_mask = None
-        self.update()     
-        
+        self.update()
+
+
+    def finish_line(self):
+        """Finish drawing the line and create a mask."""
+        if not self.line_start_point or not self.line_end_point:
+            return
+
+        # Create mask with the line
+        if self.temp_line_mask is None:
+            self.temp_line_mask = np.zeros((self.original_pixmap.height(),
+                                            self.original_pixmap.width()), dtype=np.uint8)
+
+        # Draw thick line on mask using OpenCV with shared brush size
+        line_width = self.main_window.paint_brush_size
+        cv2.line(self.temp_line_mask,
+                 tuple(map(int, self.line_start_point)),
+                 tuple(map(int, self.line_end_point)),
+                 255,
+                 thickness=line_width,
+                 lineType=cv2.LINE_AA)
+
+        self.drawing_line = False
+        self.line_start_point = None
+        self.line_end_point = None
+        self.update()
+
+    def commit_line_annotation(self):
+        """Convert line mask to annotation."""
+        if self.temp_line_mask is not None and self.main_window.current_class:
+            class_name = self.main_window.current_class
+            contours, _ = cv2.findContours(self.temp_line_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for contour in contours:
+                if cv2.contourArea(contour) > 10:
+                    segmentation = contour.flatten().tolist()
+                    new_annotation = {
+                        "segmentation": segmentation,
+                        "category_id": self.main_window.class_mapping[class_name],
+                        "category_name": class_name,
+                    }
+                    self.annotations.setdefault(class_name, []).append(new_annotation)
+                    self.main_window.add_annotation_to_list(new_annotation)
+
+            self.temp_line_mask = None
+            self.main_window.save_current_annotations()
+            self.main_window.update_slice_list_colors()
+            self.update()
+
+    def discard_line_annotation(self):
+        """Discard the current line."""
+        self.temp_line_mask = None
+        self.line_start_point = None
+        self.line_end_point = None
+        self.drawing_line = False
+        self.update()
 
     def start_erasing(self, pos):
         if self.temp_eraser_mask is None:
@@ -298,7 +358,15 @@ class ImageLabel(QLabel):
             # Draw temporary eraser mask
             if self.temp_eraser_mask is not None:
                 self.draw_temp_eraser_mask(painter)
-            
+
+            # Draw temporary line
+            if self.current_tool == "line_brush" and self.drawing_line:
+                self.draw_temp_line(painter)
+
+            # Draw temporary line mask
+            if self.temp_line_mask is not None:
+                self.draw_temp_line_mask(painter)
+
             # Draw brush/eraser size indicator
             self.draw_tool_size_indicator(painter)
             
@@ -326,7 +394,7 @@ class ImageLabel(QLabel):
                 painter.drawPolygon(QPolygonF(points))
 
             # Draw label and score
-            painter.setFont(QFont("Arial", int(12 / self.zoom_factor)))
+            painter.setFont(QFont("Fira Code", int(12 / self.zoom_factor)))
             label = f"{annotation['category_name']} {annotation['score']:.2f}"
             if "bbox" in annotation:
                 x, y, _, _ = annotation["bbox"]
@@ -393,18 +461,48 @@ class ImageLabel(QLabel):
             painter.setOpacity(1.0)
             
             painter.restore()
-    
-    
 
-        
+    def draw_temp_line(self, painter):
+        """Draw the temporary line being created."""
+        if not self.line_start_point or not self.line_end_point:
+            return
 
-    def draw_tool_size_indicator(self, painter):
-        if self.current_tool in ["paint_brush", "eraser"] and hasattr(self, 'cursor_pos'):
+        painter.save()
+        painter.translate(self.offset_x, self.offset_y)
+        painter.scale(self.zoom_factor, self.zoom_factor)
+
+        color = self.class_colors.get(self.main_window.current_class, QColor(Qt.red))
+        pen = QPen(color, self.main_window.paint_brush_size, Qt.SolidLine)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(*self.line_start_point), QPointF(*self.line_end_point))
+
+        painter.restore()
+
+    def draw_temp_line_mask(self, painter):
+        """Draw the temporary line mask after finishing."""
+        if self.temp_line_mask is not None:
             painter.save()
             painter.translate(self.offset_x, self.offset_y)
             painter.scale(self.zoom_factor, self.zoom_factor)
-            
-            if self.current_tool == "paint_brush":
+
+            mask_image = QImage(self.temp_line_mask.data, self.temp_line_mask.shape[1],
+                               self.temp_line_mask.shape[0], self.temp_line_mask.shape[1],
+                               QImage.Format_Grayscale8)
+            mask_pixmap = QPixmap.fromImage(mask_image)
+            painter.setOpacity(0.5)
+            painter.drawPixmap(0, 0, mask_pixmap)
+            painter.setOpacity(1.0)
+
+            painter.restore()
+
+    def draw_tool_size_indicator(self, painter):
+        if self.current_tool in ["paint_brush", "line_brush", "eraser"] and hasattr(self, 'cursor_pos'):
+            painter.save()
+            painter.translate(self.offset_x, self.offset_y)
+            painter.scale(self.zoom_factor, self.zoom_factor)
+
+            if self.current_tool == "paint_brush" or self.current_tool == "line_brush":
                 size = self.main_window.paint_brush_size
                 color = QColor(255, 0, 0, 128)  # Semi-transparent red
             else:  # eraser
@@ -477,7 +575,7 @@ class ImageLabel(QLabel):
         self.update()
 
     def check_unsaved_changes(self):
-        if self.temp_paint_mask is not None or self.temp_eraser_mask is not None:
+        if self.temp_paint_mask is not None or self.temp_eraser_mask is not None or self.temp_line_mask is not None:
             reply = QMessageBox.question(
                 self.main_window, 'Unsaved Changes',
                 "You have unsaved changes. Do you want to save them?",
@@ -488,10 +586,13 @@ class ImageLabel(QLabel):
                     self.commit_paint_annotation()
                 if self.temp_eraser_mask is not None:
                     self.commit_eraser_changes()
+                if self.temp_line_mask is not None:
+                    self.commit_line_annotation()
                 return True
             elif reply == QMessageBox.No:
                 self.discard_paint_annotation()
                 self.discard_eraser_changes()
+                self.discard_line_annotation()
                 return True
             else:  # Cancel
                 return False
@@ -565,7 +666,7 @@ class ImageLabel(QLabel):
                         if points:
                             centroid = self.calculate_centroid(points)
                             if centroid:
-                                painter.setFont(QFont("Arial", int(12 / self.zoom_factor)))
+                                painter.setFont(QFont("Fira Code", int(12 / self.zoom_factor)))
                                 painter.setPen(QPen(text_color, 2 / self.zoom_factor, Qt.SolidLine))
                                 painter.drawText(centroid, f"{class_name} {annotation.get('number', '')}")
     
@@ -597,7 +698,7 @@ class ImageLabel(QLabel):
                 painter.drawPolygon(QPolygonF(points))
                 centroid = self.calculate_centroid(points)
                 if centroid:
-                    painter.setFont(QFont("Arial", int(12 / self.zoom_factor)))
+                    painter.setFont(QFont("Fira Code", int(12 / self.zoom_factor)))
                     painter.drawText(centroid, f"SAM: {self.temp_sam_prediction['score']:.2f}")
     
         painter.restore()
@@ -667,8 +768,20 @@ class ImageLabel(QLabel):
         self.update()
 
     def wheelEvent(self, event: QWheelEvent):
-        if event.modifiers() == Qt.ControlModifier:
-            delta = event.angleDelta().y()
+        delta = event.angleDelta().y()
+
+        # When using brush tools, scroll wheel adjusts brush size
+        if self.current_tool in ["paint_brush", "line_brush", "eraser"] and event.modifiers() != Qt.ControlModifier:
+            if self.current_tool in ["paint_brush", "line_brush"]:
+                self.main_window.paint_brush_size = max(1, self.main_window.paint_brush_size + delta // 120)
+                print(f"Brush size: {self.main_window.paint_brush_size}")
+            elif self.current_tool == "eraser":
+                self.main_window.eraser_size = max(1, self.main_window.eraser_size + delta // 120)
+                print(f"Eraser size: {self.main_window.eraser_size}")
+            self.update()
+            event.accept()
+        elif event.modifiers() == Qt.ControlModifier:
+            # Ctrl+Scroll: Zoom in/out
             if delta > 0:
                 self.main_window.zoom_in()
             else:
@@ -706,6 +819,14 @@ class ImageLabel(QLabel):
                     self.start_painting(pos)
                 elif self.current_tool == "eraser":
                     self.start_erasing(pos)
+                elif self.current_tool == "line_brush":
+                    if not self.drawing_line:
+                        self.line_start_point = pos
+                        self.line_end_point = pos
+                        self.drawing_line = True
+                    else:
+                        self.line_end_point = pos
+                        self.finish_line()
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -739,6 +860,8 @@ class ImageLabel(QLabel):
                 self.continue_painting(pos)
             elif self.current_tool == "eraser" and event.buttons() == Qt.LeftButton:
                 self.continue_erasing(pos)
+            elif self.current_tool == "line_brush" and self.drawing_line:
+                self.line_end_point = pos
         self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -809,6 +932,8 @@ class ImageLabel(QLabel):
                 self.commit_paint_annotation()
             elif self.current_tool == "eraser":
                 self.commit_eraser_changes()
+            elif self.current_tool == "line_brush":
+                self.commit_line_annotation()
             else:
                 self.finish_current_annotation()
         elif event.key() == Qt.Key_Escape:
@@ -826,6 +951,8 @@ class ImageLabel(QLabel):
                 self.discard_paint_annotation()
             elif self.current_tool == "eraser":
                 self.discard_eraser_changes()
+            elif self.current_tool == "line_brush":
+                self.discard_line_annotation()
             else:
                 self.cancel_current_annotation()
                 
@@ -839,16 +966,16 @@ class ImageLabel(QLabel):
                 self.update()
             
         elif event.key() == Qt.Key_Minus:
-            if self.current_tool == "paint_brush":
+            if self.current_tool == "paint_brush" or self.current_tool == "line_brush":
                 self.main_window.paint_brush_size = max(1, self.main_window.paint_brush_size - 1)
-                print(f"Paint brush size: {self.main_window.paint_brush_size}")
+                print(f"Brush size: {self.main_window.paint_brush_size}")
             elif self.current_tool == "eraser":
                 self.main_window.eraser_size = max(1, self.main_window.eraser_size - 1)
                 print(f"Eraser size: {self.main_window.eraser_size}")
         elif event.key() == Qt.Key_Equal:
-            if self.current_tool == "paint_brush":
+            if self.current_tool == "paint_brush" or self.current_tool == "line_brush":
                 self.main_window.paint_brush_size += 1
-                print(f"Paint brush size: {self.main_window.paint_brush_size}")
+                print(f"Brush size: {self.main_window.paint_brush_size}")
             elif self.current_tool == "eraser":
                 self.main_window.eraser_size += 1
                 print(f"Eraser size: {self.main_window.eraser_size}")

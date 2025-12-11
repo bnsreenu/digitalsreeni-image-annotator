@@ -5,6 +5,9 @@ This module creates and runs the main application window.
 
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
+
+To run the application, use the following command:
+python -m digitalsreeni_image_annotator.main 
 """
 
 import sys

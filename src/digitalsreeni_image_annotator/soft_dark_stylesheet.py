@@ -4,7 +4,7 @@ soft_dark_stylesheet = """
 QWidget {
     background-color: #2F2F2F;
     color: #E0E0E0;
-    font-family: Arial, sans-serif;
+    font-family: "MiSans VF Medium", Arial, sans-serif;
 }
 
 QMainWindow {
@@ -55,7 +55,7 @@ QLabel {
 
 QLabel.section-header {
     font-weight: bold;
-    font-size: 14px;
+    font-size: 18px;
     padding: 5px 0;
     color: #FFFFFF;  /* Bright white color for better visibility in dark mode */
 }

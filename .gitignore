@@ -1,0 +1,12 @@
+*/__pycache__/
+.vscode/
+
+*.txt
+*.log
+*.csv
+*.jpg
+*.pt
+*.md
+
+LICENSE
+src/digitalsreeni_image_annotator/__pycache__/

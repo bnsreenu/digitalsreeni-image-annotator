@@ -2,7 +2,7 @@ default_stylesheet = """
 QWidget {
     background-color: #F0F0F0;
     color: #333333;
-    font-family: Arial, sans-serif;
+    font-family: "MiSans VF Medium", Arial, sans-serif;
 }
 
 QMainWindow {
@@ -51,7 +51,7 @@ QLabel {
 
 QLabel.section-header {
     font-weight: bold;
-    font-size: 14px;
+    font-size: 18px;
     padding: 5px 0;
     color: #333333;  /* Dark color for visibility in light mode */
 }
