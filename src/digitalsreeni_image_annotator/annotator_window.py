@@ -182,6 +182,7 @@ class ImageAnnotator(QMainWindow):
         self.image_slices = {}
         self.image_shapes = {}
 
+        
         # For paint brush and eraser
         self.paint_brush_size = 10
         self.eraser_size = 10
@@ -233,6 +234,9 @@ class ImageAnnotator(QMainWindow):
         # YOLO Trainer
         self.yolo_trainer = None
         self.setup_yolo_menu()
+        
+        # Start in maximized mode
+        self.showMaximized()
 
         # Start in maximized mode
         self.showMaximized()
@@ -2937,6 +2941,9 @@ class ImageAnnotator(QMainWindow):
 
         # Reset class-related data
         self.class_list.clear()
+        self.allButton.setEnabled(False)
+        self.clrButton.setEnabled(False)
+        
         self.image_label.class_colors.clear()
         self.class_mapping.clear()
 

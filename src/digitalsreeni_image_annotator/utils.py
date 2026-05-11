@@ -10,7 +10,7 @@ Dr. Sreenivas Bhattiprolu
 import numpy as np
 
 def calculate_area(annotation):
-    if "segmentation" in annotation:
+    if "segmentation" in annotation and annotation["segmentation"] is not None:
         # Polygon area
         x, y = annotation["segmentation"][0::2], annotation["segmentation"][1::2]
         return 0.5 * abs(sum(x[i] * y[i+1] - x[i+1] * y[i] for i in range(-1, len(x)-1)))
