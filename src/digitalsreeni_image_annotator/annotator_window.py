@@ -46,7 +46,6 @@ from shapely.geometry import MultiPolygon, Point, Polygon
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 from tifffile import TiffFile
-from ultralytics import SAM
 
 from .annotation_statistics import show_annotation_statistics
 from .coco_json_combiner import show_coco_json_combiner
@@ -2681,7 +2680,19 @@ class ImageAnnotator(QMainWindow):
         self.image_label.update()
 
     def change_sam_model(self, model_name):
-        self.sam_utils.change_sam_model(model_name)
+        try:
+            self.sam_utils.change_sam_model(model_name)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "SAM Model Error",
+                f"Failed to load SAM model '{model_name}':\n\n{str(e)}\n\n"
+                "If you are on Python 3.14, PyTorch may not yet be fully supported. "
+                "Try reinstalling torch/ultralytics for your platform."
+            )
+            self.sam_model_selector.setCurrentIndex(0)
+            return
+
         self.current_sam_model = self.sam_utils.current_sam_model
 
         if model_name != "Pick a SAM Model":

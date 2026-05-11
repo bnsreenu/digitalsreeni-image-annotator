@@ -1,7 +1,6 @@
 import os
-from ultralytics import YOLO
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                              QLineEdit, QLabel, QFileDialog, QDialogButtonBox)
 import yaml
 import numpy as np
@@ -118,6 +117,8 @@ class YOLOTrainer(QObject):
         self.class_names = None
 
     def load_model(self, model_path=None):
+        from ultralytics import YOLO
+
         if model_path is None:
             model_path, _ = QFileDialog.getOpenFileName(self.main_window, "Select YOLO Model", "", "YOLO Model (*.pt)")
         if model_path:
@@ -344,6 +345,8 @@ class YOLOTrainer(QObject):
         return False
 
     def load_prediction_model(self, model_path, yaml_path):
+        from ultralytics import YOLO
+
         try:
             self.model = YOLO(model_path)
             with open(yaml_path, 'r') as f:

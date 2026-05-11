@@ -46,7 +46,7 @@ setup(
     entry_points={
         "console_scripts": [
             "digitalsreeni-image-annotator=digitalsreeni_image_annotator.main:main",
-            "sreeni=digitalsreeni_image_annotator.main:main", 
+            "sreeni=digitalsreeni_image_annotator.main:main",
         ],
     },
 )

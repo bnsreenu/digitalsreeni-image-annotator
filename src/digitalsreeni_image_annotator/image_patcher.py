@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLa
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtCore import QTimer, QEventLoop
-from tifffile import TiffFile, imsave
+from tifffile import TiffFile, imwrite
 from PIL import Image
 import traceback
 
@@ -116,7 +116,7 @@ class PatchingThread(QThread):
                     output_path = os.path.join(self.output_dir, patch_name)
 
                     if extension.lower() in ['.tif', '.tiff']:
-                        imsave(output_path, patch)
+                        imwrite(output_path, patch)
                     else:
                         Image.fromarray(patch).save(output_path)
 
