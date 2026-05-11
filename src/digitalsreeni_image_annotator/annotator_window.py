@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import shapely
 from czifile import CziFile
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QIcon, QImage, QKeySequence, QPalette, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -188,6 +188,11 @@ class ImageAnnotator(QMainWindow):
         # Initialize SAM utils
         self.current_sam_model = None
         self.sam_utils = SAMUtils()
+
+        # Debounce timer for SAM points: wait 1s after last click before inference
+        self.sam_inference_timer = QTimer(self)
+        self.sam_inference_timer.setSingleShot(True)
+        self.sam_inference_timer.timeout.connect(self.apply_sam_prediction)
 
         # Create sam_magic_wand_button
         self.sam_magic_wand_button = QPushButton("Magic Wand")
@@ -994,6 +999,11 @@ class ImageAnnotator(QMainWindow):
 
         self.image_label.clear_temp_sam_prediction()  # Clear temporary prediction
 
+    def schedule_sam_prediction(self):
+        """Restart the debounce timer; inference fires 1s after last click."""
+        self.sam_inference_timer.stop()
+        self.sam_inference_timer.start(1000)
+
     def apply_sam_prediction(self):
         if self.image_label.current_tool == "sam_box":
             if self.image_label.sam_bbox is None:
@@ -1031,6 +1041,13 @@ class ImageAnnotator(QMainWindow):
             }
             self.image_label.temp_sam_prediction = temp_annotation
             self.image_label.update()
+        elif prediction is None:
+            QMessageBox.information(
+                self,
+                "SAM",
+                "No mask matches the given constraints. "
+                "Try adjusting the box or point positions."
+            )
         else:
             print("Failed to generate prediction")
 
@@ -2612,6 +2629,7 @@ class ImageAnnotator(QMainWindow):
             self.image_label.sam_positive_points = []
             self.image_label.sam_negative_points = []
         else:
+            self.sam_inference_timer.stop()
             self.image_label.current_tool = None
             self.image_label.sam_points_active = False
             self.image_label.setCursor(Qt.ArrowCursor)

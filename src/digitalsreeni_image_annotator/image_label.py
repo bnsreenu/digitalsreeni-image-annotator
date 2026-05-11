@@ -800,12 +800,12 @@ class ImageLabel(QLabel):
             if event.button() == Qt.LeftButton:
                 self.sam_positive_points.append(pos)
                 self.update()
-                self.main_window.apply_sam_prediction()
+                self.main_window.schedule_sam_prediction()
                 return
             elif event.button() == Qt.RightButton:
                 self.sam_negative_points.append(pos)
                 self.update()
-                self.main_window.apply_sam_prediction()
+                self.main_window.schedule_sam_prediction()
                 return
 
         if event.button() == Qt.LeftButton:
@@ -960,6 +960,7 @@ class ImageLabel(QLabel):
                 self.finish_current_annotation()
         elif event.key() == Qt.Key_Escape:
             if self.sam_points_active:
+                self.main_window.sam_inference_timer.stop()
                 self.sam_positive_points = []
                 self.sam_negative_points = []
                 self.clear_temp_sam_prediction()

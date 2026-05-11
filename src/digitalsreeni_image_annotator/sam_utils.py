@@ -118,12 +118,17 @@ class SAMUtils:
                 f"SAM worker exited with code {proc.returncode}.\nstderr: {err_text}"
             )
 
+        # Echo worker stdout (includes GPU/CPU diagnostics) to parent console
+        lines = (proc.stdout or "").strip().splitlines()
+        for line in lines[:-1]:
+            print(line)
+
         try:
-            return json.loads(proc.stdout.strip().splitlines()[-1])
+            return json.loads(lines[-1])
         except (json.JSONDecodeError, IndexError):
             out_text = proc.stdout.strip() if proc.stdout else "(no stdout)"
             raise RuntimeError(
-                f"SAM worker returned non-JSON output.\nstdout: {out_text}\nstderr: {err_text}"
+                f"SAM worker returned non-JSON output.\nstdout: {out_text}"
             )
 
     @staticmethod
