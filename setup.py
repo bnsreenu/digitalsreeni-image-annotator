@@ -29,24 +29,24 @@ setup(
     ],
     python_requires=">=3.10",
     install_requires=[
-        "PyQt5==5.15.11",
-        "numpy==2.1.3",
-        "Pillow==11.0.0",
-        "tifffile==2023.3.15",
-        "czifile==2019.7.2",
-        "opencv-python==4.10.0.84",
-        "pyyaml==6.0.2",
-        "scikit-image==0.24.0",
-        "ultralytics==8.3.27",
-        "plotly==5.24.1",
-        "shapely==2.0.6", 
-        "pystackreg==0.2.8",
-        "pydicom==3.0.1"
+        "PyQt5>=5.15.0",
+        "numpy>=2.4.0",  # Python 3.14 requires numpy 2.4+
+        "Pillow>=10.0.0",
+        "tifffile>=2023.0.0",
+        "czifile>=2019.7.2",
+        "opencv-python>=4.8.0",
+        "pyyaml>=6.0.0",
+        "scikit-image>=0.21.0",
+        "ultralytics>=8.0.0",
+        "plotly>=5.0.0",
+        "shapely>=2.0.0",
+        "pystackreg>=0.2.7",
+        "pydicom>=2.3.0"
     ],
     entry_points={
         "console_scripts": [
             "digitalsreeni-image-annotator=digitalsreeni_image_annotator.main:main",
-            "sreeni=digitalsreeni_image_annotator.main:main", 
+            "sreeni=digitalsreeni_image_annotator.main:main",
         ],
     },
 )

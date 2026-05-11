@@ -1,13 +1,26 @@
-PyQt5==5.15.11
-Pillow==11.0.0
-numpy==2.1.3
-tifffile==2023.3.15
-czifile==2019.7.2
-opencv-python==4.10.0.84
-pyyaml==6.0.2
-scikit-image==0.24.0
-ultralytics==8.3.27
-plotly==5.24.1
-shapely==2.0.6
-pystackreg==0.2.8
-pydicom==3.0.1
+# Core dependencies
+PyQt5>=5.15.0
+Pillow>=10.0.0
+numpy>=2.4.0  # Python 3.14 requires numpy 2.4+
+opencv-python>=4.8.0
+shapely>=2.0.0
+
+# Image format support
+tifffile>=2023.0.0
+czifile>=2019.7.2
+pydicom>=2.3.0
+
+# Machine learning and analysis
+ultralytics>=8.0.0
+scikit-image>=0.21.0
+pystackreg>=0.2.7
+
+# Data and visualization
+pyyaml>=6.0.0
+plotly>=5.0.0
+
+# Testing dependencies (dev)
+pytest>=8.0.0
+pytest-qt>=4.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
