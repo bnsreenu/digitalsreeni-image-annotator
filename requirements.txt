@@ -1,7 +1,9 @@
 # Core dependencies
 PyQt5>=5.15.0
 Pillow>=10.0.0
-numpy>=2.4.0  # Python 3.14 requires numpy 2.4+
+# numpy>=2.4.0  # Python 3.14 requires numpy 2.4+
+###Pipelines failing with numpy >=2.4.0 so rolling it back to 2.0.0
+numpy>=2.0.0
 opencv-python>=4.8.0
 shapely>=2.0.0
 
