@@ -127,6 +127,24 @@ def test_simplified_persists_and_exports_simplified(window, monkeypatch):
     assert coco["segmentation"][0] != live["segmentation_raw"]
 
 
+def test_create_coco_annotation_delegates_and_stays_keypoint_aware(window):
+    """AnnotationController.create_coco_annotation now delegates to the live
+    io.export_formats implementation (issue #35 PR-2 senior-review fix) —
+    regression guard against it drifting back into a keypoint-blind copy."""
+    ann = {
+        "keypoints": [10, 10, 2, 20, 20, 1],
+        "num_keypoints": 2,
+        "bbox": [5, 5, 20, 20],
+        "category_id": 1,
+        "category_name": "person",
+    }
+
+    coco = window.annotation_controller.create_coco_annotation(ann, 1, 1)
+
+    assert coco["keypoints"] == [10, 10, 2, 20, 20, 1]
+    assert "segmentation" not in coco
+
+
 def test_reshape_invalidates_simplification_baseline(window, monkeypatch):
     # #24 × #40 seam: thinning then reshaping a polygon must reset the raw
     # baseline, so a later Detail %=100 can't silently revert the reshape.

@@ -278,6 +278,32 @@ the orchestrator wires each to the matching controller slot.
 
 ---
 
+### Keypoint / Pose Constraints (issue #35)
+
+**Status**: Known Limitations (ADR-029)
+
+**Description**:
+- The keypoint count **K is locked** once a pose class has instances (changing K
+  would corrupt existing instances). Renaming points / editing the skeleton / flip
+  stays allowed.
+- A schema is **per class** (the COCO rule); all instances of a class share it.
+- A point set to *not labelled* (v=0) via "finish early" doesn't render and can't be
+  relabelled with a right-click in PR-1 (only v>0 points are hit-testable).
+- **Defining a schema on a class that already holds normal (polygon/bbox) annotations
+  is unguarded** — nothing forbids a mixed pose + non-pose class. It renders/saves
+  fine, but the change-class guard then treats it inconsistently (a normal annotation
+  can no longer move into that class once it has a schema, even alongside its own
+  kind). Not fixed in PR-1; either forbid schema definition on a non-empty class or
+  explicitly relax the guard for the mixed case.
+- **Forthcoming** (PR-2/PR-3): YOLO-pose export requires a **single `kpt_shape` per
+  dataset**, so a project mixing pose classes of different K (or pose + non-pose) can't
+  export to YOLO-pose (COCO has no such limit). YOLO-pose *training* stays unsupported
+  for multi-dimensional stacks (same constraint as detect/segment training).
+
+**Priority**: Low (documented constraints, not bugs)
+
+---
+
 ### SAM Point Mode Requires Manual Confirmation
 
 **Status**: By Design

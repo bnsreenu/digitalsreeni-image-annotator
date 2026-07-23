@@ -104,8 +104,18 @@ def build_sidebar(window):
     button_layout_bottom.addWidget(window.paint_brush_button)
     button_layout_bottom.addWidget(window.eraser_button)
 
+    button_layout_keypoint = QHBoxLayout()
+    window.keypoint_button = QPushButton("Keypoint")
+    window.keypoint_button.setCheckable(True)
+    window.keypoint_button.setToolTip(
+        "Place pose keypoints (issue #35). Define a keypoint schema on the class "
+        "first (right-click the class → Define Keypoint Schema)."
+    )
+    button_layout_keypoint.addWidget(window.keypoint_button)
+
     manual_layout.addLayout(button_layout_top)
     manual_layout.addLayout(button_layout_bottom)
+    manual_layout.addLayout(button_layout_keypoint)
 
     annotation_layout.addWidget(manual_widget)
 
@@ -221,6 +231,7 @@ def build_sidebar(window):
     window.tool_group.addButton(window.rectangle_button)
     window.tool_group.addButton(window.paint_brush_button)
     window.tool_group.addButton(window.eraser_button)
+    window.tool_group.addButton(window.keypoint_button)
     window.tool_group.addButton(window.sam_box_button)
     window.tool_group.addButton(window.sam_points_button)
 
@@ -228,6 +239,7 @@ def build_sidebar(window):
     window.rectangle_button.clicked.connect(window.toggle_tool)
     window.paint_brush_button.clicked.connect(window.toggle_tool)
     window.eraser_button.clicked.connect(window.toggle_tool)
+    window.keypoint_button.clicked.connect(window.toggle_tool)
 
     # Annotations table subsection (issue #24). A 4-column table — ID | Class |
     # Area | Detail % — mirroring the DINO ClassThresholdTable idiom (per-row

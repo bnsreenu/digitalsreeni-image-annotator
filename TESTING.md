@@ -56,7 +56,7 @@ This document describes the testing infrastructure for the DigitalSreeni Image A
 6. **CI/CD Pipeline** ✓
    - Created [.github/workflows/tests.yml](.github/workflows/tests.yml)
    - Multi-platform testing: Ubuntu, Windows, macOS
-   - Multi-version testing: Python 3.10, 3.11, 3.12, 3.13
+   - Multi-version testing: Python 3.10, 3.11, 3.12, 3.13, 3.14
    - Automated coverage reporting (Codecov integration)
    - Coverage report artifacts
 

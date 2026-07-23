@@ -46,7 +46,15 @@ from ..core.constants import (
     ANNOT_COL_ID,
     default_class_color,
 )
-from ..utils import calculate_area, calculate_bbox, simplify_polygon
+from ..io.export_formats import create_coco_annotation as _export_create_coco_annotation
+from ..utils import (
+    calculate_area,
+    calculate_bbox,
+    clamp_bbox,
+    clamp_keypoints,
+    keypoint_instance_bbox,
+    simplify_polygon,
+)
 from .annotation_history import AnnotationHistory
 
 
@@ -67,21 +75,14 @@ class AnnotationController(QObject):
     # --- COCO conversion helper ---
 
     def create_coco_annotation(self, ann, image_id, annotation_id):
-        coco_ann = {
-            "id": annotation_id,
-            "image_id": image_id,
-            "category_id": ann["category_id"],
-            "area": calculate_area(ann),
-            "iscrowd": 0,
-        }
-
-        if "segmentation" in ann:
-            coco_ann["segmentation"] = [ann["segmentation"]]
-            coco_ann["bbox"] = calculate_bbox(ann["segmentation"])
-        elif "bbox" in ann:
-            coco_ann["bbox"] = ann["bbox"]
-
-        return coco_ann
+        """Delegate to the live io.export_formats implementation (issue #35
+        PR-2 review) — this method used to be a near-duplicate that had
+        drifted keypoint-blind. Reconstructs a single-entry class_mapping
+        from the ann's own category fields since callers here don't have
+        one handy."""
+        class_name = ann.get("category_name")
+        class_mapping = {class_name: ann["category_id"]}
+        return _export_create_coco_annotation(ann, image_id, annotation_id, class_name, class_mapping)
 
     # --- List widget updates ---
 
@@ -378,6 +379,8 @@ class AnnotationController(QObject):
             or getattr(il, "temp_eraser_mask", None) is not None
             or getattr(il, "is_erasing", False)
             or getattr(il, "drawing_sam_bbox", False)
+            or getattr(il, "drawing_keypoints", False)
+            or getattr(il, "editing_keypoint", None) is not None
         ):
             return True
         return False
@@ -699,6 +702,30 @@ class AnnotationController(QObject):
         self.mw.update_slice_list_colors()
         self.mw.auto_save()
 
+    def commit_keypoint_edit(self):
+        """Persist a single-keypoint drag or visibility toggle on a committed
+        pose instance (#35). ImageLabel mutated the keypoints in place; recompute
+        num_keypoints, refresh the list, push the gesture's undo baseline
+        (ADR-026), then re-mirror the selection so the instance stays selected.
+
+        The recompute is a no-op for both current gestures (a drag only moves an
+        already-labelled point; a toggle only flips between v=1/v=2) — kept as a
+        defensive safety net so num_keypoints can't silently drift out of sync
+        with a future edit path that does change which points are labelled."""
+        selected = list(self.mw.image_label.highlighted_annotations)
+        for ann in selected:
+            kps = ann.get("keypoints")
+            if kps is not None:
+                ann["num_keypoints"] = sum(
+                    1 for i in range(2, len(kps), 3) if kps[i] > 0
+                )
+        self.commit_edit_baseline()
+        self.save_current_annotations()
+        self.update_annotation_list()
+        self.apply_canvas_selection(selected, "replace")
+        self.mw.update_slice_list_colors()
+        self.mw.auto_save()
+
     def highlight_annotation_in_list(self, annotation):
         tbl = self.mw.annotation_list
         for i in range(tbl.rowCount()):
@@ -782,6 +809,20 @@ class AnnotationController(QObject):
                 self.mw,
                 "Not Enough Annotations",
                 "Please select at least two annotations to merge.",
+            )
+            return
+
+        # Keypoint instances have no mergeable geometry; merging would silently
+        # delete them (they're skipped from the polygon union but still removed
+        # from the class list). Reject up front. (#35)
+        if any(
+            "keypoints" in item.data(Qt.ItemDataRole.UserRole)
+            for item in selected_items
+        ):
+            QMessageBox.warning(
+                self.mw,
+                "Cannot Merge",
+                "Keypoint (pose) instances can't be merged.",
             )
             return
 
@@ -919,6 +960,36 @@ class AnnotationController(QObject):
         if class_dialog.exec() == QDialog.DialogCode.Accepted:
             new_class = class_combo.currentText()
             current_name = self.mw.current_slice or self.mw.image_file_name
+
+            # Geometry types must stay compatible (#35): a keypoint instance may
+            # only move to a pose class whose schema has an identical `names`
+            # list (name/order is what the flat [x,y,v] payload is keyed on;
+            # skeleton/flip differences are harmless). A normal annotation may
+            # not move into a pose class, nor a keypoint instance out to one.
+            new_schema = self.mw.keypoint_schemas.get(new_class)
+            for item in selected_items:
+                ann = item.data(Qt.ItemDataRole.UserRole)
+                if "keypoints" in ann:
+                    old_schema = self.mw.keypoint_schemas.get(ann["category_name"])
+                    if (
+                        new_schema is None
+                        or old_schema is None
+                        or new_schema.get("names") != old_schema.get("names")
+                    ):
+                        QMessageBox.warning(
+                            self.mw,
+                            "Incompatible Class",
+                            "A keypoint instance can only be moved to a pose class "
+                            "with the same keypoint schema.",
+                        )
+                        return
+                elif new_schema is not None:
+                    QMessageBox.warning(
+                        self.mw,
+                        "Incompatible Class",
+                        "Only keypoint instances can be moved into a pose class.",
+                    )
+                    return
 
             self.record_history()
 
@@ -1108,6 +1179,58 @@ class AnnotationController(QObject):
 
             self.mw.update_slice_list_colors()
             self.mw.auto_save()
+
+    def finish_keypoint(self):
+        """Commit the in-progress pose instance (#35). Pads any not-yet-placed
+        points to K with v=0 (not labelled), clamps into the image, derives the
+        instance bbox from the labelled points, then stores + lists it. Mirrors
+        finish_rectangle (record_history before mutate, then add + persist)."""
+        il = self.mw.image_label
+        placed = list(il.current_keypoints)
+        class_name = self.mw.current_class
+        schema = self.mw.keypoint_schemas.get(class_name)
+        if not placed or not schema:
+            il.reset_annotation_state()
+            il.update()
+            return
+
+        k = len(schema["names"])
+        points = placed[:k] + [(0, 0, 0)] * max(0, k - len(placed))
+        flat = [float(c) for p in points for c in p]
+
+        img = self.mw.current_image
+        if img is not None:
+            flat = clamp_keypoints(flat, img.width(), img.height())
+        bbox = self._keypoint_instance_bbox(
+            flat,
+            img.width() if img is not None else None,
+            img.height() if img is not None else None,
+        )
+        num_keypoints = sum(1 for i in range(2, len(flat), 3) if flat[i] > 0)
+
+        self.record_history()
+        new_annotation = {
+            "keypoints": flat,
+            "num_keypoints": num_keypoints,
+            "bbox": bbox,
+            "category_id": self.mw.class_mapping[class_name],
+            "category_name": class_name,
+        }
+        il.annotations.setdefault(class_name, []).append(new_annotation)
+        self.add_annotation_to_list(new_annotation)
+        il.reset_annotation_state()
+        il.update()
+
+        self.save_current_annotations()
+        self.mw.update_slice_list_colors()
+        self.mw.auto_save()
+
+    @staticmethod
+    def _keypoint_instance_bbox(flat, width, height, margin=6):
+        """Bounding box [x, y, w, h] around a pose instance's labelled (v>0)
+        points. Delegates to utils.keypoint_instance_bbox, which COCO import
+        also uses (issue #35 PR-2) — single source of truth."""
+        return keypoint_instance_bbox(flat, width, height, margin)
 
     def add_annotation_to_list(self, annotation):
         class_name = annotation["category_name"]

@@ -258,6 +258,17 @@ class ClassController(QObject):
                 self.mw.disable_annotation_tools()
             else:
                 self.mw.enable_annotation_tools()
+
+            # The keypoint tool needs a pose schema on the current class; if
+            # the newly-selected class has none, deactivate rather than
+            # leaving the tool active-but-silently-inert (clicks would no-op
+            # with no feedback). check_unsaved_changes() above already
+            # committed/discarded any in-progress placement. (#35)
+            if (
+                self.mw.image_label.current_tool == "keypoint"
+                and self.mw.current_class not in self.mw.keypoint_schemas
+            ):
+                self.mw.activate_tool(None)
         else:
             self.mw.current_class = None
             self.mw.disable_annotation_tools()
@@ -266,6 +277,7 @@ class ClassController(QObject):
         menu = QMenu()
         rename_action = menu.addAction("Rename Class")
         change_color_action = menu.addAction("Change Color")
+        keypoint_action = menu.addAction("Define Keypoint Schema...")
         delete_action = menu.addAction("Delete Class")
 
         item = self.mw.class_list.itemAt(position)
@@ -276,6 +288,8 @@ class ClassController(QObject):
                 self.rename_class(item)
             elif action == change_color_action:
                 self.change_class_color(item)
+            elif action == keypoint_action:
+                self.define_keypoint_schema(item)
             elif action == delete_action:
                 self.delete_class(item)
         else:
@@ -305,6 +319,48 @@ class ClassController(QObject):
             self.mw.image_label.update()
             self.mw.auto_save()
 
+    def define_keypoint_schema(self, item):
+        """Open the keypoint-schema editor for a class, making it a pose class
+        (issue #35). The keypoint count is locked once instances exist."""
+        from ..dialogs.keypoint_schema_dialog import KeypointSchemaDialog
+
+        class_name = item.text()
+        has_instances = self._class_has_keypoint_instances(class_name)
+        dialog = KeypointSchemaDialog(
+            self.mw,
+            class_name=class_name,
+            schema=self.mw.keypoint_schemas.get(class_name),
+            lock_k=has_instances,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        schema = dialog.get_schema()
+        if schema is None:
+            return
+        # Defensive: the dialog locks add/remove when instances exist, but make
+        # the K-stability invariant explicit so a future dialog change can't
+        # silently corrupt existing instances.
+        if has_instances:
+            old_k = len((self.mw.keypoint_schemas.get(class_name) or {}).get("names", []))
+            if old_k and len(schema["names"]) != old_k:
+                QMessageBox.warning(
+                    self.mw,
+                    "Keypoint Schema",
+                    "Cannot change the number of keypoints while instances exist.",
+                )
+                return
+        self.mw.keypoint_schemas[class_name] = schema
+        self.mw.image_label.update()
+        if not self.mw.is_loading_project:
+            self.mw.auto_save()
+
+    def _class_has_keypoint_instances(self, class_name):
+        for image_annotations in self.mw.all_annotations.values():
+            for ann in image_annotations.get(class_name, []):
+                if "keypoints" in ann:
+                    return True
+        return False
+
     def rename_class(self, item):
         old_name = item.text()
         new_name, ok = QInputDialog.getText(
@@ -326,6 +382,12 @@ class ClassController(QObject):
             else:
                 print(f"Warning: Class '{old_name}' not found in class_colors")
                 return
+
+            # Keypoint schema follows the class name (issue #35).
+            if old_name in self.mw.keypoint_schemas:
+                self.mw.keypoint_schemas[new_name] = (
+                    self.mw.keypoint_schemas.pop(old_name)
+                )
 
             for image_name, image_annotations in self.mw.all_annotations.items():
                 if old_name in image_annotations:
@@ -386,6 +448,7 @@ class ClassController(QObject):
         if reply == QMessageBox.StandardButton.Yes:
             self.mw.image_label.class_colors.pop(class_name, None)
             self.mw.class_mapping.pop(class_name, None)
+            self.mw.keypoint_schemas.pop(class_name, None)  # issue #35
 
             for image_annotations in self.mw.all_annotations.values():
                 image_annotations.pop(class_name, None)

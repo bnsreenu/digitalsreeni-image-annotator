@@ -21,6 +21,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from ..core import image_utils
+from ..core.keypoint_schema import sanitize_schema as _sanitize_keypoint_schema
 
 
 class ProjectController(QObject):
@@ -164,8 +165,18 @@ class ProjectController(QObject):
         """Load project data without triggering auto-saves."""
         self.mw.class_mapping.clear()
         self.mw.image_label.class_colors.clear()
+        self.mw.keypoint_schemas.clear()
         for class_info in project_data.get("classes", []):
             self.mw.add_class(class_info["name"], QColor(class_info["color"]))
+            # Restore the keypoint schema for pose classes (issue #35). Malformed
+            # schemas are dropped with a warning rather than crashing the load,
+            # mirroring the DINO-config validate-on-load pattern below.
+            schema = _sanitize_keypoint_schema(class_info.get("keypoint_schema"))
+            if schema is not None:
+                self.mw.keypoint_schemas[class_info["name"]] = schema
+            elif class_info.get("keypoint_schema") is not None:
+                print(f"  Skipped malformed keypoint schema for class "
+                      f"'{class_info['name']}'.")
 
         self.mw.all_images = project_data.get("images", [])
         self.mw.image_paths = project_data.get("image_paths", {})
@@ -467,7 +478,17 @@ class ProjectController(QObject):
 
         project_data = {
             "classes": [
-                {"name": name, "color": color.name()}
+                {
+                    "name": name,
+                    "color": color.name(),
+                    # Pose classes carry their keypoint schema inline (issue #35);
+                    # normal classes add nothing, so old projects are unchanged.
+                    **(
+                        {"keypoint_schema": self.mw.keypoint_schemas[name]}
+                        if name in self.mw.keypoint_schemas
+                        else {}
+                    ),
+                }
                 for name, color in self.mw.image_label.class_colors.items()
             ],
             "images": images_data,

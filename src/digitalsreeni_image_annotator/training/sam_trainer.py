@@ -158,10 +158,13 @@ class SampleGroup:
     masks are never held in RAM between epochs and always match the image.
     """
 
-    def __init__(self, image_loader, specs):
+    def __init__(self, image_loader, specs, name: str = ""):
         self._image_loader = image_loader
         self.specs = specs
         self.n_instances = len(specs)
+        # Source image/slice name — used only to key the deterministic train/val
+        # split (see sam_dataset.split_groups); loading never touches it.
+        self.name = name
 
     def load(self):
         """Return ``(image_rgb, [{"mask": bool HxW}, ...])``."""
@@ -188,6 +191,9 @@ class SAMFineTuner(QObject):
     controller and progress dialog wiring is identical."""
 
     progress_signal = pyqtSignal(str)
+    # Emitted (from the worker thread) with the MLflow-UI deep link once the run
+    # opens, so the controller can show a clickable link + auto-open the browser.
+    mlflow_run_url = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -267,7 +273,12 @@ class SAMFineTuner(QObject):
         batch_size: int = 1,
         freeze_image_encoder: bool = True,
         prompt_type: str = "bbox",
+        train_pct: float = 80.0,
+        patience: int = 20,
+        use_lr_schedule: bool = True,
+        seed: int = 0,
         out_path: str,
+        tracker=None,
     ) -> dict:
         """Fine-tune and save. Returns a small result dict; raises on failure.
 
@@ -275,9 +286,34 @@ class SAMFineTuner(QObject):
         gradient-accumulation count over **images** — all of an image's objects
         are backpropagated together (one backward per image), so the optimizer
         steps every ``batch_size`` images.
+
+        ``train_pct`` holds the rest out as a deterministic per-image validation
+        set (issue bnsreenu#85): each epoch logs ``val_loss`` alongside
+        ``train_loss``, ``patience`` enables early stopping on ``val_loss`` (0
+        disables), and the **best-val** checkpoint is saved rather than the last
+        epoch's. At 100% train (or a single image) there is no val set, so the
+        val pass / early stopping are skipped and the final epoch is saved.
+        ``lr`` is the **peak** LR; with ``use_lr_schedule`` it ramps up over the
+        first 10% of optimizer steps then cosine-decays to a 10% floor (else it
+        stays constant). ``seed`` makes the split and per-epoch shuffle
+        reproducible.
+
+        ``tracker`` is a :class:`~..training.mlflow_tracker.MLflowTracker`.
+        The MLflow run is opened, logged to and closed *here* (on the worker
+        thread) because MLflow runs are thread-bound. The GUI always supplies
+        one; when ``tracker`` is None (direct/programmatic calls, tests) a
+        ``_NullTracker`` no-op stands in so all tracking calls are safe.
         """
         import torch
         from ultralytics.utils import ops
+
+        from .mlflow_tracker import _NullTracker
+        if tracker is None:
+            tracker = _NullTracker()
+        # Route tracker status lines through the thread-safe progress signal.
+        tracker.set_log(self.progress_signal.emit)
+        # And the run's UI deep link through its own signal (GUI handles it).
+        tracker.set_run_url_callback(self.mlflow_run_url.emit)
 
         groups = list(groups)
         if not groups:
@@ -285,68 +321,99 @@ class SAMFineTuner(QObject):
         if prompt_type not in ("bbox", "point"):
             raise ValueError(f"Unknown prompt_type: {prompt_type}")
 
+        # Deterministic per-image hold-out (issue bnsreenu#85). At 100% train (or
+        # a single image) val is empty and the val pass / early stopping are off.
+        from .sam_dataset import split_groups
+        train_groups, val_groups = split_groups(groups, train_pct)
+
         model, pred, base_file = self._build_predictor(base_model)
         net = pred.model
         device = next(net.parameters()).device
         trainable, n_trainable = self._apply_freeze(net, freeze_image_encoder)
         self.progress_signal.emit(
             f"Base: {os.path.basename(base_file)} | device: {self._device_label(device)} | "
-            f"images: {len(groups)} | trainable params: {n_trainable:,} | "
+            f"images: {len(train_groups)} train / {len(val_groups)} val | "
+            f"trainable params: {n_trainable:,} | "
             f"encoder {'TRAINED' if not freeze_image_encoder else 'frozen'}"
         )
+        if not val_groups:
+            self.progress_signal.emit(
+                "No validation set (train 100% or single image): val_loss and "
+                "early stopping are off; saving the final epoch."
+            )
 
         optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=0.1)
+        # The LR schedule steps once per optimizer step. With gradient
+        # accumulation that's ~ceil(train_images / batch_size) steps per epoch;
+        # the cosine lambda clamps if the real count drifts (images with no
+        # usable instance are skipped), so the estimate is fine.
+        scheduler = None
+        if use_lr_schedule:
+            from torch.optim.lr_scheduler import LambdaLR
+
+            from .lr_schedule import warmup_cosine_lambda
+            steps_per_epoch = max(1, (len(train_groups) + batch_size - 1) // batch_size)
+            scheduler = LambdaLR(optimizer, warmup_cosine_lambda(epochs * steps_per_epoch))
+
         self.stop_training = False
         total_instances = sum(g.n_instances for g in groups)
         if total_instances == 0:
             raise ValueError("No annotated instances to train on.")
 
+        tracker.start({
+            "base_model": base_model,
+            "base_file": os.path.basename(base_file),
+            "device": self._device_label(device),
+            "epochs": epochs,
+            "lr": lr,
+            "batch_size": batch_size,
+            "freeze_image_encoder": freeze_image_encoder,
+            "prompt_type": prompt_type,
+            "train_pct": train_pct,
+            "patience": patience,
+            "lr_schedule": "warmup_cosine" if use_lr_schedule else "constant",
+            "images": len(groups),
+            "train_images": len(train_groups),
+            "val_images": len(val_groups),
+            "trainable_params": n_trainable,
+            "total_instances": total_instances,
+        })
+        try:
+            result = self._run_epochs(
+                torch, ops, pred, net, optimizer, scheduler, train_groups,
+                val_groups, epochs, batch_size, prompt_type, freeze_image_encoder,
+                device, total_instances, patience, seed, base_file, out_path, tracker,
+            )
+        finally:
+            tracker.end()
+        return result
+
+    def _run_epochs(
+        self, torch, ops, pred, net, optimizer, scheduler, train_groups,
+        val_groups, epochs, batch_size, prompt_type, freeze_image_encoder,
+        device, total_instances, patience, seed, base_file, out_path, tracker,
+    ) -> dict:
+        from .early_stop import EarlyStopper
+
+        rng = random.Random(seed)  # reproducible per-epoch shuffle
+        stopper = EarlyStopper(patience)
+        best_state = None  # CPU snapshot of the best-val epoch; None ⇒ save last
+        has_val = bool(val_groups)
+
         for epoch in range(1, epochs + 1):
             if self.stop_training:
                 break
-            random.shuffle(groups)
+            rng.shuffle(train_groups)
             epoch_loss, seen, accum = 0.0, 0, 0
             optimizer.zero_grad()
 
-            for group in groups:
+            for group in train_groups:
                 if self.stop_training:
                     break
-                image, instances = group.load()
-                h, w = image.shape[:2]
-                im_t = self._set_image(pred, image, freeze_image_encoder)
-
-                # Accumulate all of THIS image's instance losses and backward
-                # ONCE per image. When the image encoder is trainable, every
-                # instance's decoder graph hangs off the one shared encoder
-                # feature graph; a per-instance backward() would free that
-                # shared graph and make the next instance raise "backward
-                # through the graph a second time". One backward per image
-                # keeps the shared graph alive for exactly one pass.
-                inst_losses = []
-                for inst in instances:
-                    bbox = mask_to_xyxy(inst["mask"])
-                    if bbox is None:
-                        continue
-                    prompt = self._prompt_kwargs(prompt_type, inst["mask"], bbox)
-                    with torch.enable_grad():
-                        pm, _ = pred.prompt_inference(
-                            im_t, multimask_output=False, **prompt
-                        )
-                    # Map the low-res logits back to the original image with the
-                    # SAME transform inference uses (SAM2Predictor.postprocess →
-                    # ops.scale_masks(padding=False)). SAM2 letterboxes the image
-                    # (resize-min-ratio + pad bottom/right) and scale_masks crops
-                    # that padding before upsampling. A naive interpolate over the
-                    # full low-res mask instead bakes the padding region into the
-                    # target, so the decoder learns masks shifted by the pad — the
-                    # downward shift seen on non-square images (issue #73 testing).
-                    logits = ops.scale_masks(
-                        pm[:1].unsqueeze(0).float(), (h, w), padding=False
-                    )
-                    target = torch.from_numpy(inst["mask"].astype(np.float32))[None, None].to(device)
-                    inst_losses.append(_focal_dice_loss(logits, target))
-
-                del image  # bound memory: encoder features recomputed per epoch
+                inst_losses = self._image_instance_losses(
+                    torch, ops, pred, group, prompt_type,
+                    freeze_image_encoder, device, train=True,
+                )
                 if not inst_losses:
                     continue
 
@@ -359,29 +426,155 @@ class SAMFineTuner(QObject):
                 accum += 1
                 if accum >= batch_size:
                     optimizer.step()
+                    if scheduler is not None:
+                        scheduler.step()
                     optimizer.zero_grad()
                     accum = 0
 
             if accum > 0:  # flush partial accumulation
                 optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
                 optimizer.zero_grad()
-            avg = epoch_loss / max(1, seen)
-            self.progress_signal.emit(f"Epoch {epoch}/{epochs}  loss={avg:.4f}")
 
-        result = self._save_and_verify(net, base_file, out_path)
+            avg = epoch_loss / max(1, seen)
+            cur_lr = optimizer.param_groups[0]["lr"]
+            metrics = {"train_loss": avg, "lr": cur_lr}
+
+            val_loss = None
+            if has_val:
+                val_loss = self._validation_loss(
+                    torch, ops, pred, net, val_groups, prompt_type,
+                    freeze_image_encoder, device,
+                )
+                metrics["val_loss"] = val_loss
+
+            tracker.log_metrics(metrics, step=epoch)
+            if val_loss is None:
+                self.progress_signal.emit(
+                    f"Epoch {epoch}/{epochs}  train_loss={avg:.4f}  lr={cur_lr:.2e}  (no val set)"
+                )
+            else:
+                self.progress_signal.emit(
+                    f"Epoch {epoch}/{epochs}  train_loss={avg:.4f}  "
+                    f"val_loss={val_loss:.4f}  lr={cur_lr:.2e}"
+                )
+
+            if has_val:
+                if stopper.update(val_loss, epoch):
+                    # Best epoch so far — snapshot its weights (cloned to CPU) so
+                    # we save the best generalizer, not whatever the last epoch
+                    # happened to be.
+                    best_state = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+                if stopper.should_stop:
+                    self.progress_signal.emit(
+                        f"Early stopping: no val_loss improvement for {patience} epochs "
+                        f"(best {stopper.best:.4f} @ epoch {stopper.best_epoch})."
+                    )
+                    break
+
+        result = self._save_and_verify(net, base_file, out_path, state=best_state)
         result.update(stopped=self.stop_training, instances=total_instances)
-        self.progress_signal.emit(
-            f"Saved fine-tuned model: {out_path}" if not self.stop_training
-            else f"Stopped early — saved current state to {out_path}"
-        )
+        tracker.log_metrics({"stopped_early": int(self.stop_training)})
+        if has_val and stopper.best_epoch:
+            tracker.log_metrics({"best_val_loss": stopper.best, "best_epoch": stopper.best_epoch})
+        tracker.log_artifact(out_path)
+        if self.stop_training:
+            msg = f"Stopped early — saved {'best' if best_state is not None else 'current'} state to {out_path}"
+        elif best_state is not None:
+            msg = (f"Saved best model (val_loss {stopper.best:.4f} @ epoch "
+                   f"{stopper.best_epoch}): {out_path}")
+        else:
+            msg = f"Saved fine-tuned model: {out_path}"
+        self.progress_signal.emit(msg)
         return result
 
-    def _set_image(self, pred, image: np.ndarray, freeze_image_encoder: bool):
+    def _image_instance_losses(
+        self, torch, ops, pred, group, prompt_type, freeze_image_encoder,
+        device, *, train: bool,
+    ):
+        """Per-instance focal+dice losses for one image's annotations.
+
+        ``train`` selects the autograd context: the training pass builds the
+        graph (encoder features carry grad only when the encoder is unfrozen) and
+        backprops once per image; the validation pass runs entirely under
+        ``no_grad`` so it never touches the optimizer and costs no extra memory.
+        Returns a list of scalar loss tensors — empty when the image has no
+        usable instance.
+
+        One forward + one backward **per image** (the caller stacks these and
+        backprops once): when the image encoder is trainable every instance's
+        decoder graph hangs off the one shared encoder feature graph, so a
+        per-instance backward() would free that shared graph and make the next
+        instance raise "backward through the graph a second time".
+        """
+        image, instances = group.load()
+        h, w = image.shape[:2]
+        # Compute encoder features with grad only when we're training AND the
+        # encoder is unfrozen; validation and frozen-encoder training don't.
+        im_t = self._set_image(pred, image, with_feature_grad=train and not freeze_image_encoder)
+
+        losses = []
+        grad_ctx = torch.enable_grad() if train else torch.no_grad()
+        with grad_ctx:
+            for inst in instances:
+                bbox = mask_to_xyxy(inst["mask"])
+                if bbox is None:
+                    continue
+                prompt = self._prompt_kwargs(prompt_type, inst["mask"], bbox)
+                pm, _ = pred.prompt_inference(im_t, multimask_output=False, **prompt)
+                # Map the low-res logits back to the original image with the SAME
+                # transform inference uses (SAM2Predictor.postprocess →
+                # ops.scale_masks(padding=False)). SAM2 letterboxes the image
+                # (resize-min-ratio + pad bottom/right) and scale_masks crops that
+                # padding before upsampling. A naive interpolate over the full
+                # low-res mask instead bakes the padding region into the target,
+                # so the decoder learns masks shifted by the pad — the downward
+                # shift seen on non-square images (issue #73 testing).
+                logits = ops.scale_masks(pm[:1].unsqueeze(0).float(), (h, w), padding=False)
+                target = torch.from_numpy(inst["mask"].astype(np.float32))[None, None].to(device)
+                losses.append(_focal_dice_loss(logits, target))
+        del image  # bound memory: encoder features recomputed per epoch
+        return losses
+
+    def _validation_loss(
+        self, torch, ops, pred, net, val_groups, prompt_type,
+        freeze_image_encoder, device,
+    ) -> float:
+        """Mean per-image instance loss over the held-out groups, no grad.
+
+        Runs with ``net.eval()`` so a train-mode image encoder (``_apply_freeze``
+        calls ``image_encoder.train()`` when it's unfrozen) doesn't bias the
+        measurement; the encoder's train mode is restored afterwards so the next
+        epoch trains exactly as before.
+        """
+        net.eval()
+        total, seen = 0.0, 0
+        for group in val_groups:
+            if self.stop_training:
+                break
+            losses = self._image_instance_losses(
+                torch, ops, pred, group, prompt_type,
+                freeze_image_encoder, device, train=False,
+            )
+            if not losses:
+                continue
+            total += torch.stack(losses).mean().item()
+            seen += 1
+        if not freeze_image_encoder:
+            net.image_encoder.train()
+        return total / max(1, seen)
+
+    def _set_image(self, pred, image: np.ndarray, with_feature_grad: bool):
         """Preprocess ``image`` and compute encoder features into the predictor.
 
         Sets ``pred.batch`` explicitly so ``_prepare_prompts`` maps bbox/point
         prompts from this image's original pixel size into model coordinates —
         a stale ``batch`` from a different-sized image would mis-scale prompts.
+
+        ``with_feature_grad`` keeps the encoder features in the autograd graph
+        (only when training an unfrozen encoder); frozen-encoder training and the
+        validation pass compute them under ``no_grad`` to save memory.
         """
         import torch
 
@@ -392,10 +585,10 @@ class SAMFineTuner(QObject):
             break
         # (paths, im0s, ...) — prompt_inference reads self.batch[1][0].shape for orig H,W.
         pred.batch = (None, [image], None)
-        if freeze_image_encoder:
-            with torch.no_grad():
-                pred.features = pred.get_im_features(im_t)
-        else:
+        # Explicit grad context (not the ambient mode): the unfrozen-encoder
+        # training path must build the feature graph even if a prior no_grad
+        # val pass left grad disabled, and the val pass must stay grad-free.
+        with (torch.enable_grad() if with_feature_grad else torch.no_grad()):
             pred.features = pred.get_im_features(im_t)
         return im_t
 
@@ -408,9 +601,13 @@ class SAMFineTuner(QObject):
 
     # -- checkpoint ----------------------------------------------------------
 
-    def _save_and_verify(self, net, base_file: str, out_path: str) -> dict:
+    def _save_and_verify(self, net, base_file: str, out_path: str, state=None) -> dict:
         """Save fine-tuned weights as ``{"model": state_dict}`` and prove they
         reload through ``SAM(out_path)``.
+
+        ``state`` is the best-val CPU snapshot when early stopping / best-epoch
+        selection picked one; when ``None`` (no val set, or no improvement) the
+        live ``net`` state is saved, preserving the original last-epoch behaviour.
 
         Ultralytics' ``_load_checkpoint`` reads only the nested ``"model"`` key
         (a tensor dict) and rebuilds the architecture from the filename suffix,
@@ -431,7 +628,9 @@ class SAMFineTuner(QObject):
             )
 
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        net_cpu_state = {k: v.detach().cpu() for k, v in net.state_dict().items()}
+        net_cpu_state = state if state is not None else {
+            k: v.detach().cpu() for k, v in net.state_dict().items()
+        }
         torch.save({"model": net_cpu_state}, out_path)
 
         # Round-trip verification: load + one forward. Failing here is loud by design.

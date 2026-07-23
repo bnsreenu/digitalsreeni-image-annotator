@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..core.constants import default_class_color
+from ..core.keypoint_schema import schema_k
 
 
 class DINOReviewEventFilter(QObject):
@@ -731,6 +732,24 @@ class DINOController(QObject):
                     self.mw.image_label.class_colors[temp_class_name],
                 )
 
+            if temp_class_name in self.mw.keypoint_schemas:
+                temp_schema = self.mw.keypoint_schemas.pop(temp_class_name)
+                existing_schema = self.mw.keypoint_schemas.get(permanent_class_name)
+                if existing_schema is None:
+                    self.mw.keypoint_schemas[permanent_class_name] = temp_schema
+                elif schema_k(existing_schema) != schema_k(temp_schema):
+                    QMessageBox.warning(
+                        self.mw,
+                        "Keypoint Schema Mismatch",
+                        f"Predicted pose instances for '{permanent_class_name}' have "
+                        f"{schema_k(temp_schema)} keypoints, but the class's existing "
+                        f"schema has {schema_k(existing_schema)}. Keeping the existing "
+                        "schema; the newly accepted instances may not render or edit "
+                        "correctly until you redefine it."
+                    )
+                # else: existing schema already matches (likely has better hand-authored
+                # names than the generic kp0..kpK-1 placeholder) -- keep it, drop the temp one.
+
             current_max = max(
                 [
                     ann.get("number", 0)
@@ -790,6 +809,7 @@ class DINOController(QObject):
                 del self.mw.image_label.annotations[temp_class_name]
             if temp_class_name in self.mw.image_label.class_colors:
                 del self.mw.image_label.class_colors[temp_class_name]
+            self.mw.keypoint_schemas.pop(temp_class_name, None)
 
         self.mw.update_class_list()
         self.mw.image_label.update()

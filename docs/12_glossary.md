@@ -23,11 +23,69 @@ Carl Zeiss Image file format for multi-dimensional microscopy images. Contains m
 ### Fine-Tuning (SAM)
 Continuing training of a pre-trained SAM 2 / 2.1 model on the user's own annotations so the assisted tools work better on their imagery. Because Ultralytics ships no SAM trainer, the app uses a custom loop over the Ultralytics `SAM2Model` (see [ADR-021](09_architecture_decisions.md#adr-021-sam-fine-tuning-via-a-custom-loop-over-the-ultralytics-sam2-module)). **Decoder-only** (default) trains just the mask decoder, freezing the image and prompt encoders — fast, low-VRAM, robust on modest data; optionally the image encoder is also unfrozen for heavily domain-shifted data.
 
+### flip_idx
+Part of a keypoint schema (issue #35): a length-K list where `flip_idx[i]` is the
+index point *i* maps to under a **horizontal flip** (identity for points on the
+symmetry axis, e.g. `nose`). Required by YOLO-pose augmentation; app-only for COCO.
+
 ### Focal + Dice Loss
 The mask-supervision loss used during SAM fine-tuning: a focal term (down-weights easy pixels, emphasises hard ones) plus a dice term (region overlap), combined ≈20:1. Standard across the SAM fine-tuning literature.
 
 ### Mask Decoder
 The lightweight SAM head that turns image embeddings + prompt embeddings into mask logits. The default fine-tuning target (`sam_mask_decoder`, ~4.2M params for the tiny model) since it is small and adapts quickly.
+
+### Keypoint / Pose Instance
+A single labelled instance of a **pose class** (issue #35, [ADR-029](09_architecture_decisions.md#adr-029-keypoint--pose-annotation--per-class-schema-coco-instance-model-3-state-visibility)):
+an ordered set of K keypoints stored flat as `[x1, y1, v1, x2, y2, v2, ...]` (COCO
+order) plus `num_keypoints` and an instance `bbox`. Has no `segmentation` key — that
+absence routes area/detail/render. Modelled on the COCO keypoint annotation.
+
+### Keypoint Schema
+The per-class definition of a pose class: ordered point **names**, **skeleton** edges,
+and **flip_idx**. Stored in `ImageAnnotator.keypoint_schemas` (one schema per class,
+per the COCO rule) and embedded in the `.iap` project on each class entry. Validated by
+`core/keypoint_schema.py`; edited via the Keypoint Schema dialog. On COCO export
+(issue #35 PR-2) it becomes a category's `"keypoints"` (names) / `"skeleton"`
+(1-based) / `"flip_idx"` (app extension, 0-based) fields; on YOLO-pose export it
+becomes `data.yaml`'s dataset-global `kpt_shape` + `flip_idx`.
+
+### kpt_shape
+The YOLO-pose `data.yaml` key `[K, 3]` declaring the dataset's keypoint count and
+per-point field width (x, y, v) — one value for the **whole dataset**, not per class
+(issue #35 PR-2). `export_yolo_v5plus` refuses to write a dataset whose exported
+classes would need more than one distinct `kpt_shape`. See
+[`_pose_export_check`](08_crosscutting_concepts.md#yolo-pose-single-schema-per-dataset-issue-35-pr-2).
+
+### kobj_loss
+Ultralytics YOLO-pose per-epoch validation loss metric key (`val/kobj_loss`) —
+keypoint-objectness loss. Surfaced in the training progress window alongside the
+existing `val/box_loss` / `val/seg_loss` (issue #35 PR-3).
+
+### pose_loss
+Ultralytics YOLO-pose per-epoch validation loss metric key (`val/pose_loss`) —
+keypoint-regression loss. Surfaced in the training progress window alongside the
+existing `val/box_loss` / `val/seg_loss` (issue #35 PR-3).
+
+### Pose Class
+A class that carries a keypoint schema (i.e. `class_name in keypoint_schemas`). Normal
+classes are unchanged; only pose classes can be annotated with the Keypoint tool.
+
+### Skeleton
+The list of edges (index pairs) connecting a pose class's keypoints, drawn as lines
+between labelled points. 0-based in-app; converted to COCO's 1-based on export.
+
+### Visibility (v)
+The per-keypoint 3-state flag (COCO / YOLO-pose): `0` = not labelled, `1` = labelled
+but occluded, `2` = labelled and visible. Set at placement (left-click = 2,
+right-click / Shift = 1) and toggled by right-clicking a committed point.
+
+### MLflow / Experiment Tracking
+[MLflow](https://mlflow.org/) is a core dependency used to record *every* model-training run — SAM fine-tuning and YOLO training (see [ADR-027](09_architecture_decisions.md#adr-027-mandatory-mlflow-experiment-tracking-sam-explicit--yolo-native)). Tracking is always on; only the store location is configurable. Key terms:
+- **Run** — one training execution, holding its parameters, time-series metrics, and artifacts.
+- **Experiment** — a named group of runs (default `image-annotator-training`), used to compare attempts.
+- **Tracking URI / store** — where runs are persisted. Defaults to a local file store at `<project>/mlruns`; `resolve_tracking_uri()` honors a QSettings override first, then the open project, then the working directory.
+- **Artifact** — a file logged to a run; here the saved fine-tuned checkpoint (SAM) or the trained model (YOLO, via Ultralytics).
+If the MLflow install is somehow broken at run time, tracking degrades to a no-op for that run rather than aborting the training job — crash-safety, not an opt-out.
 
 ### Multi-dimensional Image
 An image with more than 2 dimensions, typically from microscopy. Dimensions include T (time), Z (depth), C (channel), S (scene), H (height), W (width).

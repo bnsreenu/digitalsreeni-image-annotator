@@ -26,6 +26,10 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
     ],
     python_requires=">=3.10",
     install_requires=[
@@ -46,7 +50,10 @@ setup(
         "torch>=2.2.0",
         "torchvision>=0.17.0",
         "transformers>=4.40.0",
-        "huggingface_hub>=0.20.0"
+        "huggingface_hub>=0.20.0",
+        # MLflow experiment tracking for model training (issue #74). A core
+        # dependency, not optional: every SAM/YOLO training run is tracked.
+        "mlflow>=2.0.0",
     ],
     entry_points={
         "console_scripts": [

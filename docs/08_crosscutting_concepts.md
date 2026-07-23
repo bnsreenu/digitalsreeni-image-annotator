@@ -354,6 +354,40 @@ class TrainingThread(QThread):
 - Progress updates via Qt signals
 - UI remains responsive during training
 
+## MLflow Experiment Tracking (Always On)
+
+MLflow tracking (issue #74, [ADR-027](09_architecture_decisions.md#adr-027-mandatory-mlflow-experiment-tracking-sam-explicit--yolo-native))
+records *every* training run so checkpoints stay tied to their hyperparameters and
+loss curves. Tracking is mandatory — there is no enable/disable. Several
+cross-cutting rules govern it:
+
+**Core dependency, lazy import, crash-safe.** MLflow is in `install_requires` (a
+fresh install always has it). `import mlflow` still happens only inside
+`training/mlflow_tracker.py` methods (the same lazy idiom as SAM/DINO), so startup
+stays fast and a *broken* install can't stop the GUI launching. There is no
+"disabled" tracker; the only no-op is `_NullTracker`, used when a trainer is called
+without a tracker (direct/programmatic calls, tests). Every live MLflow call is
+wrapped so a tracking error logs a status line but **never aborts a run** — pure
+crash-safety, not an opt-out.
+
+**Tracking-URI resolution.** `resolve_tracking_uri(main_window)` picks the store by
+precedence: a non-empty QSettings override (`tracking/mlflow_uri`) → `<project>/mlruns`
+when a project is open (`main_window.current_project_dir`) → `<cwd>/mlruns`.
+`to_mlflow_uri()` then converts a local path to a `file://` URI at the MLflow
+boundary (a bare Windows `C:\…` path is otherwise read as scheme `c` and rejected),
+and `MLFLOW_ALLOW_FILE_STORE=true` is set so mlflow 3.x accepts the local file store.
+
+**Where logging lives — by trainer shape.** SAM has a custom loop, so it logs
+*explicitly* through a tracker passed into `SAMFineTuner.train(..., tracker=...)`.
+Critically, the MLflow run is started, logged to, and ended **inside `train()` on the
+worker thread** — MLflow runs are thread-bound, and the controller only constructs the
+(unstarted) tracker. The tracker's status `log` is wired to the trainer's
+thread-safe `progress_signal`, so tracker messages reach the GUI via a queued
+connection (never a direct cross-thread QTextEdit write). YOLO instead arms
+Ultralytics' built-in MLflow callback (`MLFLOW_TRACKING_URI` /
+`MLFLOW_EXPERIMENT_NAME` env + `ultralytics.settings.update({"mlflow": True})`)
+on every run.
+
 ## Error Handling
 
 ### YOLO Model/Data Mismatch
@@ -378,6 +412,35 @@ try:
 except Exception as e:
     # Handle gracefully instead of crashing
 ```
+
+### YOLO-Pose Single-Schema-Per-Dataset (issue #35 PR-2)
+
+**Problem**: A YOLO-pose dataset's `data.yaml` has ONE global `kpt_shape`/
+`flip_idx`, not one per class — exporting a mix of pose classes with
+different K, or a pose class alongside a non-pose class, would silently
+produce inconsistent label-line token counts with no matching schema.
+
+**Solution** — validate before writing anything to disk, same
+`ValueError` → `QMessageBox.warning` surfacing as the YOLO model/data
+mismatch above:
+```python
+# io/export_formats.py
+def _pose_export_check(all_annotations, class_mapping, keypoint_schemas):
+    ...
+    if inconsistent or len(distinct_k) > 1 or non_pose_classes:
+        raise ValueError("YOLO-pose export requires every exported class "
+                          "to share exactly one keypoint schema (K) ...")
+    return k, flip_idx
+
+# controllers/io_controller.py
+try:
+    output_dir, yaml_path = export_yolo_v5plus(..., keypoint_schemas=mw.keypoint_schemas)
+except ValueError as e:
+    QMessageBox.warning(mw, "Export Error", str(e))
+    return
+```
+`_pose_export_check` runs first, before `os.makedirs` — a rejected export
+leaves zero output on disk.
 
 ## Multi-dimensional Image Slicing
 
@@ -508,6 +571,50 @@ Consequences this codebase has tripped over:
   the specific row in `slice_list`. Without this, batch review on
   slices either silently no-op'd or showed the first regular
   image's masks on a slice.
+
+### Two Temp-Annotation Mechanisms
+
+The name "temp annotation" refers to **two unrelated mechanisms** in
+this codebase. They look similar (both are pending, unsaved
+detections shown for accept/reject review) and are easy to confuse,
+but they live in different data structures, render through different
+code paths, and are reviewed through different UI. When touching
+prediction-review code, check which one you're actually in.
+
+**Mechanism A — `ImageLabel.temp_annotations` (a list).** Populated
+*only* by DINO's own single/batch detect-then-SAM flow (see above).
+Rendered by a dedicated `ImageLabel.draw_temp_annotations` method,
+which has no keypoints branch — it only understands `"segmentation"`
+and `"bbox"`. Reviewed via the application-wide
+`DINOReviewEventFilter` (ADR-015), keyed on Enter/Escape. Nothing in
+YOLO uses this path.
+
+**Mechanism B — `"Temp-{class}"` entries inside `image_label.annotations`
+(a dict).** These are ordinary-looking annotation-dict entries, just
+filed under a class name prefixed `"Temp-"`. Populated by
+`add_temp_classes()` and used by **both** DINO's promote-to-permanent-
+class flow **and** all of YOLO's box/mask/pose prediction review
+(`YOLOController.process_yolo_results` builds the same `{class_name:
+[annotation, ...]}` shape DINO does and calls `self.mw.add_temp_classes(...)`
+directly). Because these entries sit in the real `annotations` dict,
+they render through the ordinary `draw_annotations` — already
+keypoint-aware since PR-1 (the `elif "keypoints"` branch) — so pose
+predictions display correctly without any special-casing. Accept/reject
+go through `accept_visible_temp_classes()` / `reject_visible_temp_classes()`,
+which only move dict entries and rename keys — they do **not** call
+`calculate_area`, `simplify_polygon`, or `create_coco_annotation`, and
+have no existence-only `"segmentation" in annotation` checks, so
+keypoint-shaped (segmentation-less) candidates pass through safely.
+`accept_visible_temp_classes()` additionally carries over any
+`keypoint_schemas["Temp-{class}"]` entry to the permanent class name
+(warning and keeping the existing schema on a K mismatch instead of
+overwriting); `reject_visible_temp_classes()` pops the orphaned
+`"Temp-{class}"` schema entry.
+
+**YOLO-pose prediction (issue #35 PR-3) uses only Mechanism B** — it
+never touches `ImageLabel.temp_annotations` or
+`DINOReviewEventFilter`. See [ADR-029](09_architecture_decisions.md#adr-029-keypoint--pose-annotation--per-class-schema-coco-instance-model-3-state-visibility)
+for the pose instance schema itself.
 
 ## Multi-dimensional TIFF Axis Defaults
 

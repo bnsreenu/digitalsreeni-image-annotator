@@ -27,7 +27,7 @@ def test_import_coco_json_preserves_unicode_class(tmp_path):
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(coco, f, ensure_ascii=False)
 
-    imported_annotations, image_info = import_coco_json(str(json_path), {})
+    imported_annotations, image_info, keypoint_schemas = import_coco_json(str(json_path), {})
 
     assert UNICODE_CLASS in imported_annotations["img.png"]
     assert image_info[1]["file_name"] == "img.png"

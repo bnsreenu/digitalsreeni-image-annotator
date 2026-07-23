@@ -96,6 +96,17 @@ def build_menu_bar(window):
     toggle_dark_mode_action.triggered.connect(window.toggle_dark_mode)
     settings_menu.addAction(toggle_dark_mode_action)
 
+    # Experiment tracking (issue #74) — configure MLflow + open its UI.
+    tracking_menu = settings_menu.addMenu("&Experiment Tracking")
+
+    mlflow_settings_action = QAction("MLflow Settings…", window)
+    mlflow_settings_action.triggered.connect(window.show_mlflow_settings)
+    tracking_menu.addAction(mlflow_settings_action)
+
+    open_mlflow_ui_action = QAction("Open MLflow UI", window)
+    open_mlflow_ui_action.triggered.connect(window.open_mlflow_ui)
+    tracking_menu.addAction(open_mlflow_ui_action)
+
     # Tools Menu
     tools_menu = menu_bar.addMenu("&Tools")
 

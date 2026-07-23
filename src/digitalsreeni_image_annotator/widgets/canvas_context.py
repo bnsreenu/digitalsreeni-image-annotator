@@ -35,6 +35,11 @@ class CanvasContext:
     def is_class_visible(self, name: str) -> bool:
         return self._mw.class_controller.is_class_visible(name)
 
+    def keypoint_schema(self, name):
+        """Keypoint schema for a pose class, or None for a normal class
+        (issue #35). value: {"names", "skeleton", "flip_idx"}."""
+        return self._mw.keypoint_schemas.get(name)
+
     def current_image_key(self):
         return self._mw.current_slice or self._mw.image_file_name
 

@@ -48,7 +48,11 @@ class SAMTrainConfigDialog(QDialog):
         self.lr.setRange(1e-6, 1e-1)
         self.lr.setSingleStep(1e-5)
         self.lr.setValue(1e-4)
-        form.addRow("Learning rate:", self.lr)
+        self.lr.setToolTip(
+            "Peak learning rate. With the schedule on it ramps up over the first "
+            "10% of steps then cosine-decays to a 10% floor."
+        )
+        form.addRow("Peak learning rate:", self.lr)
 
         self.batch_size = QSpinBox()
         self.batch_size.setRange(1, 64)
@@ -58,6 +62,37 @@ class SAMTrainConfigDialog(QDialog):
             "(all of an image's objects are backpropagated together)."
         )
         form.addRow("Batch size:", self.batch_size)
+
+        # ── train/val split, schedule & early stopping (issue bnsreenu#85) ──
+        self.train_pct = QSpinBox()
+        self.train_pct.setRange(0, 100)
+        self.train_pct.setValue(80)
+        self.train_pct.setSuffix("% train")
+        self.train_pct.setToolTip(
+            "Fraction of annotated images used for training; the rest are a "
+            "held-out validation set (deterministic, per image). At 100% there "
+            "is no val set, so val_loss and early stopping are off."
+        )
+        self.train_pct.valueChanged.connect(self._update_ok_enabled)
+        form.addRow("Train split:", self.train_pct)
+
+        self.patience = QSpinBox()
+        self.patience.setRange(0, 200)
+        self.patience.setValue(20)
+        self.patience.setToolTip(
+            "Stop early when val_loss hasn't improved for this many epochs and "
+            "save the best epoch. 0 disables early stopping (best epoch still "
+            "saved). Ignored when there is no validation set."
+        )
+        form.addRow("Early-stop patience:", self.patience)
+
+        self.lr_schedule = QCheckBox("Warmup → cosine LR schedule")
+        self.lr_schedule.setChecked(True)
+        self.lr_schedule.setToolTip(
+            "Linear warmup over the first 10% of steps, then cosine decay to a "
+            "10% floor. Uncheck to hold the peak learning rate constant."
+        )
+        form.addRow("", self.lr_schedule)
 
         self.prompt_type = QComboBox()
         self.prompt_type.addItems(["bbox", "point"])
@@ -81,12 +116,32 @@ class SAMTrainConfigDialog(QDialog):
         # Colors Rule, docs/08_crosscutting_concepts.md).
         layout.addWidget(note)
 
+        self._split_hint = QLabel("")
+        self._split_hint.setWordWrap(True)
+        layout.addWidget(self._split_hint)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._update_ok_enabled()
+
+    def _update_ok_enabled(self):
+        """Block a 0% train split (nothing to train on) and surface the no-val
+        behaviour at 100%."""
+        pct = self.train_pct.value()
+        if pct <= 0:
+            self._ok_button.setEnabled(False)
+            self._split_hint.setText("Train split must be above 0% — there would be nothing to train on.")
+        else:
+            self._ok_button.setEnabled(True)
+            self._split_hint.setText(
+                "100% train: no validation set — val_loss and early stopping are off."
+                if pct >= 100 else ""
+            )
 
     def get_config(self) -> dict:
         return {
@@ -97,4 +152,7 @@ class SAMTrainConfigDialog(QDialog):
             "batch_size": self.batch_size.value(),
             "prompt_type": self.prompt_type.currentText(),
             "freeze_image_encoder": not self.train_encoder.isChecked(),
+            "train_pct": self.train_pct.value(),
+            "patience": self.patience.value(),
+            "use_lr_schedule": self.lr_schedule.isChecked(),
         }

@@ -18,6 +18,7 @@ torch>=2.2.0  # first release with NumPy 2.x compatibility
 torchvision>=0.17.0
 transformers>=4.40.0
 huggingface_hub>=0.20.0
+mlflow>=2.0.0  # experiment tracking for model training (#74); always-on, core dep
 
 # Data and visualization
 pyyaml>=6.0.0

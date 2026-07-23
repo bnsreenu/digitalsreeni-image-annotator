@@ -5,14 +5,20 @@ models/
 *.onnx
 *.safetensors
 
+# Ultralytics' default training output dir (in-app YOLO training routes into
+# models/yolo/custom instead, but a stray CLI/fallback run can still land here)
+runs/
+
 # User project files
 *.iap
 
 # Local tooling — .claude is mostly local state, but the senior-reviewer
-# agent definition under .claude/agents/ is tracked (referenced by
-# CLAUDE.md as a mandatory quality gate), so un-ignore that subtree.
+# agent definition under .claude/agents/ and project skills under
+# .claude/skills/ are tracked (referenced by CLAUDE.md / used as shared
+# workflow tooling), so un-ignore those subtrees.
 .claude/*
 !.claude/agents/
+!.claude/skills/
 .venv
 
 # Python cache and build artifacts

@@ -67,6 +67,38 @@ def clamp_segmentation(segmentation, width, height):
     return clamped
 
 
+def clamp_keypoints(keypoints, width, height):
+    """Clamp every keypoint of a flat ``[x1, y1, v1, x2, y2, v2, ...]`` list into
+    the image rectangle ``[0, width] x [0, height]``, leaving the visibility flag
+    untouched. Per-coordinate and count-preserving (mirrors
+    :func:`clamp_segmentation`) so a dragged point can't poison saved coords.
+    See ADR-024 / ADR-029. (issue #35)"""
+    clamped = list(keypoints)
+    for i in range(0, len(clamped) - 2, 3):
+        clamped[i] = min(max(clamped[i], 0), width)
+        clamped[i + 1] = min(max(clamped[i + 1], 0), height)
+    return clamped
+
+
+def keypoint_instance_bbox(keypoints, width=None, height=None, margin=6):
+    """Bounding box ``[x, y, w, h]`` around a pose instance's labelled (v>0)
+    points, padded by ``margin`` and clamped to the image when its size is
+    known. Falls back to a zero box if nothing is labelled. Shared by
+    AnnotationController.finish_keypoint (placement) and COCO import
+    (recovering a bbox for keypoint annotations whose source file omitted
+    one). (issue #35 PR-2)"""
+    xs = [keypoints[i] for i in range(0, len(keypoints), 3) if keypoints[i + 2] > 0]
+    ys = [keypoints[i + 1] for i in range(0, len(keypoints), 3) if keypoints[i + 2] > 0]
+    if not xs or not ys:
+        return [0, 0, 0, 0]
+    x0, y0 = min(xs) - margin, min(ys) - margin
+    x1, y1 = max(xs) + margin, max(ys) + margin
+    bbox = [x0, y0, x1 - x0, y1 - y0]
+    if width is not None and height is not None:
+        bbox = clamp_bbox(bbox, width, height)
+    return bbox
+
+
 def clamp_bbox(bbox, width, height):
     """Trim a ``[x, y, w, h]`` box to the image rectangle by clamping each
     corner independently, keeping it rectangular and at least 1x1. This is the

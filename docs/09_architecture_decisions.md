@@ -816,6 +816,9 @@ won't reload (cf. facebookresearch/sam2#337 key-mismatch failures).
   only during GUI testing because the e2e tests used square images). The
   landscape regression test (`test_landscape_no_mask_shift`) and the
   `ops.scale_masks` API-drift guard protect this.
+- ℹ️ The custom loop later gained a train/val split, a no-grad validation pass
+  (`val_loss`), a warmup→cosine LR schedule, and early stopping with best-checkpoint
+  selection — see **ADR-028**.
 
 ---
 
@@ -1108,6 +1111,364 @@ dialog. Validation warnings stay.
 - ⚠️ Memory is a bounded deep copy per edit per image (annotations are small;
   depth-capped at 50). ⚠️ Undo clears the current selection rather than trying to
   re-resolve it by value across a list rebuild — the safe, predictable choice.
+
+---
+
+## ADR-027: Mandatory MLflow Experiment Tracking (SAM-explicit / YOLO-native)
+
+**Status**: Accepted (issue bnsreenu#74); amended — tracking is now a core,
+always-on feature rather than an opt-in extra (see "Amendment" below).
+
+**Context**: Training output (SAM fine-tuning and YOLO training) vanished after a
+session — no record linked a saved checkpoint to its hyperparameters, no run-to-run
+comparison, no persisted loss curves. The only feedback was live strings in
+`TrainingInfoDialog`. Issue #74 asked for MLflow tracking. This fork's owner
+decided every training run must be tracked — the app already hard-requires torch /
+ultralytics / transformers, so MLflow's footprint is negligible and an opt-out only
+invites "why is there no run?" confusion.
+
+**Decision**:
+
+- **Core dependency.** MLflow is in `install_requires` (and uncommented in
+  `requirements.txt`), not an extra — a fresh `pip install` always has it. `import
+  mlflow` still happens only inside the methods of `training/mlflow_tracker.py`
+  (never at module top), so app startup stays fast and a *broken* install can't stop
+  the GUI from launching — but tracking is never *expected* to be absent.
+- **One small wrapper, `MLflowTracker`, always on.** There is no "disabled" mode and
+  no user toggle. Every live mlflow call is wrapped so a tracking error logs a status
+  line but **never aborts training** — pure crash-safety, not an opt-out. A separate
+  `_NullTracker` no-op stands in only when a trainer is called *without* a tracker
+  (direct/programmatic calls, tests); the GUI always supplies a real tracker.
+- **Two integration styles, by trainer shape:**
+  - **SAM** has a *custom* training loop, so it logs **explicitly** through a
+    tracker passed into `SAMFineTuner.train(..., tracker=...)`. The run is
+    started/logged/ended **inside `train()` on the worker thread** because MLflow
+    runs are thread-bound. The controller builds the (unstarted) tracker; the
+    trainer wires the tracker's status `log` to its own thread-safe
+    `progress_signal` (never a direct cross-thread QTextEdit write).
+  - **YOLO** uses Ultralytics' *built-in* MLflow callback — armed every run by
+    setting `MLFLOW_TRACKING_URI` / `MLFLOW_EXPERIMENT_NAME` and
+    `ultralytics.settings.update({"mlflow": True})`. It logs richer metrics
+    (box/cls/dfl loss, mAP, the model) for free.
+- **Local file store by default.** `resolve_tracking_uri()` precedence: a non-empty
+  QSettings override → `<project>/mlruns` when a project is open → `<cwd>/mlruns`.
+  Two cross-version/cross-platform hazards are handled at the mlflow boundary
+  (`to_mlflow_uri()` + an env flag), not in the resolver (which keeps returning a
+  plain path for display and directory use):
+  - **Windows path → `file://` URI.** mlflow validates the URI *scheme*, so a bare
+    `C:\…\mlruns` is read as scheme `c` and rejected — local tracking would silently
+    degrade to untracked. `to_mlflow_uri()` converts local paths to `file://` URIs
+    (genuine `http`/`sqlite`/`databricks` URIs pass through) at every mlflow call
+    site: `MLflowTracker.start()`, the YOLO `MLFLOW_TRACKING_URI` env var, and the
+    `mlflow ui` launch.
+  - **mlflow 3.x file-store opt-out.** mlflow ≥3 raises on the local file store
+    unless `MLFLOW_ALLOW_FILE_STORE=true`; we `setdefault` it before touching mlflow
+    so the documented file-store default keeps working on both 2.x and 3.x without
+    overriding an explicit user setting.
+- **Config surface — destination only, no on/off.** A dedicated **Settings →
+  Experiment Tracking** dialog (`MLflowSettingsDialog`) edits the tracking-store
+  URI and experiment name (the only knobs), and an **Open MLflow UI** action shells
+  out to `<python> -m mlflow ui`. The training dialogs have **no** "track this run"
+  checkbox — every run is tracked.
+- **Live run link + auto-open.** When a SAM run opens, `MLflowTracker.start()`
+  captures `run_id`/`experiment_id` and fires a `set_run_url_callback` with the UI
+  deep link (`run_ui_url()` → `http://localhost:5000/#/experiments/<id>/runs/<id>`).
+  The trainer relays it via its `mlflow_run_url` signal (worker → GUI thread); the
+  controller posts a **clickable link** into the Fine-Tuning Progress dialog (now a
+  `QTextBrowser` with `setOpenExternalLinks`), starts the `mlflow ui` server **once**
+  (`start_mlflow_ui_server`, split out of `launch_mlflow_ui`), and **opens the run
+  in the browser** (deferred ~2.5 s via `QTimer` on first launch so the cold server
+  is ready). All of this is best-effort and never disturbs the run.
+
+**Amendment (always-on)**: The feature originally shipped as an opt-in extra with a
+per-dialog checkbox and an `enabled` QSettings flag (matching issue #74's "optional"
+framing). That was reversed: MLflow moved to `install_requires`, the checkboxes and
+the `enabled` pref were removed, `MLflowTracker` lost its `enabled` parameter, and
+`load/save_mlflow_prefs` now carry only `(uri, experiment)`. The lazy import and the
+never-abort-training error handling remain — as robustness, not as an opt-out.
+
+**Consequences**:
+- Every training run produces an MLflow run with no user action; there is no path
+  that trains untracked except a genuinely broken MLflow install (which degrades
+  safely rather than crashing the run).
+- ⚠️ Two logging styles (explicit for SAM, native for YOLO) means runs from the two
+  trainers are organized by their respective conventions; both honor the same
+  tracking URI / experiment name, but their param/metric keys differ.
+- ⚠️ MLflow run thread-affinity is load-bearing for SAM: the run **must** open and
+  close on the worker thread that trains, not the GUI thread that builds the tracker.
+
+---
+
+## ADR-028: Train/Val Split, Val-Loss, Warmup→Cosine LR & Early Stopping for Training
+
+**Status**: Accepted (issue bnsreenu#85)
+
+**Context**: The two trainers were asymmetric and neither reported *generalization*.
+SAM fine-tuning (ADR-021) logged only a per-epoch `train_loss` over all annotated
+instances — no held-out set, so the curve always trended down and couldn't reveal
+overfitting (the main reason to track experiments). Its LR was fixed for the whole
+run and only the last epoch's weights were saved. YOLO already got val metrics + mAP
+from Ultralytics natively, but the app surfaced only a single `trainer.loss` line and
+exposed none of Ultralytics' LR-schedule / early-stop knobs.
+
+**Decision**: Give both trainers a configurable train/val split, both-loss tracking,
+a linear-warmup → cosine-to-floor LR schedule, and patience-based early stopping with
+best-checkpoint selection. The schedule shape is a **fixed smart default** (warmup =
+first 10% of steps, cosine floor = 10% of peak); only the *peak* LR, train %, and
+patience are user-editable (the literature says the peak LR matters more than the
+shape).
+
+- **Deterministic per-image split.** A new `sam_dataset.split_groups(groups,
+  train_pct, seed)` reuses the YOLO export's stable-MD5 `assign_train_val` (ADR for
+  #83) so SAM and YOLO split identically and reproducibly. `SampleGroup` gained a
+  `name` used only as the split key. At 100% train (or a single image) the val set is
+  empty and the val pass / early stopping are skipped (the UI says so; the SAM dialog
+  also disables OK at 0% train). **YOLO's split stays at "Prepare Dataset" time** —
+  it's baked into `images/train` vs `images/val` folders at export, so the Train
+  dialog only adds schedule/early-stop knobs, never a re-export.
+- **SAM val pass + both losses.** The per-image loss body was extracted into
+  `_image_instance_losses(..., train=bool)` so the same forward serves training
+  (`enable_grad`, backprops once per image) and a no-grad validation pass
+  (`_validation_loss`, run under `net.eval()` then encoder train-mode restored). Each
+  epoch logs `train_loss`, `val_loss`, and the current `lr` to MLflow and the progress
+  window. YOLO surfaces its native val loss + mAP via a new `on_fit_epoch_end`
+  callback (fires *after* validation, so `trainer.metrics` is populated; keys read
+  defensively) — MLflow already gets them natively.
+- **LR schedule.** SAM uses `torch.optim.lr_scheduler.LambdaLR` driven by a pure
+  `lr_schedule.warmup_cosine_lambda(total_steps)`, stepped once per optimizer step
+  (`~ceil(train_images / batch_size)` per epoch; the lambda clamps if the real count
+  drifts). A checkbox reverts to constant LR. When on, YOLO forwards `cos_lr=True`,
+  `lr0`, `lrf=0.1`, `warmup_epochs=round(0.1·epochs)` to Ultralytics' `train()`; when
+  off it forwards `cos_lr=False`, `lrf=1.0`, `warmup_epochs=0` so both toggles' "off"
+  state means a genuinely constant LR (not a linear-decay-with-warmup).
+- **Early stopping + best checkpoint.** SAM uses a tiny pure `EarlyStopper(patience)`
+  (default 20; `0` disables). On each val improvement the trainer snapshots the
+  weights (CPU clone); `_save_and_verify(..., state=best_state)` saves that snapshot
+  rather than the last epoch (falls back to the live net when there's no val /
+  improvement, preserving the original behaviour). YOLO forwards `patience` and keeps
+  Ultralytics' `best.pt`.
+
+**Why pure helpers** (`lr_schedule.py`, `early_stop.py`, `split_groups`): the tricky
+math/bookkeeping is unit-tested without torch, Qt, or a real run
+(`test_lr_schedule.py`, `test_early_stop.py`, `test_sam_split.py`); the val/best/early
+-stop wiring is covered by driving `_run_epochs` with light stubs
+(`test_sam_finetuning.py::TestValPassAndBestCheckpoint`), and the YOLO passthrough by
+`test_yolo_training_args.py`.
+
+**Alternatives considered**:
+- *A shared trainer base class for both paths* — rejected: the two loops are too
+  different (custom PyTorch vs Ultralytics-native). Only the pure pieces +
+  `assign_train_val` are shared; a unification refactor isn't warranted.
+- *Exposing every schedule knob* (warmup fraction, floor, lr0 for SAM) — deferred:
+  the simplified surface (peak LR + train % + patience + a schedule toggle) keeps the
+  dialogs legible; the fixed 10%/10% recipe is the modern default.
+- *Stepping the SAM schedule per epoch* — rejected in favour of per-optimizer-step so
+  short runs still get a real warmup ramp.
+
+**Consequences**:
+- ✅ Both trainers now show generalization (val_loss / mAP) and a tracked LR curve;
+  SAM saves its best-val checkpoint instead of the last epoch.
+- ⚠️ SAM's saved checkpoint changing from "last" to "best-val" is a behaviour change
+  (only when a val set exists); 100% train preserves the old last-epoch save.
+- ⚠️ The SAM val pass recomputes encoder features for the held-out images each epoch
+  (same bounded-memory tradeoff as training, ADR-021); a larger split costs more time.
+- ⚠️ `on_fit_epoch_end` reads Ultralytics metric keys (`val/box_loss`,
+  `metrics/mAP50(B)`, …) which vary by task/version, so every read is guarded and a
+  miss just omits that field rather than breaking the run.
+
+---
+
+## ADR-029: Keypoint / Pose Annotation — Per-Class Schema, COCO Instance Model, 3-State Visibility
+
+**Status**: Accepted (issue bnsreenu#35, PR-1 + PR-2 + PR-3 — complete)
+
+**Context**: The app annotated polygons, rectangles, and paint masks (+ SAM/DINO) but
+had no way to place **keypoints** — the primitive for pose estimation and landmark
+detection. "Keypoint annotation" can mean standalone points or full COCO/YOLO-pose
+instances; the maximal target was chosen: per-class ordered named keypoints + a
+skeleton, one annotation = one K-point instance tied to a bounding box, COCO 3-state
+visibility, and (later PRs) COCO/YOLO-pose export-import + YOLO-pose training. This PR
+(PR-1) covers annotate + persist + render only.
+
+**Decision**:
+
+- **One instance = one annotation, flat `[x,y,v]*K` + stored `bbox`.** A pose instance
+  is stored like any other annotation in `all_annotations[image][class][]`:
+  `{"keypoints": [x1,y1,v1, …], "num_keypoints": <v>0 count>, "bbox": [x,y,w,h],
+  "category_id", "category_name", "number"}`. The flat triple list mirrors COCO
+  exactly, so it round-trips through `.iap` via `image_utils.convert_to_serializable`
+  with **zero** save/load code. **Absence of a `segmentation` key is the load-bearing
+  discriminator**: `calculate_area` falls to the bbox branch, the Detail-% spin
+  auto-disables, and `draw_annotations` routes to the keypoint branch (added *before*
+  the `bbox` branch, since an instance also carries a bbox).
+- **`v` is the COCO 3-state enum** (0 = not labelled, 1 = labelled+occluded,
+  2 = labelled+visible) — identical to YOLO-pose, so no remap on export. The bbox is
+  **stored, not derived**, so `_annotation_bbox`, `calculate_area`, click-selection,
+  and the #40 resize handles all work unchanged; `_keypoint_bounds` is a fallback only
+  for imports that omit a box. `num_keypoints` is recomputed on every edit.
+- **Per-class schema, not per-instance.** COCO requires all instances of a category to
+  share one keypoint set, so the schema lives in `main_window.keypoint_schemas`
+  (`{class_name: {"names", "skeleton", "flip_idx"}}`), **not** on the annotation. A
+  class is a "pose class" iff it has a schema. The schema is embedded on each `classes[]`
+  entry in `.iap` (mirroring `dino_config`'s validate-on-load robustness — malformed
+  schemas are dropped with a print, never crash; old projects load unchanged with an
+  empty store). `flip_idx` (h-flip partner per point) is app-only for COCO but required
+  by YOLO-pose; pure validation lives in `core/keypoint_schema.py` so it's unit-testable.
+- **Guided in-order placement tool.** `KeypointTool(ToolHandler)` places points in
+  schema order: left-click = visible (v2), right-click / Shift+left = occluded (v1),
+  auto-finish at K, Enter finishes early (remaining points padded v0), Backspace goes
+  back, Esc discards. Because the manual-tool dispatch is left-button-only, the tool
+  short-circuits `mousePressEvent` to accept both buttons (mirroring `sam_points`). The
+  in-progress overlay renders for free (paintEvent iterates all handlers).
+- **Editing reuses the #40 selection-handle path, not double-click** (double-click is
+  segmentation-specific). A new edit `kind="kpt"` makes the instance **box transform the
+  whole pose** (scale/translate points + box together, like a polygon's box) via the
+  existing `bbox_edit` machinery — it commits via `bboxEditCommitted` → `commit_bbox_edit`,
+  same as a bbox/segmentation resize. A **separate** single-point drag (`editing_keypoint`)
+  moves one keypoint, and a right-click on a committed point toggles its visibility
+  (2↔1) — both of *these* push an undo baseline at gesture start and commit via
+  `keypointEditCommitted` → `commit_keypoint_edit` (ADR-026). Not-labelled (v=0) points
+  are skipped by `_scale_keypoints`/`_translate_keypoints` and stay at `(0,0)`, since
+  COCO/YOLO-pose require that invariant.
+- **Guards.** Keypoint instances are rejected from **merge** (no mergeable geometry —
+  they'd be silently deleted) and from cross-schema **change-class** (a normal
+  annotation can't become a pose instance and vice versa; a keypoint instance only
+  moves to a pose class with an identical `names` list). The schema-definition dialog
+  locks the keypoint count K once instances exist (only K can corrupt them).
+- **Area = bbox area (not 0).** `calculate_area` returns the stored box's `w*h` for a
+  keypoint instance — deliberate, so sort-by-area behaves consistently with imported
+  bbox annotations rather than dumping all poses to the end.
+- **Export/import (PR-2).** COCO categories gain `keypoints`/`skeleton` (**1-based**,
+  per spec) plus an app-only `flip_idx` extension key (kept **0-based** — no COCO
+  precedent, and it's consumed only by our own importer / the PR-3 trainer, both
+  0-based; converting it would just add a pointless round-trip). `create_coco_annotation`
+  and `export_yolo_v5plus`'s per-annotation writer both check `"keypoints" in ann`
+  *before* segmentation/bbox, mirroring the rendering dispatch order — a pose instance
+  also carries a `bbox`, so checking bbox first would make the keypoints branch
+  unreachable. YOLO-pose (`data.yaml`: `kpt_shape: [K, 3]`, `flip_idx`) is
+  **dataset-global**, so `export_yolo_v5plus` refuses (`ValueError` → `QMessageBox`, via
+  `_pose_export_check`) a mix of >1 distinct `(K, flip_idx)` schema or a mix of pose and
+  non-pose classes among the annotations actually being written; detection is
+  data-driven (based on which annotations carry `keypoints`), not solely on
+  `keypoint_schemas`, so a caller that doesn't thread schemas through still gets a
+  correct K (PR-3's `prepare_dataset` does thread `keypoint_schemas` through, for the
+  richer `flip_idx`/skeleton data — see the PR-3 addendum below). All four
+  `io.import_formats`
+  entry points (`import_coco_json`, `import_yolo_v4`, `import_yolo_v5plus`, and
+  `process_import_format`'s pass-through) now uniformly return
+  `(annotations, image_info, keypoint_schemas)` — `{}` where nothing was recovered — so
+  `io_controller.py` has one contract regardless of format. YOLO-pose import applies its
+  one recovered schema (generic `kp0..kp{K-1}` names, no skeleton) to **every** class
+  declared in `data.yaml`'s `names`, not just classes observed with pose-shaped lines,
+  since `kpt_shape`/`flip_idx` are dataset-global. **The rebuild step in
+  `io_controller.import_annotations` (`_rebuild_imported_annotation`) builds a fully
+  separate dict shape for keypoint vs. non-keypoint annotations** — it must never attach
+  a `None`-valued `segmentation`/`type` key to a keypoint annotation. Several
+  existence-only checks (`"segmentation" in annotation`, not a truthiness/None guard) in
+  `image_label.py::draw_annotations`, `image_label.py::start_polygon_edit` (the
+  double-click handler, which iterates every annotation across every class), and
+  `widgets/tools/eraser_tool.py` would otherwise misfire: a pose instance would render
+  nothing, and any double-click anywhere on the canvas would raise
+  `TypeError: 'NoneType' object is not subscriptable` as soon as one keypoint instance
+  exists in the current image. `AnnotationController._keypoint_instance_bbox` was
+  relocated to `utils.keypoint_instance_bbox` (delegate kept for `finish_keypoint`) so
+  COCO import can reuse the same bbox-from-labelled-points fallback instead of a second
+  copy.
+- **Training + prediction (PR-3).** `YOLOTrainer.prepare_dataset` threads
+  `main_window.keypoint_schemas` into `export_yolo_v5plus` so the prepared `data.yaml`
+  carries `kpt_shape`/`flip_idx` whenever the exported set is pose-shaped. `train_model`
+  adds a pre-flight guard — before Ultralytics ever starts, it compares the loaded
+  model's `.task` (`"pose"` or not) against whether the prepared yaml has a `kpt_shape`
+  key, and raises `ValueError` on a mismatch in either direction (pose model /
+  non-pose dataset, or vice versa). No new UI code: the existing `TrainingThread`
+  exception-to-`QMessageBox` path already surfaces any exception `train_model` raises,
+  so this fails loud with a plain-language message instead of Ultralytics throwing a
+  cryptic shape error mid-epoch. `on_fit_epoch_end` also surfaces `val/pose_loss` and
+  `val/kobj_loss` alongside the existing `val/box_loss`/`val/seg_loss`, following the
+  same defensive "missing key never disturbs the run" pattern. `predict()` no longer
+  hardcodes `task='segment'` on the `self.model(...)` call — that would have silently
+  mis-decoded pose outputs — so the task is whatever the loaded model actually is.
+  Schema round-trips through **two tiers**: `_register_trained_model` writes the
+  richer, hand-authored `keypoint_schema` (names + skeleton) into the registered
+  model's `data.yaml` only when every trained class shares one identical schema in
+  this session's `keypoint_schemas`; otherwise (or for a model trained outside this
+  app) it still carries the bare `kpt_shape`/`flip_idx`, and `load_prediction_model`
+  falls back to reconstructing a generic `kp0..kp{K-1}`-named schema
+  (`sanitize_schema`'d, so a malformed yaml degrades to `None` rather than crashing)
+  from those. `YOLOController.process_yolo_results` gains an `is_pose` branch —
+  decided once per result set from `yolo_trainer.model.task`, since one checkpoint is
+  exclusively one task — that builds temp instance dicts
+  (`{"keypoints", "num_keypoints", "bbox", "category_name": "Temp-<class>", "score",
+  "temp": True}`, deliberately **no `segmentation` key**, matching the discriminator
+  everywhere else in this ADR) and seeds `keypoint_schemas["Temp-<class>"]` from
+  `yolo_trainer.prediction_keypoint_schema` the first time that temp class appears.
+  Every predicted point is stamped **v=2 (visible)**, a deliberate simplification:
+  Ultralytics exposes only a per-point presence confidence, not a true COCO 3-state
+  occlusion signal, and the instance already cleared the box-level `conf_threshold`
+  gate, so a second per-point threshold would just be noise dressed up as occlusion
+  data — the user hand-corrects via the existing right-click visibility toggle on
+  review. The one real gap this closed in the otherwise-already-keypoint-safe
+  Temp-class review path: `accept_visible_temp_classes` now carries a
+  `"Temp-<class>"` schema over to the permanent class name on accept (if the
+  permanent class already has a schema with a different K, it warns and keeps the
+  existing one rather than silently overwriting), and `reject_visible_temp_classes`
+  pops any orphaned `"Temp-<class>"` schema entry on reject — without this, rejected
+  or renamed temp poses would leak stale schema entries into `keypoint_schemas`.
+- **Consecutive runs reload a pristine model (PR-3 manual-testing fix).** Ultralytics
+  mutates a `YOLO` object's `overrides` during `train()` (it drops the `'model'` key),
+  so a *second* `train()` on the same instance raises `KeyError('model')`. `train_model`
+  therefore reloads a fresh `YOLO(self.loaded_model_path)` at the start of every run
+  (with a best-effort GPU reclaim first, per the "Releasing Model GPU Memory" rule).
+  `loaded_model_path` is kept in sync with **every** `self.model` assignment — both
+  `load_model` and `load_prediction_model` set it — so it is a single source of truth
+  for "the model to train" (loading a trained `best.pt` for prediction and then hitting
+  Train continues from *it*, not the stale original pretrained). Semantics: each run
+  fine-tunes the **loaded** checkpoint, not the previous run's output; to continue
+  training from a run's result, load its `best.pt` (Prediction Settings → Load Model, or
+  the trained-model dropdown) and train again. The Training Progress log is also cleared
+  at the start of each run so consecutive runs don't visually stack.
+
+**Why pure helpers** (`core/keypoint_schema.py`, `utils.clamp_keypoints`,
+`ImageLabel._keypoint_bounds/_scale_keypoints/_translate_keypoints`): schema
+validation, clamping (ADR-024 bounds enforcement extended to keypoints), and the affine
+geometry are unit-tested without Qt or a model (`test_keypoint_schema.py`,
+`test_keypoint_geometry.py`, `test_utils.py`); the tool logic via a fake-context
+`ImageLabel` (`test_keypoint_tool.py`); the controller/persistence end-to-end on a real
+offscreen window (`test_keypoint_controller.py`).
+
+**Alternatives considered**:
+- *Standalone labeled points* — rejected for this issue: the user wanted COCO/YOLO-pose,
+  which needs the ordered, fixed-K, skeleton-bearing instance model.
+- *Per-instance schema* — rejected: COCO mandates one schema per category; per-class
+  storage enforces it and keeps instances small.
+- *Double-click vertex editing (as polygons use)* — rejected: it's bound to
+  `start_polygon_edit`; the #40 handle path generalizes cleanly to a `kpt` kind.
+- *Graphical skeleton editor* — deferred; a list-based dialog ships first (lowest risk).
+
+**Consequences**:
+- ✅ Pose classes can be defined, annotated, edited, saved/reloaded; the data model is
+  COCO/YOLO-pose-shaped, and PR-2 confirms it round-trips through both formats losslessly
+  (mod point names, which YOLO-pose doesn't carry). PR-3 closes the loop end-to-end:
+  a pose-shaped dataset can be exported, trained as a YOLO-pose model, and the
+  resulting checkpoint used for prediction, with predicted instances flowing through
+  the same Temp-class accept/reject review as every other detector.
+- ⚠️ Predicted keypoints always come back v=2 (visible) — Ultralytics doesn't expose
+  a true 3-state occlusion signal at inference — so occluded points must be
+  hand-corrected via the right-click toggle after accepting.
+- ⚠️ Each "Train Model" run restarts from the currently-loaded checkpoint (Ultralytics
+  can't reliably re-train the same in-memory object), not from the previous run's
+  weights — to continue a run, load its `best.pt` and train again.
+- ⚠️ Finishing early pads not-yet-placed points with v=0 at the origin; they don't
+  render and (in PR-1) can't be relabelled via right-click (only v>0 points are
+  hit-testable). Acceptable — v=0 means "not labelled" per COCO.
+- ⚠️ Old builds opening a project with keypoint instances preserve but don't render them
+  (the old `if/elif` ignores the key); the schema and instances survive a save.
+- ⚠️ A YOLO-pose dataset built outside this app that genuinely mixes pose and non-pose
+  classes, or hand-edits per-class `kpt_shape`, is out of scope — import applies one
+  recovered schema uniformly to every declared class, and export refuses to mix them.
+
+This builds on **ADR-022/023** (canvas selection + #40 handle editing), **ADR-024**
+(bounds clamping), and **ADR-026** (snapshot undo) — see those for the machinery reused.
 
 ---
 

@@ -229,7 +229,7 @@ tests/
 - [ ] Automatic dependency resolution
 - [ ] Models download automatically on first use
 - [ ] Clear error messages for missing dependencies
-- [ ] Support Python 3.10, 3.11, 3.12
+- [ ] Support Python 3.10, 3.11, 3.12, 3.13, 3.14
 
 ---
 

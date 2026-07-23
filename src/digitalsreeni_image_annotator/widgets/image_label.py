@@ -28,12 +28,19 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QLabel, QMessageBox
 
-from .tools import EraserTool, PaintBrushTool, PolygonTool, RectangleTool
+from .tools import (
+    EraserTool,
+    KeypointTool,
+    PaintBrushTool,
+    PolygonTool,
+    RectangleTool,
+)
 from ..core.constants import DEFAULT_FILL_OPACITY
 from ..utils import (
     calculate_area,
     calculate_bbox,
     clamp_bbox,
+    clamp_keypoints,
     clamp_segmentation,
     fit_bbox_inside,
 )
@@ -59,6 +66,8 @@ class ImageLabel(QLabel):
     deleteSelectionRequested = pyqtSignal()
     finishPolygonRequested = pyqtSignal()
     finishRectangleRequested = pyqtSignal()
+    finishKeypointsRequested = pyqtSignal()             # commit a full keypoint instance (#35)
+    keypointEditCommitted = pyqtSignal()                # committed keypoint dragged — save + undo (#35)
 
     # Class
     classRequested = pyqtSignal(str)                    # accept-temp path needs a new class
@@ -142,6 +151,11 @@ class ImageLabel(QLabel):
         self.fill_opacity = DEFAULT_FILL_OPACITY
         self.drawing_rectangle = False
         self.current_rectangle = None
+        # Keypoint (pose) placement in progress (issue #35).
+        self.drawing_keypoints = False
+        self.current_keypoints = []        # list of (x, y, v) placed so far
+        self.keypoint_next_index = 0       # index of the schema point placed next
+        self.editing_keypoint = None       # {"annotation", "index"} while dragging a committed point
         self.bit_depth = None
         self.image_path = None
         self.dark_mode = False
@@ -172,6 +186,7 @@ class ImageLabel(QLabel):
             "rectangle":   RectangleTool(self),
             "paint_brush": PaintBrushTool(self),
             "eraser":      EraserTool(self),
+            "keypoint":    KeypointTool(self),
         }
 
     def set_context(self, ctx):
@@ -269,6 +284,11 @@ class ImageLabel(QLabel):
         self.selecting = False
         self.selection_rect = None
         self.bbox_edit = None
+        # Drop any in-progress keypoint placement / point drag (#35).
+        self.drawing_keypoints = False
+        self.current_keypoints = []
+        self.keypoint_next_index = 0
+        self.editing_keypoint = None
 
     def clear_current_annotation(self):
         """Clear the current annotation."""
@@ -596,6 +616,14 @@ class ImageLabel(QLabel):
                                     f"{class_name} {annotation.get('number', '')}",
                                 )
 
+                elif "keypoints" in annotation:
+                    # Pose instance (#35): skeleton + visibility-coloured points.
+                    # Drawn before the bbox branch since an instance also carries
+                    # a bbox (the box is resizable via the selection handles).
+                    self._draw_keypoint_annotation(
+                        painter, annotation, class_name, color, text_color
+                    )
+
                 elif "bbox" in annotation:
                     x, y, width, height = annotation["bbox"]
                     painter.drawRect(QRectF(x, y, width, height))
@@ -634,6 +662,53 @@ class ImageLabel(QLabel):
             self._draw_selection_overlay(painter, annotation)
 
         painter.restore()
+
+    def _draw_keypoint_annotation(self, painter, annotation, class_name, color, text_color):
+        """Render a committed pose instance (#35): a faint instance box, the
+        skeleton edges (between labelled points), visibility-coloured markers
+        (filled = visible v2, hollow = occluded v1, v0 skipped), and the label.
+        Marker/skeleton geometry matches the in-progress KeypointTool overlay so
+        placing and reviewing look the same."""
+        kps = annotation.get("keypoints") or []
+        pts = list(zip(kps[0::3], kps[1::3], kps[2::3]))
+        schema = self._ctx.keypoint_schema(class_name) if self._ctx else None
+        r = 4 * self.ui_scale / self.zoom_factor
+
+        # Faint instance box so the resizable bounds are visible.
+        bbox = annotation.get("bbox")
+        if bbox:
+            x, y, w, h = bbox
+            painter.setPen(QPen(color, self._pen_w(1), Qt.PenStyle.DotLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(float(x), float(y), float(w), float(h)))
+
+        if schema:
+            painter.setPen(QPen(color, self._pen_w(1.5), Qt.PenStyle.SolidLine))
+            for a, b in schema.get("skeleton", []):
+                if a < len(pts) and b < len(pts) and pts[a][2] > 0 and pts[b][2] > 0:
+                    painter.drawLine(
+                        QPointF(float(pts[a][0]), float(pts[a][1])),
+                        QPointF(float(pts[b][0]), float(pts[b][1])),
+                    )
+
+        for x, y, v in pts:
+            if v <= 0:
+                continue  # not labelled — nothing to draw
+            painter.setPen(QPen(color, self._pen_w(2), Qt.PenStyle.SolidLine))
+            painter.setBrush(QBrush(color) if v == 2 else Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(float(x), float(y)), r, r)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Instance label at the box top-left (fallback to first point).
+        if bbox:
+            anchor = QPointF(float(bbox[0]), float(bbox[1]))
+        elif pts:
+            anchor = QPointF(float(pts[0][0]), float(pts[0][1]))
+        else:
+            return
+        painter.setFont(self._overlay_font())
+        painter.setPen(QPen(text_color, self._pen_w(2), Qt.PenStyle.SolidLine))
+        painter.drawText(anchor, f"{class_name} {annotation.get('number', '')}")
 
     def _draw_selection_overlay(self, painter, annotation):
         """Mark a selected annotation the way the sibling open-garden-planner
@@ -785,6 +860,28 @@ class ImageLabel(QLabel):
                 self.samPredictionRequested.emit()
                 return
 
+        # Keypoint placement accepts both buttons (right-click = occluded),
+        # so it short-circuits the left-button-only tool dispatch below,
+        # mirroring sam_points. (issue #35)
+        if self.current_tool == "keypoint" and event.button() in (
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.RightButton,
+        ):
+            handler = self.active_tool_handler
+            if handler is not None:
+                handler.on_mouse_press(event, pos)
+            self.update()
+            return
+
+        # Right-click a committed keypoint of the single selected pose instance
+        # toggles its visibility (visible <-> occluded) (#35).
+        if event.button() == Qt.MouseButton.RightButton and self._is_select_mode():
+            shape = self._single_selected_shape()
+            idx = self._keypoint_at(shape, pos) if shape is not None else None
+            if idx is not None:
+                self._toggle_keypoint_visibility(self._live_annotation(shape), idx)
+                return
+
         if event.button() == Qt.MouseButton.LeftButton:
             if self.current_tool == "sam_box" and self.sam_box_active:
                 self.sam_bbox = [pos[0], pos[1], pos[0], pos[1]]
@@ -793,8 +890,16 @@ class ImageLabel(QLabel):
                 self.handle_editing_click(pos, event)
             elif self._is_select_mode():
                 shape = self._single_selected_shape()
+                kpt_idx = self._keypoint_at(shape, pos) if shape is not None else None
                 handle = self._bbox_handle_at(shape, pos) if shape is not None else None
-                if handle is not None:
+                if kpt_idx is not None:
+                    # Grab a single keypoint of the selected pose instance —
+                    # takes priority over the box handles so points stay
+                    # reachable even near a corner (#35).
+                    self._begin_keypoint_edit(
+                        self._live_annotation(shape), kpt_idx, pos
+                    )
+                elif handle is not None:
                     # Grab a resize handle of the single selected shape (#40).
                     # Resolve to the live object first so an edit on a
                     # list-selected (UserRole copy) shape isn't lost.
@@ -849,6 +954,8 @@ class ImageLabel(QLabel):
             self.sam_bbox[3] = pos[1]
         elif self.editing_polygon:
             self.handle_editing_move(pos)
+        elif self.editing_keypoint is not None and left_down:
+            self._update_keypoint_drag(pos)
         elif self.bbox_edit is not None and left_down:
             self._update_bbox_drag(pos)
         elif self._is_select_mode() and self.selection_origin is not None and left_down:
@@ -883,6 +990,8 @@ class ImageLabel(QLabel):
                     self.samPredictionApplyRequested.emit()
                 elif self.editing_polygon:
                     self.editing_point_index = None
+                elif self.editing_keypoint is not None:
+                    self._commit_keypoint_drag(pos, event)
                 elif self.bbox_edit is not None:
                     self._commit_bbox_drag(pos, event)
                 elif self._is_select_mode() and self.selection_origin is not None:
@@ -992,6 +1101,9 @@ class ImageLabel(QLabel):
                 self.editing_point_index = None
                 self.hover_point_index = None
                 self.enableToolsRequested.emit()
+            elif self.editing_keypoint is not None:
+                # Cancel an in-progress keypoint drag, restoring its position.
+                self._cancel_keypoint_drag()
             elif self.bbox_edit is not None:
                 # Cancel an in-progress bbox resize/move, restoring the box.
                 # (Already in selection mode — no tool to deactivate.)
@@ -1012,6 +1124,14 @@ class ImageLabel(QLabel):
                     # active after cancelling its in-progress shape; deactivate
                     # it so Esc always lands in selection mode.
                     self.selectModeRequested.emit()
+        elif event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete) and (
+            self.current_tool == "keypoint" and self.drawing_keypoints
+        ):
+            # During keypoint placement, Backspace/Delete undoes the last
+            # placed point rather than deleting an annotation (#35).
+            handler = self.active_tool_handler
+            if handler is not None:
+                handler.on_backspace()
         elif event.key() == Qt.Key.Key_Delete:
             if self.editing_polygon:
                 self.deleteSelectionRequested.emit()
@@ -1069,6 +1189,20 @@ class ImageLabel(QLabel):
         )
 
     @staticmethod
+    def _keypoint_bounds(annotation):
+        """Bounds (x0, y0, x1, y1) over a pose instance's labelled (v>0) points,
+        or None. Fallback for instances that carry no bbox (e.g. some imports);
+        a normally-created instance always stores its own bbox (#35)."""
+        kps = annotation.get("keypoints")
+        if not kps:
+            return None
+        xs = [x for x, v in zip(kps[0::3], kps[2::3]) if v > 0]
+        ys = [y for y, v in zip(kps[1::3], kps[2::3]) if v > 0]
+        if not xs or not ys:
+            return None
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    @staticmethod
     def _annotation_contains(annotation, pos):
         """Hit-test a single annotation (segmentation polygon or bbox). Falls
         through to the bbox when segmentation is absent/None/empty — an imported
@@ -1081,6 +1215,10 @@ class ImageLabel(QLabel):
         if bbox:
             x, y, w, h = bbox
             return x <= pos[0] <= x + w and y <= pos[1] <= y + h
+        bounds = ImageLabel._keypoint_bounds(annotation)
+        if bounds:
+            x0, y0, x1, y1 = bounds
+            return x0 <= pos[0] <= x1 and y0 <= pos[1] <= y1
         return False
 
     @staticmethod
@@ -1097,7 +1235,7 @@ class ImageLabel(QLabel):
         if bbox:
             x, y, w, h = bbox
             return (x, y, x + w, y + h)
-        return None
+        return ImageLabel._keypoint_bounds(annotation)
 
     def _is_class_pickable(self, class_name):
         # No context (e.g. unit tests) → everything is pickable.
@@ -1268,6 +1406,39 @@ class ImageLabel(QLabel):
         return out
 
     @staticmethod
+    def _scale_keypoints(orig_kpts, old_aabb, new_aabb):
+        """Affine-scale every LABELLED keypoint (x, y) from the old box to the
+        new one, leaving the visibility flag untouched. Mirrors
+        _scale_segmentation so a pose instance's box resizes the whole pose
+        proportionally (#35). Not-labelled points (v=0) are left at (0, 0) —
+        COCO/YOLO-pose expect v=0 to always carry (0, 0), and transforming a
+        padding point would plant a bogus but plausible-looking coordinate."""
+        ox0, oy0, ox1, oy1 = old_aabb
+        nx0, ny0, nx1, ny1 = new_aabb
+        sx = (nx1 - nx0) / ((ox1 - ox0) or 1.0)
+        sy = (ny1 - ny0) / ((oy1 - oy0) or 1.0)
+        out = list(orig_kpts)
+        for i in range(0, len(out) - 2, 3):
+            if orig_kpts[i + 2] <= 0:
+                continue
+            out[i] = nx0 + (orig_kpts[i] - ox0) * sx
+            out[i + 1] = ny0 + (orig_kpts[i + 1] - oy0) * sy
+        return out
+
+    @staticmethod
+    def _translate_keypoints(orig_kpts, dx, dy):
+        """Shift every LABELLED keypoint (x, y) by (dx, dy), keeping visibility
+        (#35). Not-labelled points (v=0) are left at (0, 0) — see
+        _scale_keypoints for why."""
+        out = list(orig_kpts)
+        for i in range(0, len(out) - 2, 3):
+            if orig_kpts[i + 2] <= 0:
+                continue
+            out[i] = orig_kpts[i] + dx
+            out[i + 1] = orig_kpts[i + 1] + dy
+        return out
+
+    @staticmethod
     def _sync_bbox_key(ann):
         """Keep a stored bbox key consistent with an edited segmentation.
         Imported annotations carry both (the bbox feeds export / SAM training);
@@ -1281,7 +1452,12 @@ class ImageLabel(QLabel):
         box-only annotation ("bbox") edits [x, y, w, h]. orig_bbox is the AABB
         used as the resize reference for both."""
         bb = self._annotation_bbox(live)
-        kind = "seg" if live.get("segmentation") else "bbox"
+        if live.get("segmentation"):
+            kind = "seg"
+        elif live.get("keypoints"):
+            kind = "kpt"  # the box transforms the whole pose instance (#35)
+        else:
+            kind = "bbox"
         # Capture the pre-gesture state for undo now: the drag mutates the
         # annotation in place, so the controller can't snapshot a clean
         # "before" at commit time (ADR-026).
@@ -1293,6 +1469,7 @@ class ImageLabel(QLabel):
             "kind": kind,
             "orig_bbox": [bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1]],
             "orig_seg": list(live["segmentation"]) if kind == "seg" else None,
+            "orig_kpts": list(live["keypoints"]) if kind == "kpt" else None,
             "start_pos": pos,
             "moved": False,
         }
@@ -1302,6 +1479,10 @@ class ImageLabel(QLabel):
         handles, a move cursor over its interior, arrow otherwise."""
         shape = self._single_selected_shape()
         if shape is not None:
+            if self._keypoint_at(shape, pos) is not None:
+                # Over a draggable keypoint of the selected pose instance (#35).
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+                return
             handle = self._bbox_handle_at(shape, pos)
             if handle is not None:
                 self.setCursor(self._BBOX_HANDLE_CURSORS[handle])
@@ -1336,6 +1517,14 @@ class ImageLabel(QLabel):
                     (nx, ny, nx + nw, ny + nh),
                 )
                 self._sync_bbox_key(ann)
+            elif edit["kind"] == "kpt":
+                ox, oy, ow, oh = edit["orig_bbox"]
+                nx, ny, nw, nh = new_box
+                ann["keypoints"] = self._scale_keypoints(
+                    edit["orig_kpts"], (ox, oy, ox + ow, oy + oh),
+                    (nx, ny, nx + nw, ny + nh),
+                )
+                ann["bbox"] = new_box
             else:
                 ann["bbox"] = new_box
             edit["moved"] = True
@@ -1346,6 +1535,12 @@ class ImageLabel(QLabel):
                     edit["orig_seg"], dx, dy
                 )
                 self._sync_bbox_key(ann)
+            elif edit["kind"] == "kpt":
+                ann["keypoints"] = self._translate_keypoints(
+                    edit["orig_kpts"], dx, dy
+                )
+                x, y, w, h = edit["orig_bbox"]
+                ann["bbox"] = [x + dx, y + dy, w, h]
             else:
                 x, y, w, h = edit["orig_bbox"]
                 ann["bbox"] = [x + dx, y + dy, w, h]
@@ -1374,6 +1569,16 @@ class ImageLabel(QLabel):
             if ann.get("segmentation_raw"):
                 ann.pop("segmentation_raw", None)
                 ann["detail_pct"] = 100
+        elif edit["kind"] == "kpt":
+            # Slide the intact pose back inside on a move, then clamp points +
+            # box to the border as the final safety net (ADR-024). (#35)
+            if edit["mode"] == "move":
+                fitted = fit_bbox_inside(ann["bbox"], width, height)
+                dx, dy = fitted[0] - ann["bbox"][0], fitted[1] - ann["bbox"][1]
+                ann["keypoints"] = self._translate_keypoints(ann["keypoints"], dx, dy)
+                ann["bbox"] = fitted
+            ann["keypoints"] = clamp_keypoints(ann["keypoints"], width, height)
+            ann["bbox"] = clamp_bbox(ann["bbox"], width, height)
         elif edit["mode"] == "move":
             ann["bbox"] = fit_bbox_inside(ann["bbox"], width, height)
         else:
@@ -1416,9 +1621,99 @@ class ImageLabel(QLabel):
             if edit["kind"] == "seg":
                 ann["segmentation"] = list(edit["orig_seg"])
                 self._sync_bbox_key(ann)
+            elif edit["kind"] == "kpt":
+                ann["keypoints"] = list(edit["orig_kpts"])
+                x, y, w, h = edit["orig_bbox"]
+                ann["bbox"] = [x, y, w, h]
             else:
                 x, y, w, h = edit["orig_bbox"]
                 ann["bbox"] = [x, y, w, h]
+        self.update()
+
+    # --- Single-keypoint editing for a selected pose instance (#35) ---
+
+    def _keypoint_at(self, annotation, pos):
+        """Index of the labelled (v>0) keypoint under pos, or None. Generous,
+        zoom-compensated grab radius so individual points stay easy to grab."""
+        if annotation is None:
+            return None
+        kps = annotation.get("keypoints")
+        if not kps:
+            return None
+        radius = 8 * self.ui_scale / max(self.zoom_factor, 1e-6)
+        best, best_d = None, None
+        for i, (x, y, v) in enumerate(zip(kps[0::3], kps[1::3], kps[2::3])):
+            if v <= 0:
+                continue
+            d = self.distance(pos, (x, y))
+            if d <= radius and (best is None or d < best_d):
+                best, best_d = i, d
+        return best
+
+    def _begin_keypoint_edit(self, live, index, pos):
+        """Arm a single-point drag; capture the undo baseline now (ADR-026)."""
+        kps = live.get("keypoints") or []
+        self.editBaselineRequested.emit()
+        self.editing_keypoint = {
+            "annotation": live,
+            "index": index,
+            "orig": (kps[3 * index], kps[3 * index + 1]),
+            "moved": False,
+        }
+
+    def _update_keypoint_drag(self, pos):
+        edit = self.editing_keypoint
+        if edit is None:
+            return
+        ann = edit["annotation"]
+        i = edit["index"]
+        ann["keypoints"][3 * i] = pos[0]
+        ann["keypoints"][3 * i + 1] = pos[1]
+        edit["moved"] = True
+
+    def _commit_keypoint_drag(self, pos, event):
+        edit = self.editing_keypoint
+        self.editing_keypoint = None
+        if edit is None:
+            return
+        if edit["moved"]:
+            ann = edit["annotation"]
+            if self.original_pixmap is not None:
+                ann["keypoints"] = clamp_keypoints(
+                    ann["keypoints"],
+                    self.original_pixmap.width(),
+                    self.original_pixmap.height(),
+                )
+            self.highlighted_annotations = [ann]
+            self.keypointEditCommitted.emit()  # save + push undo baseline
+        self.update()
+
+    def _cancel_keypoint_drag(self):
+        edit = self.editing_keypoint
+        self.editing_keypoint = None
+        if edit is not None:
+            ann = edit["annotation"]
+            i = edit["index"]
+            ann["keypoints"][3 * i] = edit["orig"][0]
+            ann["keypoints"][3 * i + 1] = edit["orig"][1]
+        self.update()
+
+    def _toggle_keypoint_visibility(self, live, index):
+        """Right-click a committed point: toggle visible(2) <-> occluded(1),
+        keeping its position. Padded not-labelled points (v=0) are left as-is."""
+        kps = live.get("keypoints")
+        if not kps:
+            return
+        v = kps[3 * index + 2]
+        if v <= 0:
+            return
+        self.editBaselineRequested.emit()
+        kps[3 * index + 2] = 1 if v == 2 else 2
+        # Point the selection at the live, mutated object (mirrors
+        # _commit_keypoint_drag / _commit_bbox_drag) so a list-selected
+        # (UserRole copy) instance doesn't go stale after the list rebuild.
+        self.highlighted_annotations = [live]
+        self.keypointEditCommitted.emit()
         self.update()
 
     def start_polygon_edit(self, pos):

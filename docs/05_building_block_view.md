@@ -43,7 +43,8 @@ src/digitalsreeni_image_annotator/
 	│       ├── rectangle_tool.py
 	│       ├── polygon_tool.py
 	│       ├── paint_tool.py
-	│       └── eraser_tool.py
+	│       ├── eraser_tool.py
+	│       └── keypoint_tool.py       # KeypointTool - pose placement (ADR-029, #35)
 	├── controllers/                   # Project/Image/SAM/DINO/YOLO/Annotation/Class
 	├── inference/                     # sam_utils.py, dino_utils.py
 	│   ├── sam_utils.py
@@ -66,6 +67,7 @@ src/digitalsreeni_image_annotator/
 all_annotations: dict[str, list]    # {filename: [annotation_dicts]}
 all_images: list[str]               # List of loaded image filenames
 class_mapping: dict[str, int]       # {class_name: class_id}
+keypoint_schemas: dict[str, dict]   # {class_name: {names, skeleton, flip_idx}} pose classes (ADR-029, #35)
 image_paths: dict[str, str]         # {filename: absolute_path}
 image_dimensions: dict              # Multi-dimensional image metadata
 image_slices: dict                  # Extracted slices from stacks
@@ -164,8 +166,11 @@ because it is *training*, not inference.
 
 | Module | Responsibility |
 |--------|----------------|
-| `training/sam_trainer.py` | `SAMFineTuner` — custom decoder (optionally encoder) fine-tuning loop reusing `SAM2Predictor.get_im_features` / `prompt_inference` under autograd, focal+dice loss, AdamW, checkpoint save+reload-verify. Also geometry helpers (`polygon_to_mask`, `mask_to_xyxy`, `mask_to_point`), `make_custom_filename`, `list_custom_models`, and the `SampleGroup` lazy-rasterising dataset item. |
-| `training/sam_dataset.py` | `build_groups_from_project` (live `all_annotations`) and `build_groups_from_folder` (prepared dataset) → `list[SampleGroup]`, mirroring `export_yolo_v5plus` image resolution. |
+| `training/sam_trainer.py` | `SAMFineTuner` — custom decoder (optionally encoder) fine-tuning loop reusing `SAM2Predictor.get_im_features` / `prompt_inference` under autograd, focal+dice loss, AdamW. Per-epoch train/val loss + LR logging, `LambdaLR` warmup→cosine schedule, best-val checkpoint save+reload-verify (ADR-028). Also geometry helpers (`polygon_to_mask`, `mask_to_xyxy`, `mask_to_point`), `make_custom_filename`, `list_custom_models`, and the `SampleGroup` lazy-rasterising dataset item (carries a `name` for the split). |
+| `training/sam_dataset.py` | `build_groups_from_project` (live `all_annotations`) and `build_groups_from_folder` (prepared dataset) → `list[SampleGroup]`, mirroring `export_yolo_v5plus` image resolution. `split_groups(train_pct, seed)` deterministically holds out a per-image validation set (reusing `assign_train_val`). |
+| `training/lr_schedule.py` | Pure `warmup_cosine_lambda(total_steps, warmup_frac, floor)` → `step→multiplier` for SAM's `LambdaLR` (ADR-028); unit-tested without torch. |
+| `training/early_stop.py` | Pure `EarlyStopper(patience)` — tracks best/best-epoch and patience-based stop for the SAM loop (ADR-028); unit-tested without torch. |
+| `training/mlflow_tracker.py` | Always-on MLflow experiment tracking (ADR-027). `MLflowTracker` (no enable/disable; tracking errors never abort training; on start fires `set_run_url_callback` with the run's UI deep link), `_NullTracker` no-op for trainer calls with no tracker, `resolve_tracking_uri()` (override → `<project>/mlruns` → `<cwd>/mlruns`), `to_mlflow_uri()` (Windows-safe `file://`), `run_ui_url()`, `start_mlflow_ui_server()` / `launch_mlflow_ui()`. SAM logs through it explicitly; YOLO uses Ultralytics' native MLflow callback. |
 | `io/export_formats.py::export_sam_dataset` | Writes `images/` + `manifest.json` (authoritative bbox/segmentation specs) for an inspectable, re-trainable on-disk dataset. |
 
 Fine-tuned checkpoints save as `{"model": state_dict}` and reload
@@ -231,7 +236,7 @@ the controller graph.
 | `ClassController` | Class add / delete / rename / colour / visibility. `update_slice_list_colors`, `is_class_visible`. |
 | `SAMController` | SAM box/points tool lifecycle, debounce timer, `_sam_inference_in_flight` re-entrancy guard (ADR-013), model picker. |
 | `DINOController` | Single + batch detection, batch review navigation, temp-annotation accept/reject, custom-model browse, `DINOReviewEventFilter` ownership (ADR-015). |
-| `YOLOController` | Training menu, `TrainingThread`, prediction dialog, result processing. |
+| `YOLOController` | Training menu, `TrainingThread`, prediction dialog, result processing. Surfaces the run's MLflow deep link (`_on_mlflow_run_url`, mirrors SAM) and reports the saved `best.pt` path on completion. |
 | `SAMTrainController` | SAM fine-tuning menu, GPU gate, `SAMTrainingThread`, config dialog, registers fine-tuned checkpoints into the SAM selector (ADR-021). |
 | `io_controller` *(module-level functions, not a class)* | Thin UI wrappers around the pure `io/export_formats.py` and `io/import_formats.py` modules. |
 
@@ -284,7 +289,7 @@ Each tool is a standalone dialog/window:
 | `slice_registration.py` | Align slices | Multiple registration algorithms (pystackreg) |
 | `stack_interpolator.py` | Z-spacing adjustment | Interpolation methods, memory-efficient |
 | `dicom_converter.py` | DICOM to TIFF | Preserve metadata, export to JSON |
-| `yolo_trainer.py` | Model training | Train YOLO, load predictions |
+| `yolo_trainer.py` | Model training | Train YOLO (run → `models/yolo/custom/<project>`, pruned to `best.pt`+`data.yaml` when MLflow has the diagnostics), `list_custom_yolo_models` for the prediction dropdown, `mlflow_run_url` signal, load predictions |
 
 ## Data Model
 
@@ -339,6 +344,27 @@ Each tool is a standalone dialog/window:
     "category": "class_name"
 }
 ```
+
+**Keypoint / pose instance** (ADR-029, #35) — one instance of a pose class's
+K keypoints, no `segmentation` key (the discriminator that routes area/detail/
+render):
+```python
+{
+    "keypoints": [x1, y1, v1, x2, y2, v2, ...],  # flat [x,y,v]*K, COCO order
+    "num_keypoints": <count of points with v > 0>,
+    "bbox": [x, y, width, height],               # instance box (resizable)
+    "category_name": "person", "category_id": 1, "number": 1,
+}
+```
+The per-class schema (ordered point names, skeleton edges, flip_idx) lives in
+`ImageAnnotator.keypoint_schemas` and is embedded on each `classes[]` entry in
+the `.iap` file. Pure validation is in `core/keypoint_schema.py`; the editor is
+`dialogs/keypoint_schema_dialog.py::KeypointSchemaDialog`. This shape also
+round-trips through COCO-keypoints and YOLO-pose export/import (issue #35
+PR-2) — see `io/export_formats.py`/`io/import_formats.py` and the ADR-029
+addendum. `YOLOTrainer.predict()` and `YOLOController.process_yolo_results()`
+are task-aware (detect/segment/pose) rather than hardcoded to
+segmentation-only output (issue #35 PR-3).
 
 ### Multi-dimensional Image Handling
 

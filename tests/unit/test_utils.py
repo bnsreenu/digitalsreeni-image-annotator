@@ -19,6 +19,31 @@ spec.loader.exec_module(utils)
 calculate_area = utils.calculate_area
 calculate_bbox = utils.calculate_bbox
 normalize_image = utils.normalize_image
+clamp_keypoints = utils.clamp_keypoints
+
+
+class TestClampKeypoints:
+    """clamp_keypoints clamps x/y per-point into the image, leaving v alone (#35)."""
+
+    def test_clamps_xy_keeps_visibility(self):
+        kps = [-5, -5, 2, 200, 50, 1, 30, 300, 0]
+        assert clamp_keypoints(kps, 100, 80) == [0, 0, 2, 100, 50, 1, 30, 80, 0]
+
+    def test_in_bounds_unchanged(self):
+        kps = [10, 20, 2, 30, 40, 1]
+        assert clamp_keypoints(kps, 100, 100) == kps
+
+    def test_empty(self):
+        assert clamp_keypoints([], 100, 100) == []
+
+
+class TestKeypointArea:
+    """A keypoint instance carries a bbox but no segmentation, so calculate_area
+    returns the box area (deliberate — sort-by-area parity; see ADR-029)."""
+
+    def test_keypoint_instance_uses_bbox_area(self):
+        ann = {"keypoints": [10, 10, 2], "bbox": [0, 0, 20, 5]}
+        assert calculate_area(ann) == 100
 
 
 class TestCalculateArea:

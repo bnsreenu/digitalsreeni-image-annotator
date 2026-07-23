@@ -50,6 +50,10 @@ INTERNAL_MODULES = [
     "digitalsreeni_image_annotator.core.constants",
     "digitalsreeni_image_annotator.core.annotation_utils",
     "digitalsreeni_image_annotator.core.torch_utils",
+    "digitalsreeni_image_annotator.core.keypoint_schema",
+    # Keypoint / pose tool (issue #35)
+    "digitalsreeni_image_annotator.widgets.tools.keypoint_tool",
+    "digitalsreeni_image_annotator.dialogs.keypoint_schema_dialog",
     # UI
     "digitalsreeni_image_annotator.ui.default_stylesheet",
     "digitalsreeni_image_annotator.ui.soft_dark_stylesheet",
@@ -77,6 +81,29 @@ INTERNAL_MODULES = [
 def test_internal_module_imports(module_name):
     """Every internal module must import without raising."""
     importlib.import_module(module_name)
+
+
+def test_keypoint_tool_activates(qt_application):
+    """Defining a pose schema and activating the keypoint tool must not crash
+    (issue #35) — exercises the registration + activation wiring end-to-end."""
+    from digitalsreeni_image_annotator.annotator_window import ImageAnnotator
+
+    w = ImageAnnotator()
+    w.auto_save = lambda: None  # no project file → auto_save would pop a modal
+    try:
+        assert "keypoint" in w.image_label._tools
+        w.add_class("person")
+        w.keypoint_schemas["person"] = {
+            "names": ["a", "b"], "skeleton": [[0, 1]], "flip_idx": [0, 1]
+        }
+        w.current_class = "person"
+        w.activate_tool("keypoint")
+        assert w.image_label.current_tool == "keypoint"
+        assert w.keypoint_button.isChecked()
+        w.activate_tool(None)
+        assert w.image_label.current_tool is None
+    finally:
+        w.deleteLater()
 
 
 def test_annotator_window_inline_imports_are_resolvable():
@@ -112,7 +139,7 @@ def test_annotator_window_inline_imports_are_resolvable():
         module = node.module
         # Proper subpackage imports are fine (e.g. .dialogs.foo)
         dots = module.split(".")
-        if dots[0] in ("controllers", "dialogs", "inference", "io", "ui", "widgets", "core"):
+        if dots[0] in ("controllers", "dialogs", "inference", "io", "ui", "widgets", "core", "training"):
             continue
         # Root-level modules that stayed behind: utils, annotator_window, main
         root_py = pkg_dir / f"{module}.py"
