@@ -57,6 +57,10 @@ from ..utils import (
 )
 from .annotation_history import AnnotationHistory
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class AnnotationController(QObject):
     def __init__(self, main_window):
@@ -254,7 +258,7 @@ class AnnotationController(QObject):
                 self.mw.all_annotations[current_name]
             )
         else:
-            print(f"No annotations found for {current_name}")
+            logger.debug(f"No annotations found for {current_name}")
         self.mw.image_label.update()
 
     def save_current_annotations(self):

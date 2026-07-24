@@ -9,6 +9,9 @@ dies with "CUDA error: no kernel image is available for execution on
 the device"). This module detects that mismatch up front and falls back
 to CPU with an actionable warning instead of a cryptic crash mid-inference.
 """
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 
 _cached_result = None
 
@@ -25,7 +28,7 @@ def resolve_torch_device():
     if _cached_result is None:
         _cached_result = _resolve()
         if _cached_result[1]:
-            print(f"[torch] {_cached_result[1]}")
+            logger.warning(_cached_result[1])
     return _cached_result
 
 
@@ -93,3 +96,17 @@ def _parse_arch_list(arch_list):
         if prefix.endswith("sm") and num.isdigit():
             sms.append(int(num))
     return sms
+
+
+def _is_oom(exc) -> bool:
+    """True for CUDA or host out-of-memory errors, without importing torch.
+
+    ``torch.cuda.OutOfMemoryError`` is a ``RuntimeError`` subclass whose message
+    contains "out of memory", so the string check covers it torch-free.
+    """
+    if isinstance(exc, MemoryError):
+        return True
+    text = str(exc).lower()
+    return isinstance(exc, RuntimeError) and (
+        "out of memory" in text or "cuda oom" in text or "not enough memory" in text
+    )

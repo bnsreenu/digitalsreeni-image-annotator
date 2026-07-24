@@ -105,6 +105,11 @@ def sync_font_menu(mw):
 def toggle_dark_mode(mw):
     mw.dark_mode = not mw.dark_mode
     apply_theme_and_font(mw)
+    # Rebuild the image-list status badges for the new theme (#43). Routed
+    # through the controller, not painted here.
+    image_controller = getattr(mw, "image_controller", None)
+    if image_controller is not None:
+        image_controller.on_theme_changed()
     save_ui_prefs(mw.ui_font_pt, mw.dark_mode)
     mw.update_slice_list_colors()
     mw.update_class_list()

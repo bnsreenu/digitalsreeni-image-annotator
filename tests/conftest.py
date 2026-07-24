@@ -13,6 +13,35 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 
+@pytest.fixture
+def make_test_video():
+    """Factory: write a tiny MJPG/.avi video and return its path (issue #47).
+
+    Shared by the video-handler unit tests and the video-loading integration
+    tests. Frame ``i`` is filled BGR ``(0, 0, 10*i)`` — a pure red-channel
+    ramp — so a forgotten ``cvtColor`` (BGR→RGB) regression is detectable:
+    the decoded pixel would come back blue instead of red. MJPG on a uniform
+    fill round-trips exactly, so frame ``i``'s red component reads back as
+    ``10*i``.
+    """
+    import cv2
+    import numpy as np
+
+    def _make(dir_path, name="clip.avi", frames=8, width=32, height=24, fps=10.0):
+        path = os.path.join(str(dir_path), name)
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        writer = cv2.VideoWriter(path, fourcc, fps, (width, height))
+        assert writer.isOpened(), "cv2.VideoWriter failed to open (MJPG/.avi)"
+        for i in range(frames):
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            frame[:, :, 2] = 10 * i  # BGR: ramp the red channel
+            writer.write(frame)
+        writer.release()
+        return path
+
+    return _make
+
+
 @pytest.fixture(scope="session")
 def qt_application():
     """Create a QApplication instance for the test session."""

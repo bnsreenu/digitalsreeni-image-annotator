@@ -17,6 +17,10 @@ from PyQt6.QtWidgets import QTextBrowser
 from PyQt6.QtGui import QPalette, QTextCharFormat, QTextCursor
 from PyQt6.QtCore import pyqtSignal, QObject
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 # Trained YOLO checkpoints land here, namespaced per run, mirroring SAM's
 # ``models/sam/custom`` layout (see training.sam_trainer.SAM_CUSTOM_DIR). Each
@@ -322,14 +326,14 @@ class YOLOTrainer(QObject):
             with open(yaml_path, 'r', encoding='utf-8') as f:
                 try:
                     yaml_data = yaml.safe_load(f)
-                    print(f"Loaded YAML contents: {yaml_data}")
+                    logger.debug(f"Loaded YAML contents: {yaml_data}")
     
                     # Ensure paths are relative
                     for key in ['train', 'val', 'test']:
                         if key in yaml_data and os.path.isabs(yaml_data[key]):
                             yaml_data[key] = os.path.relpath(yaml_data[key], start=os.path.dirname(yaml_path))
     
-                    print(f"Updated YAML contents: {yaml_data}")
+                    logger.debug(f"Updated YAML contents: {yaml_data}")
     
                     # Save the updated YAML data
                     self.yaml_data = yaml_data
@@ -408,8 +412,8 @@ class YOLOTrainer(QObject):
 
             if len(parts) > 1:  # something beyond the epoch tag was available
                 self.progress_signal.emit("  ".join(parts))
-        except Exception as exc:
-            print(f"Could not surface YOLO val metrics: {exc}")
+        except Exception:
+            logger.exception("Could not surface YOLO val metrics")
 
     def _emit_mlflow_url(self):
         """Emit the MLflow run's UI deep link, once per run.
@@ -434,8 +438,8 @@ class YOLOTrainer(QObject):
             self.mlflow_run_url.emit(
                 run_ui_url(run.info.experiment_id, run.info.run_id)
             )
-        except Exception as exc:
-            print(f"Could not resolve MLflow run link for YOLO training: {exc}")
+        except Exception:
+            logger.exception("Could not resolve MLflow run link for YOLO training")
     
     def train_model(self, epochs=100, imgsz=640, *, cos_lr=True, lr0=0.01,
                     lrf=0.1, warmup_epochs=None, patience=20):
@@ -482,12 +486,12 @@ class YOLOTrainer(QObject):
             yaml_path = Path(self.yaml_path)
             yaml_dir = yaml_path.parent
 
-            print(f"Training with YAML: {yaml_path}")
-            print(f"YAML directory: {yaml_dir}")
+            logger.debug(f"Training with YAML: {yaml_path}")
+            logger.debug(f"YAML directory: {yaml_dir}")
 
             with yaml_path.open('r', encoding='utf-8') as f:
                 yaml_content = yaml.safe_load(f)
-            print(f"YAML content: {yaml_content}")
+            logger.debug(f"YAML content: {yaml_content}")
 
             # Resolve train/val to absolute paths, honoring the split the export
             # wrote (see _resolve_training_yaml for the data-root invariant).
@@ -521,8 +525,8 @@ class YOLOTrainer(QObject):
             with temp_yaml_path.open('w', encoding='utf-8') as f:
                 yaml.dump(yaml_content, f, default_flow_style=False)
 
-            print(f"Training with updated YAML: {temp_yaml_path}")
-            print(f"Updated YAML content: {yaml_content}")
+            logger.debug(f"Training with updated YAML: {temp_yaml_path}")
+            logger.debug(f"Updated YAML content: {yaml_content}")
 
             from ..core.torch_utils import resolve_torch_device
             device, _ = resolve_torch_device()
@@ -568,7 +572,7 @@ class YOLOTrainer(QObject):
                 if save_dir:
                     best = Path(save_dir) / "weights" / "best.pt"
             if not best or not best.exists():
-                print("Trained YOLO checkpoint not found; skipping registration.")
+                logger.warning("Trained YOLO checkpoint not found; skipping registration.")
                 return
             names = self.model.names  # {idx: name} from the trained model
             # Names-only on purpose: load_prediction_model reads `names` only,
@@ -593,17 +597,17 @@ class YOLOTrainer(QObject):
                         schemas = [self.main_window.keypoint_schemas.get(n) for n in names.values()]
                         if schemas and all(s is not None for s in schemas) and all(s == schemas[0] for s in schemas):
                             yaml_out_data['keypoint_schema'] = schemas[0]
-            except Exception as exc:
-                print(f"Could not carry pose metadata into registered model yaml: {exc}")
+            except Exception:
+                logger.exception("Could not carry pose metadata into registered model yaml")
             yaml_out = best.parent.parent / "data.yaml"
             with yaml_out.open("w", encoding="utf-8") as f:
                 yaml.dump(yaml_out_data, f, default_flow_style=False)
             self.last_saved_model_path = str(best)
             self.last_saved_yaml_path = str(yaml_out)
-            print(f"Trained YOLO model registered: {best}")
+            logger.info(f"Trained YOLO model registered: {best}")
             self._prune_run_artifacts(best.parent.parent, best, yaml_out)
-        except Exception as exc:
-            print(f"Could not register trained YOLO model: {exc}")
+        except Exception:
+            logger.exception("Could not register trained YOLO model")
 
     def _prune_run_artifacts(self, run_dir, best, data_yaml):
         """Trim the run dir to the minimum needed to run predictions.
@@ -621,7 +625,7 @@ class YOLOTrainer(QObject):
         whole folder rather than destroy them. Best-effort — a cleanup failure
         never breaks the (already finished) run."""
         if not self._mlflow_url_emitted:
-            print("MLflow run not confirmed; keeping full YOLO run dir locally.")
+            logger.warning("MLflow run not confirmed; keeping full YOLO run dir locally.")
             return
         try:
             keep = {best.resolve(), data_yaml.resolve()}
@@ -633,9 +637,9 @@ class YOLOTrainer(QObject):
             for path in sorted(run_dir.rglob("*"), reverse=True):
                 if path.is_dir() and not any(path.iterdir()):
                     path.rmdir()
-            print(f"Pruned YOLO run dir to best.pt + data.yaml (diagnostics in MLflow): {run_dir}")
-        except Exception as exc:
-            print(f"Could not prune YOLO run artifacts: {exc}")
+            logger.info(f"Pruned YOLO run dir to best.pt + data.yaml (diagnostics in MLflow): {run_dir}")
+        except Exception:
+            logger.exception("Could not prune YOLO run artifacts")
 
     def verify_dataset_structure(self):
         yaml_path = Path(self.yaml_path)
@@ -664,20 +668,20 @@ class YOLOTrainer(QObject):
         if missing_dirs:
             raise FileNotFoundError("The following directories were not found:\n" + "\n".join(missing_dirs))
         
-        print("Dataset structure verified:")
-        print(f"Train images: {train_images_dir}")
-        print(f"Train labels: {train_labels_dir}")
-        print(f"Val images: {val_images_dir}")
-        print(f"Val labels: {val_labels_dir}")
+        logger.debug("Dataset structure verified:")
+        logger.debug(f"Train images: {train_images_dir}")
+        logger.debug(f"Train labels: {train_labels_dir}")
+        logger.debug(f"Val images: {val_images_dir}")
+        logger.debug(f"Val labels: {val_labels_dir}")
 
     def check_ultralytics_settings(self):
         settings_path = Path.home() / ".config" / "Ultralytics" / "settings.yaml"
         if settings_path.exists():
             with settings_path.open('r', encoding='utf-8') as f:
                 settings = yaml.safe_load(f)
-            print(f"Ultralytics settings: {settings}")
+            logger.debug(f"Ultralytics settings: {settings}")
         else:
-            print("Ultralytics settings file not found.")
+            logger.warning("Ultralytics settings file not found.")
             
     def stop_training_signal(self):
         self.stop_training = True
@@ -747,7 +751,7 @@ class YOLOTrainer(QObject):
                 raise ValueError("The YAML file does not contain a 'names' section for class names.")
 
             self.class_names = self.prediction_yaml['names']
-            print(f"Loaded class names: {self.class_names}")
+            logger.debug(f"Loaded class names: {self.class_names}")
 
             self.prediction_keypoint_schema = None
             full_schema = self.prediction_yaml.get('keypoint_schema')
@@ -766,13 +770,13 @@ class YOLOTrainer(QObject):
                 mismatch_message = (f"Warning: Number of classes in YAML ({len(self.class_names)}) "
                                     f"does not match the model ({len(self.model.names)}). "
                                     "This may cause issues during prediction.")
-                print(mismatch_message)
+                logger.warning(mismatch_message)
                 return True, mismatch_message
             
             return True, None
         except Exception as e:
             error_message = f"Error loading model or YAML: {str(e)}"
-            print(error_message)
+            logger.exception("Error loading model or YAML")
             return False, error_message
     
     def predict(self, input_data):

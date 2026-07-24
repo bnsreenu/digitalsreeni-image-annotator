@@ -9,7 +9,7 @@ This document describes the testing infrastructure for the DigitalSreeni Image A
 ### Completed Tasks
 
 1. **Test Dependencies** ✓
-   - Added pytest, pytest-qt, pytest-cov, pytest-mock to [requirements.txt](requirements.txt)
+   - Declared pytest, pytest-qt, pytest-cov, pytest-mock (+ pytest-xvfb on Linux) in the `dev` extra of [pyproject.toml](pyproject.toml)
    - Using flexible version constraints (>=) instead of pinned versions
 
 2. **Test Directory Structure** ✓
@@ -64,14 +64,9 @@ This document describes the testing infrastructure for the DigitalSreeni Image A
 
 ### Prerequisites
 
-Install test dependencies:
+Install the package with its dev/test extras (pytest, pytest-qt, pytest-cov, pytest-mock, and pytest-xvfb on Linux):
 ```bash
-pip install pytest pytest-qt pytest-cov pytest-mock
-```
-
-Or install all dependencies including tests:
-```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ### Run All Tests

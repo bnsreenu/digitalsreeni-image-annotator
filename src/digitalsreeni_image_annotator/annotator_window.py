@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -25,6 +26,7 @@ from .controllers.image_controller import ImageController
 from .controllers.project_controller import ProjectController
 from .controllers.sam_controller import SAMController
 from .controllers.sam_train_controller import SAMTrainController
+from .controllers.tracking_controller import TrackingController
 from .controllers.yolo_controller import YOLOController
 from .core import image_utils
 from .ui import theme
@@ -44,10 +46,14 @@ from .widgets.canvas_context import CanvasContext
 from .widgets.image_label import ImageLabel
 from .dialogs.image_patcher import show_image_patcher
 from .inference.sam_utils import SAMUtils
+from .inference.sam3_utils import SAM3Utils
 from .dialogs.slice_registration import SliceRegistrationTool
 from .dialogs.snake_game import SnakeGame
 from .dialogs.stack_interpolator import StackInterpolator
 from .dialogs.stack_to_slices import show_stack_to_slices
+from .core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -93,6 +99,10 @@ class ImageAnnotator(QMainWindow):
         self.current_stack = None
         self.image_dimensions = {}
         self.image_slices = {}
+        # Open cv2.VideoCapture handlers keyed by ext-stripped base name
+        # (issue #47). A video's image_slices[base] is a LazySliceList backed
+        # by a VideoSliceProvider that decodes frames through the handler.
+        self.video_handlers = {}
         self.image_shapes = {}
 
         
@@ -111,6 +121,11 @@ class ImageAnnotator(QMainWindow):
         self.dino_model_loaded = False
         self.dino_custom_model_path = None
 
+        # SAM 3 text-prompt producer (issue #50, ADR-038). Plugs into the
+        # DINO review pipeline as an alternative to the two-stage
+        # DINO→SAM path; selected via the DINO model dropdown.
+        self.sam3_utils = SAM3Utils()
+
         # Debounce timer for SAM points: wait 1s after last click before inference
         self.sam_inference_timer = QTimer(self)
         self.sam_inference_timer.setSingleShot(True)
@@ -124,6 +139,10 @@ class ImageAnnotator(QMainWindow):
         self.sam_controller = SAMController(self)
         self.sam_train_controller = SAMTrainController(self)
         self.dino_controller = DINOController(self)
+        # SAM 3 video object tracking (issue #51). Reuses the DINO review
+        # pipeline for uncertain frames; commits confident frames tagged with a
+        # shared track_run id (bulk-undoable via Undo Last Track).
+        self.tracking_controller = TrackingController(self)
         self.yolo_controller = YOLOController(self)
         self.annotation_controller = AnnotationController(self)
         self.class_controller = ClassController(self)
@@ -349,7 +368,7 @@ class ImageAnnotator(QMainWindow):
                     self, "Project Details", "Project details have been updated."
                 )
             else:
-                print("No changes made to project details.")
+                logger.debug("No changes made to project details.")
 
     def load_multi_slice_image(self, image_path, dimensions=None, shape=None):
         return self.image_controller.load_multi_slice_image(image_path, dimensions, shape)
@@ -394,6 +413,24 @@ class ImageAnnotator(QMainWindow):
 
     def switch_image(self, item):
         return self.image_controller.switch_image(item)
+
+    def on_timeline_frame_selected(self, idx):
+        """Route a video-timeline scrub to the matching frame (issue #48).
+
+        Slice-list rows are in frame order, so ``idx`` maps 1:1 to a row. Go
+        through ``switch_slice`` (never set ``current_image`` directly) so the
+        unsaved-change check, annotation save, edit-mode exit and DINO temp
+        re-sync all run.
+        """
+        if 0 <= idx < self.slice_list.count():
+            self.switch_slice(self.slice_list.item(idx))
+
+    def update_video_timeline(self):
+        return self.image_controller.update_video_timeline()
+
+    def _current_image_is_video(self):
+        """True if the currently-selected image is a loaded video (issue #48)."""
+        return self.image_controller.current_video() is not None
 
     def adjust_zoom_to_fit(self):
         if not self.current_image:
@@ -494,6 +531,22 @@ class ImageAnnotator(QMainWindow):
             else:
                 # Pass the event to the parent for default handling
                 super().keyPressEvent(event)
+        elif event.key() == Qt.Key.Key_Home or event.key() == Qt.Key.Key_End:
+            # First / last frame jump for videos (issue #48). Gated on the
+            # active image being a video AND focus on the slice list or the
+            # canvas — QLineEdit/QTextEdit are already spared by the early
+            # return at the top, so this can't steal Home/End from text cursors.
+            # Routes through switch_slice (never sets current_image directly).
+            if self._current_image_is_video() and (
+                self.slice_list.hasFocus() or self.image_label.hasFocus()
+            ):
+                count = self.slice_list.count()
+                if count > 0:
+                    row = 0 if event.key() == Qt.Key.Key_Home else count - 1
+                    self.slice_list.setCurrentRow(row)
+                    self.switch_slice(self.slice_list.item(row))
+            else:
+                super().keyPressEvent(event)
         elif event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
             # Handle accepting visible temporary classes
             if self.has_visible_temp_classes():
@@ -514,7 +567,6 @@ class ImageAnnotator(QMainWindow):
         return self.dino_controller.has_visible_temp_classes()
 
     def launch_snake_game(self):
-        # print("Launching Snake game")
         if not hasattr(self, "snake_game") or not self.snake_game.isVisible():
             self.snake_game = SnakeGame()
         self.snake_game.show()
@@ -525,6 +577,9 @@ class ImageAnnotator(QMainWindow):
 
     def export_annotations(self):
         return io_controller.export_annotations(self)
+
+    def export_annotated_frames(self):
+        return io_controller.export_annotated_frames(self)
 
     def save_slices(self, directory):
         return io_controller.save_slices(self, directory)
@@ -568,6 +623,7 @@ class ImageAnnotator(QMainWindow):
         """
         self.sam_utils.unload()
         self.dino_utils.unload()
+        self.sam3_utils.unload()
         # Reset the dropdowns to a neutral state so the user knows they
         # need to re-pick the model.
         self.sam_model_selector.setCurrentIndex(0)
@@ -657,6 +713,17 @@ class ImageAnnotator(QMainWindow):
     def reject_dino_results(self):
         return self.dino_controller.reject_dino_results()
 
+    # --- SAM 3 video object tracking (issue #51) ---
+
+    def can_track(self):
+        return self.tracking_controller.can_track()
+
+    def track_selected_object(self):
+        return self.tracking_controller.run_tracking()
+
+    def undo_last_track(self):
+        return self.tracking_controller.undo_last_track()
+
     def apply_theme_and_font(self):
         theme.apply_theme_and_font(self)
 
@@ -745,8 +812,10 @@ class ImageAnnotator(QMainWindow):
     def add_images(self):
         if not self.image_label.check_unsaved_changes():
             return
+        from .core.video_handler import file_dialog_filter
+
         file_names, _ = QFileDialog.getOpenFileNames(
-            self, "Add Images", "", "Image Files (*.png *.jpg *.bmp *.tif *.tiff *.czi)"
+            self, "Add Images or Videos", "", file_dialog_filter()
         )
         if file_names:
             self.add_images_to_list(file_names)
@@ -799,8 +868,17 @@ class ImageAnnotator(QMainWindow):
         self.btn_detect_single.setEnabled(False)
         self.btn_detect_batch.setEnabled(False)
 
-        # Clear slices
+        # Clear slices. Wipe the shared slice LRU too: image_slices is dropped
+        # wholesale here, so any cached QImages keyed by a soon-to-be-recycled
+        # provider id() must go with it or a reloaded stack could alias them
+        # (issue #45).
+        from .core.slice_cache import get_shared_lru
+        get_shared_lru().clear()
         self.image_slices.clear()
+        # Release each video's cv2 capture before dropping the dict (issue #47).
+        for handler in self.video_handlers.values():
+            handler.release()
+        self.video_handlers.clear()
         self.slices = []
         self.slice_list.clear()
         self.current_slice = None
@@ -862,29 +940,73 @@ class ImageAnnotator(QMainWindow):
         )
 
     def show_image_context_menu(self, position):
+        from .core.video_handler import is_video
+
         menu = QMenu()
         current_item = self.image_list.itemAt(position)
         if current_item:
             file_name = current_item.text()
-            delete_action = menu.addAction("Remove Image")
+            delete_action = menu.addAction(
+                "Remove Video" if is_video(file_name) else "Remove Image"
+            )
 
-            if not self.is_multi_dimensional(file_name):
+            # YOLO single-image predict is for plain 2D images only — not
+            # multi-dim stacks and NOT videos (predicting a video would run
+            # Ultralytics over the whole clip on the GUI thread, #47).
+            can_predict = not self.is_multi_dimensional(file_name) and not is_video(
+                file_name
+            )
+            if can_predict:
                 predict_action = menu.addAction("Predict using YOLO")
 
             if self.is_multi_dimensional(file_name):
                 redefine_dimensions_action = menu.addAction("Redefine Dimensions")
 
+            menu.addSeparator()
+            move_to_group_action = menu.addAction("Move to group…")
+            remove_from_group_action = menu.addAction("Remove from group")
+
             action = menu.exec(self.image_list.mapToGlobal(position))
 
             if action == delete_action:
                 self.remove_image()
-            elif not self.is_multi_dimensional(file_name) and action == predict_action:
+            elif can_predict and action == predict_action:
                 self.predict_single_image(file_name)
             elif (
                 self.is_multi_dimensional(file_name)
                 and action == redefine_dimensions_action
             ):
                 self.redefine_dimensions(file_name)
+            elif action == move_to_group_action:
+                self._prompt_move_image_to_group(file_name)
+            elif action == remove_from_group_action:
+                self.image_controller.set_image_group(file_name, None)
+
+    def _prompt_move_image_to_group(self, file_name):
+        """Ask for a group name and assign it (issue #43).
+
+        The combo is seeded with the existing derived groups and is
+        editable so a new name can be typed. Thin delegation: the
+        controller owns the state change (set_image_group).
+        """
+        existing = sorted(
+            {info.get("group") for info in self.all_images if info.get("group")}
+        )
+        info = next(
+            (img for img in self.all_images if img["file_name"] == file_name), None
+        )
+        current = (info.get("group") if info else "") or ""
+        current_index = existing.index(current) if current in existing else 0
+        name, ok = QInputDialog.getItem(
+            self,
+            "Move to group",
+            "Group name (leave blank to ungroup):",
+            existing,
+            current_index,
+            True,
+        )
+        if ok:
+            self.image_controller.set_image_group(file_name, name)
 
     def is_multi_dimensional(self, file_name):
         return self.image_controller.is_multi_dimensional(file_name)
@@ -1035,6 +1157,25 @@ class ImageAnnotator(QMainWindow):
             self.keypoint_button: "keypoint",
         }
 
+        # A pose class admits only the keypoint tool. Block activating any shape
+        # tool on it (gate activation only — unchecking falls through, same
+        # discipline as the keypoint guard below). SAM buttons are guarded in
+        # SAMController.toggle_sam_*. (#44)
+        if (
+            sender in (self.polygon_button, self.rectangle_button,
+                       self.paint_brush_button, self.eraser_button)
+            and sender.isChecked()
+            and self.current_class in self.keypoint_schemas
+        ):
+            QMessageBox.warning(
+                self,
+                "Pose Class",
+                f"'{self.current_class}' is a pose class — only the Keypoint "
+                "tool can annotate it.",
+            )
+            sender.setChecked(False)
+            return
+
         # The keypoint tool needs a pose schema on the current class (#35). Only
         # gate activation — unchecking must always fall through to deactivate, or
         # button state and current_tool would drift on a schemaless class.
@@ -1066,10 +1207,10 @@ class ImageAnnotator(QMainWindow):
             delta = event.angleDelta().y()
             if self.image_label.current_tool == "paint_brush":
                 self.paint_brush_size = max(1, self.paint_brush_size + delta // 120)
-                print(f"Paint brush size: {self.paint_brush_size}")
+                logger.debug(f"Paint brush size: {self.paint_brush_size}")
             elif self.image_label.current_tool == "eraser":
                 self.eraser_size = max(1, self.eraser_size + delta // 120)
-                print(f"Eraser size: {self.eraser_size}")
+                logger.debug(f"Eraser size: {self.eraser_size}")
         else:
             super().wheelEvent(event)
 

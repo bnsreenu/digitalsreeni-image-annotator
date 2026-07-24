@@ -50,6 +50,9 @@ import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..inference.sam_utils import MODEL_FILES, MODEL_NAMES, SAM_MODELS_DIR
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # Fine-tuned checkpoints live alongside the base weights, namespaced so they
 # never collide with Ultralytics' auto-downloaded base files.
@@ -243,7 +246,7 @@ class SAMFineTuner(QObject):
                 idx = device.index if getattr(device, "index", None) is not None else 0
                 return f"{device} ({torch.cuda.get_device_name(idx)})"
         except Exception:
-            pass
+            logger.debug("could not query torch device name", exc_info=True)
         return str(device)
 
     @staticmethod

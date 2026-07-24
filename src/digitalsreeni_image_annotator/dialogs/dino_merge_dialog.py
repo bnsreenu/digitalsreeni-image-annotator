@@ -7,7 +7,6 @@ Ported from annotation_tool_v4.py _MergeCOCODialog.
 import json
 import math
 import random
-import traceback
 from collections import defaultdict
 from pathlib import Path
 
@@ -26,6 +25,10 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
 )
+
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class DinoMergeDialog(QDialog):
@@ -309,7 +312,7 @@ class DinoMergeDialog(QDialog):
 
         except Exception as e:
             self._log_msg(f"ERROR: {e}")
-            traceback.print_exc()
+            logger.exception("Failed to merge and split COCO datasets")
         finally:
             self._btn_run.setEnabled(True)
 

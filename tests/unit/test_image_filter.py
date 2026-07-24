@@ -30,6 +30,8 @@ def mw(qtbot):
     window.image_filter_combo.addItems(
         ["All images", "Without annotations", "With annotations"]
     )
+    window.image_group_combo = QComboBox(window)
+    window.image_group_combo.addItem("All groups")
     window.all_images = []
     window.all_annotations = {}
     window.image_slices = {}
@@ -147,3 +149,67 @@ class TestApplyImageFilter:
         populated.image_filter_combo.setCurrentIndex(FILTER_ALL)
         populated.image_controller.apply_image_filter()
         assert self._hidden(populated) == [False, False]
+
+
+class TestGroupFilter:
+    """Group filter (issue #43): a specific group hides non-members;
+    combines with the status filter via OR; index 0 of both hides nothing.
+    """
+
+    def _visible(self, mw):
+        return [
+            mw.image_list.item(i).text()
+            for i in range(mw.image_list.count())
+            if not mw.image_list.isRowHidden(i)
+        ]
+
+    def _add(self, mw, name, group=None, annotated=False):
+        info = {"file_name": name, "is_multi_slice": False}
+        if group:
+            info["group"] = group
+        mw.all_images.append(info)
+        if annotated:
+            mw.all_annotations[name] = {"cell": [{"segmentation": [0, 0, 1, 0, 1, 1]}]}
+
+    def test_group_filter_hides_non_members(self, mw):
+        self._add(mw, "a.png", group="G1")
+        self._add(mw, "b.png", group="G2")
+        self._add(mw, "c.png")  # ungrouped
+        mw.image_controller.sort_image_list()  # rebuilds list + group combo
+        mw.image_list.setCurrentRow(-1)
+
+        idx = mw.image_group_combo.findText("G1")
+        assert idx > 0  # combo was populated with the derived groups
+        mw.image_group_combo.setCurrentIndex(idx)
+        mw.image_controller.apply_image_filter()
+
+        assert self._visible(mw) == ["a.png"]
+
+    def test_combined_status_and_group(self, mw):
+        self._add(mw, "g1_annot.png", group="G1", annotated=True)
+        self._add(mw, "g1_plain.png", group="G1")
+        self._add(mw, "g2_annot.png", group="G2", annotated=True)
+        mw.image_controller.sort_image_list()
+        mw.image_list.setCurrentRow(-1)
+
+        mw.image_filter_combo.setCurrentIndex(FILTER_WITH)
+        mw.image_group_combo.setCurrentIndex(mw.image_group_combo.findText("G1"))
+        mw.image_controller.apply_image_filter()
+
+        # "With annotations" drops g1_plain; group G1 drops g2_annot.
+        assert self._visible(mw) == ["g1_annot.png"]
+
+    def test_both_combos_index_zero_hides_nothing(self, mw):
+        self._add(mw, "a.png", group="G1")
+        self._add(mw, "b.png")
+        mw.image_controller.sort_image_list()
+        mw.image_list.setCurrentRow(-1)
+
+        mw.image_filter_combo.setCurrentIndex(FILTER_ALL)
+        mw.image_group_combo.setCurrentIndex(0)
+        mw.image_controller.apply_image_filter()
+
+        assert self._visible(mw) == ["b.png", "a.png"]  # ungrouped clusters first
+        assert not any(
+            mw.image_list.isRowHidden(i) for i in range(mw.image_list.count())
+        )

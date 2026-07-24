@@ -24,6 +24,10 @@ import webbrowser
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 _DEFAULT_EXPERIMENT = "image-annotator-training"
 _MLRUNS_DIRNAME = "mlruns"
 
@@ -156,7 +160,7 @@ class MLflowTracker:
             try:
                 self._log(msg)
             except Exception:
-                pass
+                logger.exception("training-log sink raised; message dropped: %s", msg)
 
     @property
     def active(self) -> bool:
@@ -200,7 +204,7 @@ class MLflowTracker:
                 try:
                     self._on_run_url(run_ui_url(self.experiment_id, self.run_id))
                 except Exception:
-                    pass
+                    logger.exception("MLflow run-URL callback raised; UI link not shown")
         except Exception as exc:  # never let tracking abort training
             self._active = False
             self._emit(f"MLflow tracking unavailable ({exc}); continuing untracked.")

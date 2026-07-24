@@ -345,3 +345,120 @@ def test_switching_to_non_pose_class_deactivates_keypoint_tool(window):
 
     assert window.image_label.current_tool is None
     assert not window.keypoint_button.isChecked()
+
+
+# --- #44: a class is pose OR regular, not both (mixed-class guards) ---
+
+
+def test_define_schema_blocked_on_class_with_plain_annotations(window, monkeypatch):
+    # Turning a class that already holds polygons into a pose class is refused.
+    window.add_class("cell")
+    window.all_annotations["img.png"] = {
+        "cell": [{"segmentation": [0.0, 0.0, 1.0, 1.0, 1.0, 0.0],
+                  "category_name": "cell"}]
+    }
+    warned = []
+    monkeypatch.setattr(
+        "digitalsreeni_image_annotator.controllers.class_controller.QMessageBox.warning",
+        lambda *a, **k: warned.append(a),
+    )
+    item = window.class_list.findItems("cell", Qt.MatchFlag.MatchExactly)[0]
+    window.class_controller.define_keypoint_schema(item)
+    assert warned
+    assert "cell" not in window.keypoint_schemas
+
+
+def test_define_schema_allowed_editing_existing_pose_class(window, monkeypatch):
+    # Editing the schema of an existing pose class stays allowed even if it is
+    # a legacy-mixed class (has plain annotations) — only *new* conversions are
+    # blocked, so names/skeleton can still be fixed.
+    _pose_class(window, name="person")
+    window.all_annotations["img.png"] = {
+        "person": [{"segmentation": [0.0, 0.0, 1.0, 1.0, 1.0, 0.0],
+                    "category_name": "person"}]
+    }
+    from PyQt6.QtWidgets import QDialog
+
+    constructed = {"yes": False}
+
+    class _FakeDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, *a, **k):
+            constructed["yes"] = True
+
+        def exec(self):
+            return QDialog.DialogCode.Rejected  # cancel — no schema change
+
+    monkeypatch.setattr(
+        "digitalsreeni_image_annotator.dialogs.keypoint_schema_dialog.KeypointSchemaDialog",
+        _FakeDialog,
+    )
+    item = window.class_list.findItems("person", Qt.MatchFlag.MatchExactly)[0]
+    window.class_controller.define_keypoint_schema(item)
+    assert constructed["yes"]  # the editor opened; the guard did not block
+
+
+def test_shape_tool_blocked_on_pose_class(window, monkeypatch):
+    _pose_class(window, name="person")
+    window.enable_annotation_tools()  # tools are enabled once a class is selected
+    monkeypatch.setattr(window.image_label, "check_unsaved_changes", lambda: True)
+    warned = []
+    monkeypatch.setattr(
+        "digitalsreeni_image_annotator.annotator_window.QMessageBox.warning",
+        lambda *a, **k: warned.append(a),
+    )
+    window.polygon_button.click()  # user clicks Polygon while a pose class is selected
+    assert warned
+    assert not window.polygon_button.isChecked()
+    assert window.image_label.current_tool is None
+
+
+def test_sam_box_blocked_on_pose_class(window, monkeypatch):
+    _pose_class(window, name="person")
+    warned = []
+    monkeypatch.setattr(
+        "digitalsreeni_image_annotator.controllers.sam_controller.QMessageBox.warning",
+        lambda *a, **k: warned.append(a),
+    )
+    window.sam_box_button.setChecked(True)
+    window.sam_controller.toggle_sam_box()
+    assert warned
+    assert not window.sam_box_button.isChecked()
+    assert window.image_label.current_tool is None
+
+
+def test_keypoint_tool_still_activates_on_pose_class(window, monkeypatch):
+    _pose_class(window, name="person")
+    window.enable_annotation_tools()
+    monkeypatch.setattr(window.image_label, "check_unsaved_changes", lambda: True)
+    window.keypoint_button.click()
+    assert window.image_label.current_tool == "keypoint"
+    assert window.keypoint_button.isChecked()
+
+
+def test_selecting_pose_class_deactivates_active_shape_tool(window, monkeypatch):
+    _pose_class(window, name="person")
+    window.add_class("cell")  # normal class
+    window.current_class = "cell"
+    window.activate_tool("polygon")
+    assert window.image_label.current_tool == "polygon"
+
+    monkeypatch.setattr(window.image_label, "check_unsaved_changes", lambda: True)
+    person_item = window.class_list.findItems("person", Qt.MatchFlag.MatchExactly)[0]
+    window.class_controller.on_class_selected(person_item)
+    assert window.image_label.current_tool is None
+
+
+def test_dino_build_configs_skips_pose_class(window, monkeypatch):
+    window.keypoint_schemas["person"] = copy.deepcopy(_SCHEMA)
+    monkeypatch.setattr(
+        window.dino_class_table, "get_class_configs",
+        lambda: [
+            {"name": "person", "box_thr": 0.3, "txt_thr": 0.25, "nms_thr": 0.5},
+            {"name": "cell", "box_thr": 0.3, "txt_thr": 0.25, "nms_thr": 0.5},
+        ],
+    )
+    monkeypatch.setattr(window.dino_phrase_panel, "get_phrases_for", lambda name: ["x"])
+    configs = window.dino_controller._build_dino_class_configs()
+    assert [c["name"] for c in configs] == ["cell"]

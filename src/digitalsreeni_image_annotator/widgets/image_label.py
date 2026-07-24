@@ -12,18 +12,15 @@ import os
 import warnings
 
 from PIL import Image
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
-    QColor,
-    QFont,
     QImage,
     QKeyEvent,
     QMouseEvent,
     QPainter,
     QPen,
     QPixmap,
-    QPolygonF,
     QWheelEvent,
 )
 from PyQt6.QtWidgets import QLabel, QMessageBox
@@ -35,15 +32,16 @@ from .tools import (
     PolygonTool,
     RectangleTool,
 )
+from .canvas_renderer import CanvasRenderer
+from . import edit_gestures
 from ..core.constants import DEFAULT_FILL_OPACITY
 from ..utils import (
     calculate_area,
-    calculate_bbox,
-    clamp_bbox,
-    clamp_keypoints,
     clamp_segmentation,
-    fit_bbox_inside,
 )
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -90,11 +88,10 @@ class ImageLabel(QLabel):
     zoomOutRequested = pyqtSignal()
     imageInfoChanged = pyqtSignal()
 
-    # Selection highlight: a semi-transparent selection-blue, drawn as the
-    # dashed bounding-box marquee (handles use the opaque variant). Class-
-    # colour-independent, so it never vanishes the way the old red-on-red
-    # highlight did.
-    _SELECTION_COLOR = QColor(0, 120, 215, 220)
+    # Selection-blue re-exported from CanvasRenderer (issue #46 split), where the
+    # drawing code that consumes it now lives. Kept as a class attribute so edit
+    # gestures / tests that reference ImageLabel._SELECTION_COLOR still resolve.
+    _SELECTION_COLOR = CanvasRenderer._SELECTION_COLOR
 
     # Resize cursors per bbox handle (issue #40), matching the OGP convention:
     # diagonal arrows on corners, straight arrows on edge midpoints.
@@ -189,6 +186,13 @@ class ImageLabel(QLabel):
             "keypoint":    KeypointTool(self),
         }
 
+        # Collaborators split out of this file (issue #46). Each only stores a
+        # back-reference to the label; all canvas state (bbox_edit /
+        # editing_keypoint included) stays on the label. Created after the state
+        # fields above exist.
+        self.renderer = CanvasRenderer(self)
+        self._gestures = edit_gestures.EditGestures(self)
+
     def set_context(self, ctx):
         self._ctx = ctx
 
@@ -198,11 +202,11 @@ class ImageLabel(QLabel):
 
     def _pen_w(self, base):
         """Overlay pen width: ui-scaled, zoom-compensated (constant on screen)."""
-        return base * self.ui_scale / self.zoom_factor
+        return self.renderer._pen_w(base)
 
     def _overlay_font(self, base=12):
         """Overlay label font: ui-scaled, zoom-compensated (constant on screen)."""
-        return QFont("Arial", max(1, int(base * self.ui_scale / self.zoom_factor)))
+        return self.renderer._overlay_font(base)
 
     @property
     def active_tool_handler(self):
@@ -313,16 +317,16 @@ class ImageLabel(QLabel):
                 int(self.offset_x), int(self.offset_y), self.scaled_pixmap
             )
             # Draw committed annotations
-            self.draw_annotations(painter)
+            self.renderer.draw_annotations(painter)
             # Polygon edit mode is modal; runs orthogonal to tool selection
             if self.editing_polygon:
-                self.draw_editing_polygon(painter)
+                self.renderer.draw_editing_polygon(painter)
             # Idle-mode rubber-band selection rectangle (issue #75)
             if self.selection_rect is not None:
-                self.draw_selection_rect(painter)
+                self.renderer.draw_selection_rect(painter)
             # SAM overlays (cross-cutting; not part of the tool handlers)
             if self.sam_box_active and self.sam_bbox:
-                self.draw_sam_bbox(painter)
+                self.renderer.draw_sam_bbox(painter)
             if self.sam_points_active:
                 painter.save()
                 painter.translate(self.offset_x, self.offset_y)
@@ -347,49 +351,13 @@ class ImageLabel(QLabel):
             # tools mid-stroke does not hide an unsaved mark.
             for handler in self._tools.values():
                 handler.paint_overlay(painter)
-            self.draw_tool_size_indicator(painter)
+            self.renderer.draw_tool_size_indicator(painter)
             if self.temp_annotations:
-                self.draw_temp_annotations(painter)
+                self.renderer.draw_temp_annotations(painter)
             painter.end()
 
     def draw_temp_annotations(self, painter):
-        painter.save()
-        painter.translate(self.offset_x, self.offset_y)
-        painter.scale(self.zoom_factor, self.zoom_factor)
-
-        for annotation in self.temp_annotations:
-            color = QColor(255, 165, 0, 128)  # Semi-transparent orange
-            painter.setPen(QPen(color, self._pen_w(2), Qt.PenStyle.DashLine))
-            painter.setBrush(QBrush(color))
-
-            # Prefer segmentation polygon over bbox when both are present
-            # (DINO+SAM temp annotations carry both — the polygon is the mask).
-            points = None
-            if "segmentation" in annotation:
-                points = [
-                    QPointF(float(x), float(y))
-                    for x, y in zip(
-                        annotation["segmentation"][0::2],
-                        annotation["segmentation"][1::2],
-                    )
-                ]
-                painter.drawPolygon(QPolygonF(points))
-            elif "bbox" in annotation:
-                x, y, w, h = annotation["bbox"]
-                painter.drawRect(QRectF(x, y, w, h))
-
-            # Draw label and score
-            painter.setFont(self._overlay_font())
-            label = f"{annotation['category_name']} {annotation['score']:.2f}"
-            if points is not None:
-                centroid = self.calculate_centroid(points)
-                if centroid:
-                    painter.drawText(centroid, label)
-            elif "bbox" in annotation:
-                x, y, _, _ = annotation["bbox"]
-                painter.drawText(QPointF(x, y - 5), label)
-
-        painter.restore()
+        return self.renderer.draw_temp_annotations(painter)
 
     def accept_temp_annotations(self):
         # Capture the pre-accept state for undo before the batch append; the
@@ -421,88 +389,13 @@ class ImageLabel(QLabel):
         self.update()
 
     def draw_tool_size_indicator(self, painter):
-        if self.current_tool in ["paint_brush", "eraser"] and hasattr(
-            self, "cursor_pos"
-        ):
-            painter.save()
-            painter.translate(self.offset_x, self.offset_y)
-            painter.scale(self.zoom_factor, self.zoom_factor)
-
-            if self.current_tool == "paint_brush":
-                size = self._ctx.paint_brush_size()
-                color = QColor(255, 0, 0, 128)  # Semi-transparent red
-            else:  # eraser
-                size = self._ctx.eraser_size()
-                color = QColor(0, 0, 255, 128)  # Semi-transparent blue
-
-            # Draw filled circle with lower opacity
-            painter.setOpacity(0.3)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawEllipse(
-                QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size
-            )
-
-            # Draw circle outline with full opacity
-            painter.setOpacity(1.0)
-            painter.setPen(QPen(color.darker(150), self._pen_w(1), Qt.PenStyle.SolidLine))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(
-                QPointF(self.cursor_pos[0], self.cursor_pos[1]), size, size
-            )
-
-            # Draw size text
-            # Reset the transform to ensure text is drawn at screen coordinates
-            painter.resetTransform()
-            font = QFont()
-            # Screen-space text (transform was reset above): scale with
-            # the UI font setting only, not with image zoom.
-            font.setPointSize(max(1, int(10 * self.ui_scale)))
-            painter.setFont(font)
-            painter.setPen(QPen(Qt.GlobalColor.black))  # Use black color for better visibility
-
-            # Convert cursor position back to screen coordinates
-            screen_x = self.cursor_pos[0] * self.zoom_factor + self.offset_x
-            screen_y = self.cursor_pos[1] * self.zoom_factor + self.offset_y
-
-            # Position text above the circle
-            text_rect = QRectF(
-                screen_x + (size * self.zoom_factor),
-                screen_y - (size * self.zoom_factor),
-                100,
-                20,
-            )
-
-            text = f"Size: {size}"
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
-
-            painter.restore()
+        return self.renderer.draw_tool_size_indicator(painter)
 
     def draw_sam_bbox(self, painter):
-        painter.save()
-        painter.translate(self.offset_x, self.offset_y)
-        painter.scale(self.zoom_factor, self.zoom_factor)
-        painter.setPen(QPen(Qt.GlobalColor.red, self._pen_w(2), Qt.PenStyle.SolidLine))
-        x1, y1, x2, y2 = self.sam_bbox
-        painter.drawRect(QRectF(min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1)))
-        painter.restore()
+        return self.renderer.draw_sam_bbox(painter)
 
     def draw_selection_rect(self, painter):
-        """Draw the idle-mode rubber-band selection rectangle (issue #75).
-
-        A single dashed selection-blue rect with a faint fill — same restrained
-        style as the selection outline (not red, which clashes with class colours)."""
-        painter.save()
-        painter.translate(self.offset_x, self.offset_y)
-        painter.scale(self.zoom_factor, self.zoom_factor)
-        x0, y0, x1, y1 = self.selection_rect
-        rect = QRectF(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
-        fill = QColor(self._SELECTION_COLOR)
-        fill.setAlphaF(0.10)
-        painter.setBrush(QBrush(fill))
-        painter.setPen(QPen(self._SELECTION_COLOR, self._pen_w(1), Qt.PenStyle.DashLine))
-        painter.drawRect(rect)
-        painter.restore()
+        return self.renderer.draw_selection_rect(painter)
 
     def clear_temp_sam_prediction(self):
         self.temp_sam_prediction = None
@@ -558,228 +451,21 @@ class ImageLabel(QLabel):
         self.class_visibility[class_name] = is_visible
 
     def draw_annotations(self, painter):
-        """Draw all annotations on the image."""
-        if not self.original_pixmap:
-            return
-
-        painter.save()
-        painter.translate(self.offset_x, self.offset_y)
-        painter.scale(self.zoom_factor, self.zoom_factor)
-
-        for class_name, class_annotations in self.annotations.items():
-            if not self._ctx.is_class_visible(class_name):
-                continue
-
-            color = self.class_colors.get(class_name, QColor(Qt.GlobalColor.white))
-            for annotation in class_annotations:
-                # Selection no longer recolours the mask (it used to turn red,
-                # which was invisible on a red-class mask). The mask always
-                # keeps its class colour; selection is drawn as a
-                # class-colour-independent overlay in a final pass below.
-                border_color = color
-                fill_color = QColor(color)
-                fill_color.setAlphaF(self.fill_opacity)
-
-                text_color = Qt.GlobalColor.white if self.dark_mode else Qt.GlobalColor.black
-                painter.setPen(QPen(border_color, self._pen_w(2), Qt.PenStyle.SolidLine))
-                painter.setBrush(QBrush(fill_color))
-
-                if "segmentation" in annotation:
-                    segmentation = annotation["segmentation"]
-                    if isinstance(segmentation, list) and len(segmentation) > 0:
-                        if isinstance(segmentation[0], list):  # Multiple polygons
-                            for polygon in segmentation:
-                                points = [
-                                    QPointF(float(x), float(y))
-                                    for x, y in zip(polygon[0::2], polygon[1::2])
-                                ]
-                                if points:
-                                    painter.drawPolygon(QPolygonF(points))
-                        else:  # Single polygon
-                            points = [
-                                QPointF(float(x), float(y))
-                                for x, y in zip(segmentation[0::2], segmentation[1::2])
-                            ]
-                            if points:
-                                painter.drawPolygon(QPolygonF(points))
-
-                        # Draw centroid and label
-                        if points:
-                            centroid = self.calculate_centroid(points)
-                            if centroid:
-                                painter.setFont(self._overlay_font())
-                                painter.setPen(
-                                    QPen(text_color, self._pen_w(2), Qt.PenStyle.SolidLine)
-                                )
-                                painter.drawText(
-                                    centroid,
-                                    f"{class_name} {annotation.get('number', '')}",
-                                )
-
-                elif "keypoints" in annotation:
-                    # Pose instance (#35): skeleton + visibility-coloured points.
-                    # Drawn before the bbox branch since an instance also carries
-                    # a bbox (the box is resizable via the selection handles).
-                    self._draw_keypoint_annotation(
-                        painter, annotation, class_name, color, text_color
-                    )
-
-                elif "bbox" in annotation:
-                    x, y, width, height = annotation["bbox"]
-                    painter.drawRect(QRectF(x, y, width, height))
-                    painter.setPen(QPen(text_color, self._pen_w(2), Qt.PenStyle.SolidLine))
-                    painter.drawText(
-                        QPointF(x, y), f"{class_name} {annotation.get('number', '')}"
-                    )
-
-        # Polygon-in-progress is rendered by PolygonTool.paint_overlay
-        # (paintEvent calls active_tool_handler.paint_overlay).
-
-        # Draw temporary SAM prediction
-        if self.temp_sam_prediction:
-            temp_color = QColor(255, 165, 0, 128)  # Semi-transparent orange
-            painter.setPen(QPen(temp_color, self._pen_w(2), Qt.PenStyle.DashLine))
-            painter.setBrush(QBrush(temp_color))
-
-            segmentation = self.temp_sam_prediction["segmentation"]
-            points = [
-                QPointF(float(x), float(y))
-                for x, y in zip(segmentation[0::2], segmentation[1::2])
-            ]
-            if points:
-                painter.drawPolygon(QPolygonF(points))
-                centroid = self.calculate_centroid(points)
-                if centroid:
-                    painter.setFont(self._overlay_font())
-                    painter.drawText(
-                        centroid, f"SAM: {self.temp_sam_prediction['score']:.2f}"
-                    )
-
-        # Selection overlay — drawn LAST so it sits on top of every mask's
-        # fill, and in a class-colour-independent style so it's recognisable
-        # regardless of the selected mask's colour (issue #75 follow-up).
-        for annotation in self.highlighted_annotations:
-            self._draw_selection_overlay(painter, annotation)
-
-        painter.restore()
+        return self.renderer.draw_annotations(painter)
 
     def _draw_keypoint_annotation(self, painter, annotation, class_name, color, text_color):
-        """Render a committed pose instance (#35): a faint instance box, the
-        skeleton edges (between labelled points), visibility-coloured markers
-        (filled = visible v2, hollow = occluded v1, v0 skipped), and the label.
-        Marker/skeleton geometry matches the in-progress KeypointTool overlay so
-        placing and reviewing look the same."""
-        kps = annotation.get("keypoints") or []
-        pts = list(zip(kps[0::3], kps[1::3], kps[2::3]))
-        schema = self._ctx.keypoint_schema(class_name) if self._ctx else None
-        r = 4 * self.ui_scale / self.zoom_factor
-
-        # Faint instance box so the resizable bounds are visible.
-        bbox = annotation.get("bbox")
-        if bbox:
-            x, y, w, h = bbox
-            painter.setPen(QPen(color, self._pen_w(1), Qt.PenStyle.DotLine))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(QRectF(float(x), float(y), float(w), float(h)))
-
-        if schema:
-            painter.setPen(QPen(color, self._pen_w(1.5), Qt.PenStyle.SolidLine))
-            for a, b in schema.get("skeleton", []):
-                if a < len(pts) and b < len(pts) and pts[a][2] > 0 and pts[b][2] > 0:
-                    painter.drawLine(
-                        QPointF(float(pts[a][0]), float(pts[a][1])),
-                        QPointF(float(pts[b][0]), float(pts[b][1])),
-                    )
-
-        for x, y, v in pts:
-            if v <= 0:
-                continue  # not labelled — nothing to draw
-            painter.setPen(QPen(color, self._pen_w(2), Qt.PenStyle.SolidLine))
-            painter.setBrush(QBrush(color) if v == 2 else Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(QPointF(float(x), float(y)), r, r)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-
-        # Instance label at the box top-left (fallback to first point).
-        if bbox:
-            anchor = QPointF(float(bbox[0]), float(bbox[1]))
-        elif pts:
-            anchor = QPointF(float(pts[0][0]), float(pts[0][1]))
-        else:
-            return
-        painter.setFont(self._overlay_font())
-        painter.setPen(QPen(text_color, self._pen_w(2), Qt.PenStyle.SolidLine))
-        painter.drawText(anchor, f"{class_name} {annotation.get('number', '')}")
+        return self.renderer._draw_keypoint_annotation(
+            painter, annotation, class_name, color, text_color
+        )
 
     def _draw_selection_overlay(self, painter, annotation):
-        """Mark a selected annotation the way the sibling open-garden-planner
-        app does: a dashed selection-blue bounding box plus bright square
-        handles at the 4 corners and 4 edge midpoints. Class-colour-independent
-        and clearly visible regardless of the mask's own colour."""
-        if not self._is_class_pickable(annotation.get("category_name")):
-            return  # don't draw selection chrome over a hidden mask
-        bb = self._annotation_bbox(annotation)
-        if bb is None:
-            return
-        x0, y0, x1, y1 = bb
-        rect = QRectF(x0, y0, x1 - x0, y1 - y0)
-
-        # Dashed bounding-box marquee.
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(self._SELECTION_COLOR, self._pen_w(1.5), Qt.PenStyle.DashLine))
-        painter.drawRect(rect)
-
-        # Handle squares — opaque blue with a white casing so they read on any
-        # background; fixed on-screen size (zoom-compensated). For a bbox these
-        # are grab targets for resize (issue #40); for a polygon they are visual
-        # markers only (vertex editing happens via double-click).
-        half = 4 * self.ui_scale / self.zoom_factor
-        painter.setPen(QPen(Qt.GlobalColor.white, self._pen_w(1), Qt.PenStyle.SolidLine))
-        painter.setBrush(QBrush(QColor(0, 120, 215)))
-        for hx, hy in self._bbox_handle_points(bb).values():
-            painter.drawRect(QRectF(hx - half, hy - half, 2 * half, 2 * half))
+        return self.renderer._draw_selection_overlay(painter, annotation)
 
     def draw_editing_polygon(self, painter):
-        """Draw the polygon being edited."""
-        painter.save()
-        painter.translate(self.offset_x, self.offset_y)
-        painter.scale(self.zoom_factor, self.zoom_factor)
-
-        points = [
-            QPointF(float(x), float(y))
-            for x, y in zip(
-                self.editing_polygon["segmentation"][0::2],
-                self.editing_polygon["segmentation"][1::2],
-            )
-        ]
-        color = self.class_colors.get(
-            self.editing_polygon["category_name"], QColor(Qt.GlobalColor.white)
-        )
-        fill_color = QColor(color)
-        fill_color.setAlphaF(self.fill_opacity)
-
-        painter.setPen(QPen(color, self._pen_w(2), Qt.PenStyle.SolidLine))
-        painter.setBrush(QBrush(fill_color))
-        painter.drawPolygon(QPolygonF(points))  # Changed QPolygon to QPolygonF - Sreeni
-
-        for i, point in enumerate(points):
-            if i == self.hover_point_index:
-                painter.setBrush(QColor(255, 0, 0))
-            else:
-                painter.setBrush(QColor(0, 255, 0))
-            r = 5 * self.ui_scale / self.zoom_factor
-            painter.drawEllipse(point, r, r)
-
-        painter.restore()
+        return self.renderer.draw_editing_polygon(painter)
 
     def calculate_centroid(self, points):
-        """Calculate the centroid of a polygon."""
-        if not points:
-            return None
-        x_coords = [point.x() for point in points]
-        y_coords = [point.y() for point in points]
-        centroid_x = sum(x_coords) / len(points)
-        centroid_y = sum(y_coords) / len(points)
-        return QPointF(centroid_x, centroid_y)
+        return self.renderer.calculate_centroid(points)
 
     def set_zoom(self, zoom_factor):
         """Set the zoom factor and update the display."""
@@ -1157,20 +843,20 @@ class ImageLabel(QLabel):
             if self.current_tool == "paint_brush":
                 new_size = max(1, self._ctx.paint_brush_size() - 1)
                 self.toolSizeChanged.emit("paint", new_size)
-                print(f"Paint brush size: {new_size}")
+                logger.debug(f"Paint brush size: {new_size}")
             elif self.current_tool == "eraser":
                 new_size = max(1, self._ctx.eraser_size() - 1)
                 self.toolSizeChanged.emit("eraser", new_size)
-                print(f"Eraser size: {new_size}")
+                logger.debug(f"Eraser size: {new_size}")
         elif event.key() in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
             if self.current_tool == "paint_brush":
                 new_size = self._ctx.paint_brush_size() + 1
                 self.toolSizeChanged.emit("paint", new_size)
-                print(f"Paint brush size: {new_size}")
+                logger.debug(f"Paint brush size: {new_size}")
             elif self.current_tool == "eraser":
                 new_size = self._ctx.eraser_size() + 1
                 self.toolSizeChanged.emit("eraser", new_size)
-                print(f"Eraser size: {new_size}")
+                logger.debug(f"Eraser size: {new_size}")
         self.update()
 
     # --- Idle-mode mask selection (issue #75) ---
@@ -1312,409 +998,70 @@ class ImageLabel(QLabel):
 
     # --- Direct-manipulation shape editing via the selection handles (#40) ---
 
-    @staticmethod
-    def _bbox_handle_points(bb):
-        """Handle id -> (x, y) for the 8 resize handles of an AABB
-        (x0, y0, x1, y1). Shared by the selection overlay (draw) and the
-        handle hit-test so the squares you see are exactly the grab targets."""
-        x0, y0, x1, y1 = bb
-        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-        return {
-            "tl": (x0, y0), "tm": (cx, y0), "tr": (x1, y0),
-            "ml": (x0, cy), "mr": (x1, cy),
-            "bl": (x0, y1), "bm": (cx, y1), "br": (x1, y1),
-        }
+    # The pure geometry helpers moved to widgets/edit_gestures.py as module-level
+    # functions (issue #46 split); these class-level staticmethod aliases keep the
+    # historical ImageLabel._name(...) / label._name(...) call sites (and tests)
+    # resolving here unchanged.
+    _bbox_handle_points = staticmethod(edit_gestures.bbox_handle_points)
 
     def _single_selected_shape(self):
-        """The selected annotation iff exactly one shape is selected and it has
-        a bounding box (segmentation or bbox) — the state in which the handles
-        are draggable. Returns the highlighted entry as-is (its geometry is all
-        the hover cursor + handle hit-test need); the press handler resolves it
-        to the live object via ``_live_annotation`` before mutating. None for a
-        multi-selection. Cheap — no scan, so it's safe per hover frame."""
-        if len(self.highlighted_annotations) != 1:
-            return None
-        sel = self.highlighted_annotations[0]
-        return sel if self._annotation_bbox(sel) is not None else None
+        return self._gestures._single_selected_shape()
 
     def _live_annotation(self, annotation):
-        """Resolve a (possibly list-copied) annotation to the live object inside
-        ``self.annotations`` — what the canvas renders and
-        ``save_current_annotations`` persists. A list-driven selection stores
-        ``item.data(UserRole)``, which PyQt round-trips as a *copy*, so mutating
-        that copy in place would be lost. Match by value-equality; identity is
-        unstable (ADR-022). Only the drag-arm path pays this scan, not hover."""
-        for anns in self.annotations.values():
-            for ann in anns:
-                if ann == annotation:
-                    return ann
-        return annotation
+        return self._gestures._live_annotation(annotation)
 
     def _bbox_handle_at(self, annotation, pos):
-        """Handle id under pos for a shape's bounding box, or None. Grab radius
-        is zoom-compensated so it stays a constant on-screen target."""
-        bb = self._annotation_bbox(annotation)
-        if bb is None:
-            return None
-        radius = 8 * self.ui_scale / max(self.zoom_factor, 1e-6)
-        for hid, point in self._bbox_handle_points(bb).items():
-            if self.distance(pos, point) <= radius:
-                return hid
-        return None
+        return self._gestures._bbox_handle_at(annotation, pos)
 
-    @staticmethod
-    def _resize_bbox(orig_bbox, handle, pos):
-        """New [x, y, w, h] after dragging `handle` to `pos`, keeping the
-        opposite edge/corner fixed. Normalised so width/height never go
-        negative (dragging past the anchor flips the box) and stay >= 1."""
-        x, y, w, h = orig_bbox
-        x0, y0, x1, y1 = x, y, x + w, y + h
-        px, py = pos
-        if "l" in handle:
-            x0 = px
-        if "r" in handle:
-            x1 = px
-        if "t" in handle:
-            y0 = py
-        if "b" in handle:
-            y1 = py
-        nx, ny = min(x0, x1), min(y0, y1)
-        nw, nh = max(1, abs(x1 - x0)), max(1, abs(y1 - y0))
-        return [nx, ny, nw, nh]
+    _resize_bbox = staticmethod(edit_gestures.resize_bbox)
 
-    @staticmethod
-    def _scale_segmentation(orig_seg, old_aabb, new_aabb):
-        """Map every vertex from the old bounding box to the new one (affine
-        scale), so resizing the box scales the whole polygon proportionally."""
-        ox0, oy0, ox1, oy1 = old_aabb
-        nx0, ny0, nx1, ny1 = new_aabb
-        sx = (nx1 - nx0) / ((ox1 - ox0) or 1.0)
-        sy = (ny1 - ny0) / ((oy1 - oy0) or 1.0)
-        out = list(orig_seg)
-        for i in range(0, len(out) - 1, 2):
-            out[i] = nx0 + (orig_seg[i] - ox0) * sx
-            out[i + 1] = ny0 + (orig_seg[i + 1] - oy0) * sy
-        return out
+    _scale_segmentation = staticmethod(edit_gestures.scale_segmentation)
 
-    @staticmethod
-    def _translate_segmentation(orig_seg, dx, dy):
-        """Shift every vertex by (dx, dy)."""
-        out = list(orig_seg)
-        for i in range(0, len(out) - 1, 2):
-            out[i] = orig_seg[i] + dx
-            out[i + 1] = orig_seg[i + 1] + dy
-        return out
+    _translate_segmentation = staticmethod(edit_gestures.translate_segmentation)
 
-    @staticmethod
-    def _scale_keypoints(orig_kpts, old_aabb, new_aabb):
-        """Affine-scale every LABELLED keypoint (x, y) from the old box to the
-        new one, leaving the visibility flag untouched. Mirrors
-        _scale_segmentation so a pose instance's box resizes the whole pose
-        proportionally (#35). Not-labelled points (v=0) are left at (0, 0) —
-        COCO/YOLO-pose expect v=0 to always carry (0, 0), and transforming a
-        padding point would plant a bogus but plausible-looking coordinate."""
-        ox0, oy0, ox1, oy1 = old_aabb
-        nx0, ny0, nx1, ny1 = new_aabb
-        sx = (nx1 - nx0) / ((ox1 - ox0) or 1.0)
-        sy = (ny1 - ny0) / ((oy1 - oy0) or 1.0)
-        out = list(orig_kpts)
-        for i in range(0, len(out) - 2, 3):
-            if orig_kpts[i + 2] <= 0:
-                continue
-            out[i] = nx0 + (orig_kpts[i] - ox0) * sx
-            out[i + 1] = ny0 + (orig_kpts[i + 1] - oy0) * sy
-        return out
+    _scale_keypoints = staticmethod(edit_gestures.scale_keypoints)
 
-    @staticmethod
-    def _translate_keypoints(orig_kpts, dx, dy):
-        """Shift every LABELLED keypoint (x, y) by (dx, dy), keeping visibility
-        (#35). Not-labelled points (v=0) are left at (0, 0) — see
-        _scale_keypoints for why."""
-        out = list(orig_kpts)
-        for i in range(0, len(out) - 2, 3):
-            if orig_kpts[i + 2] <= 0:
-                continue
-            out[i] = orig_kpts[i] + dx
-            out[i + 1] = orig_kpts[i + 1] + dy
-        return out
+    _translate_keypoints = staticmethod(edit_gestures.translate_keypoints)
 
-    @staticmethod
-    def _sync_bbox_key(ann):
-        """Keep a stored bbox key consistent with an edited segmentation.
-        Imported annotations carry both (the bbox feeds export / SAM training);
-        drawn shapes have no bbox key and are left untouched."""
-        if ann.get("bbox") is not None and ann.get("segmentation"):
-            ann["bbox"] = calculate_bbox(ann["segmentation"])
+    _sync_bbox_key = staticmethod(edit_gestures.sync_bbox_key)
 
     def _begin_shape_edit(self, live, mode, handle, pos):
-        """Arm a resize/move of one selected shape. `kind` picks the geometry
-        the handles drive: a polygon ("seg") scales/translates its vertices, a
-        box-only annotation ("bbox") edits [x, y, w, h]. orig_bbox is the AABB
-        used as the resize reference for both."""
-        bb = self._annotation_bbox(live)
-        if live.get("segmentation"):
-            kind = "seg"
-        elif live.get("keypoints"):
-            kind = "kpt"  # the box transforms the whole pose instance (#35)
-        else:
-            kind = "bbox"
-        # Capture the pre-gesture state for undo now: the drag mutates the
-        # annotation in place, so the controller can't snapshot a clean
-        # "before" at commit time (ADR-026).
-        self.editBaselineRequested.emit()
-        self.bbox_edit = {
-            "annotation": live,
-            "mode": mode,
-            "handle": handle,
-            "kind": kind,
-            "orig_bbox": [bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1]],
-            "orig_seg": list(live["segmentation"]) if kind == "seg" else None,
-            "orig_kpts": list(live["keypoints"]) if kind == "kpt" else None,
-            "start_pos": pos,
-            "moved": False,
-        }
+        return self._gestures._begin_shape_edit(live, mode, handle, pos)
 
     def _update_select_cursor(self, pos):
-        """Hover feedback in select mode: resize cursors over a selected shape's
-        handles, a move cursor over its interior, arrow otherwise."""
-        shape = self._single_selected_shape()
-        if shape is not None:
-            if self._keypoint_at(shape, pos) is not None:
-                # Over a draggable keypoint of the selected pose instance (#35).
-                self.setCursor(Qt.CursorShape.PointingHandCursor)
-                return
-            handle = self._bbox_handle_at(shape, pos)
-            if handle is not None:
-                self.setCursor(self._BBOX_HANDLE_CURSORS[handle])
-                return
-            if self._annotation_contains(shape, pos):
-                self.setCursor(Qt.CursorShape.SizeAllCursor)
-                return
-        self.setCursor(Qt.CursorShape.ArrowCursor)
+        return self._gestures._update_select_cursor(pos)
 
     def _update_bbox_drag(self, pos):
-        """Advance an in-progress shape resize/move, mutating the annotation's
-        geometry in place so the canvas + selection overlay redraw live."""
-        edit = self.bbox_edit
-        if edit is None:
-            return
-        if edit["mode"] == "pending_move":
-            # Promote to a real move only once the drag clears the click
-            # threshold, so a plain click still falls through to selection
-            # (e.g. picking a smaller mask nested in the shape).
-            threshold = 3.0 / max(self.zoom_factor, 1e-6)
-            if self.distance(pos, edit["start_pos"]) < threshold:
-                return
-            edit["mode"] = "move"
-        ann = edit["annotation"]
-        if edit["mode"] == "resize":
-            new_box = self._resize_bbox(edit["orig_bbox"], edit["handle"], pos)
-            if edit["kind"] == "seg":
-                ox, oy, ow, oh = edit["orig_bbox"]
-                nx, ny, nw, nh = new_box
-                ann["segmentation"] = self._scale_segmentation(
-                    edit["orig_seg"], (ox, oy, ox + ow, oy + oh),
-                    (nx, ny, nx + nw, ny + nh),
-                )
-                self._sync_bbox_key(ann)
-            elif edit["kind"] == "kpt":
-                ox, oy, ow, oh = edit["orig_bbox"]
-                nx, ny, nw, nh = new_box
-                ann["keypoints"] = self._scale_keypoints(
-                    edit["orig_kpts"], (ox, oy, ox + ow, oy + oh),
-                    (nx, ny, nx + nw, ny + nh),
-                )
-                ann["bbox"] = new_box
-            else:
-                ann["bbox"] = new_box
-            edit["moved"] = True
-        elif edit["mode"] == "move":
-            dx, dy = pos[0] - edit["start_pos"][0], pos[1] - edit["start_pos"][1]
-            if edit["kind"] == "seg":
-                ann["segmentation"] = self._translate_segmentation(
-                    edit["orig_seg"], dx, dy
-                )
-                self._sync_bbox_key(ann)
-            elif edit["kind"] == "kpt":
-                ann["keypoints"] = self._translate_keypoints(
-                    edit["orig_kpts"], dx, dy
-                )
-                x, y, w, h = edit["orig_bbox"]
-                ann["bbox"] = [x + dx, y + dy, w, h]
-            else:
-                x, y, w, h = edit["orig_bbox"]
-                ann["bbox"] = [x + dx, y + dy, w, h]
-            edit["moved"] = True
+        return self._gestures._update_bbox_drag(pos)
 
     def _clamp_edited_shape(self, ann, edit, width, height):
-        """Clamp a just-edited shape into the image. A move slides the intact
-        shape back inside (size/shape preserving); a resize trims to the border.
-        clamp_segmentation is the final safety net guaranteeing the bounds even
-        for an oversized shape that a translate can't fully fit."""
-        if edit["kind"] == "seg":
-            seg = ann["segmentation"]
-            if edit["mode"] == "move":
-                bb = self._annotation_bbox(ann)
-                fitted = fit_bbox_inside(
-                    [bb[0], bb[1], bb[2] - bb[0], bb[3] - bb[1]], width, height
-                )
-                seg = self._translate_segmentation(
-                    seg, fitted[0] - bb[0], fitted[1] - bb[1]
-                )
-            ann["segmentation"] = clamp_segmentation(seg, width, height)
-            self._sync_bbox_key(ann)
-            # The polygon was reshaped — its old dense "raw" (issue #24) no
-            # longer describes it, so a later Detail %=100 must not revert this
-            # edit. Reset the simplification baseline to the edited geometry.
-            if ann.get("segmentation_raw"):
-                ann.pop("segmentation_raw", None)
-                ann["detail_pct"] = 100
-        elif edit["kind"] == "kpt":
-            # Slide the intact pose back inside on a move, then clamp points +
-            # box to the border as the final safety net (ADR-024). (#35)
-            if edit["mode"] == "move":
-                fitted = fit_bbox_inside(ann["bbox"], width, height)
-                dx, dy = fitted[0] - ann["bbox"][0], fitted[1] - ann["bbox"][1]
-                ann["keypoints"] = self._translate_keypoints(ann["keypoints"], dx, dy)
-                ann["bbox"] = fitted
-            ann["keypoints"] = clamp_keypoints(ann["keypoints"], width, height)
-            ann["bbox"] = clamp_bbox(ann["bbox"], width, height)
-        elif edit["mode"] == "move":
-            ann["bbox"] = fit_bbox_inside(ann["bbox"], width, height)
-        else:
-            ann["bbox"] = clamp_bbox(ann["bbox"], width, height)
+        return self._gestures._clamp_edited_shape(ann, edit, width, height)
 
     def _commit_bbox_drag(self, pos, event):
-        """Finish a shape drag: clamp into the image and persist if it actually
-        moved; otherwise treat the press as a plain click → select."""
-        edit = self.bbox_edit
-        self.bbox_edit = None
-        if edit is None:
-            return
-        if edit["moved"]:
-            ann = edit["annotation"]
-            if self.original_pixmap is not None:
-                self._clamp_edited_shape(
-                    ann, edit, self.original_pixmap.width(),
-                    self.original_pixmap.height(),
-                )
-            # Point the selection at the live, mutated object so the controller
-            # can re-select it by value-equality after the list rebuild. A no-op
-            # for a canvas-click selection (already the live object); the real
-            # work is replacing a stale list-selection copy.
-            self.highlighted_annotations = [ann]
-            self.bboxEditCommitted.emit()
-        else:
-            # No drag happened — behave exactly like an idle click so
-            # nested-mask click-through keeps working.
-            self.selection_origin = edit["start_pos"]
-            self.selecting = False
-            self.selection_rect = None
-            self._finish_selection(pos, event)
+        return self._gestures._commit_bbox_drag(pos, event)
 
     def _cancel_bbox_drag(self):
-        """Escape during a shape drag: restore the original geometry, drop it."""
-        edit = self.bbox_edit
-        self.bbox_edit = None
-        if edit is not None:
-            ann = edit["annotation"]
-            if edit["kind"] == "seg":
-                ann["segmentation"] = list(edit["orig_seg"])
-                self._sync_bbox_key(ann)
-            elif edit["kind"] == "kpt":
-                ann["keypoints"] = list(edit["orig_kpts"])
-                x, y, w, h = edit["orig_bbox"]
-                ann["bbox"] = [x, y, w, h]
-            else:
-                x, y, w, h = edit["orig_bbox"]
-                ann["bbox"] = [x, y, w, h]
-        self.update()
+        return self._gestures._cancel_bbox_drag()
 
     # --- Single-keypoint editing for a selected pose instance (#35) ---
 
     def _keypoint_at(self, annotation, pos):
-        """Index of the labelled (v>0) keypoint under pos, or None. Generous,
-        zoom-compensated grab radius so individual points stay easy to grab."""
-        if annotation is None:
-            return None
-        kps = annotation.get("keypoints")
-        if not kps:
-            return None
-        radius = 8 * self.ui_scale / max(self.zoom_factor, 1e-6)
-        best, best_d = None, None
-        for i, (x, y, v) in enumerate(zip(kps[0::3], kps[1::3], kps[2::3])):
-            if v <= 0:
-                continue
-            d = self.distance(pos, (x, y))
-            if d <= radius and (best is None or d < best_d):
-                best, best_d = i, d
-        return best
+        return self._gestures._keypoint_at(annotation, pos)
 
     def _begin_keypoint_edit(self, live, index, pos):
-        """Arm a single-point drag; capture the undo baseline now (ADR-026)."""
-        kps = live.get("keypoints") or []
-        self.editBaselineRequested.emit()
-        self.editing_keypoint = {
-            "annotation": live,
-            "index": index,
-            "orig": (kps[3 * index], kps[3 * index + 1]),
-            "moved": False,
-        }
+        return self._gestures._begin_keypoint_edit(live, index, pos)
 
     def _update_keypoint_drag(self, pos):
-        edit = self.editing_keypoint
-        if edit is None:
-            return
-        ann = edit["annotation"]
-        i = edit["index"]
-        ann["keypoints"][3 * i] = pos[0]
-        ann["keypoints"][3 * i + 1] = pos[1]
-        edit["moved"] = True
+        return self._gestures._update_keypoint_drag(pos)
 
     def _commit_keypoint_drag(self, pos, event):
-        edit = self.editing_keypoint
-        self.editing_keypoint = None
-        if edit is None:
-            return
-        if edit["moved"]:
-            ann = edit["annotation"]
-            if self.original_pixmap is not None:
-                ann["keypoints"] = clamp_keypoints(
-                    ann["keypoints"],
-                    self.original_pixmap.width(),
-                    self.original_pixmap.height(),
-                )
-            self.highlighted_annotations = [ann]
-            self.keypointEditCommitted.emit()  # save + push undo baseline
-        self.update()
+        return self._gestures._commit_keypoint_drag(pos, event)
 
     def _cancel_keypoint_drag(self):
-        edit = self.editing_keypoint
-        self.editing_keypoint = None
-        if edit is not None:
-            ann = edit["annotation"]
-            i = edit["index"]
-            ann["keypoints"][3 * i] = edit["orig"][0]
-            ann["keypoints"][3 * i + 1] = edit["orig"][1]
-        self.update()
+        return self._gestures._cancel_keypoint_drag()
 
     def _toggle_keypoint_visibility(self, live, index):
-        """Right-click a committed point: toggle visible(2) <-> occluded(1),
-        keeping its position. Padded not-labelled points (v=0) are left as-is."""
-        kps = live.get("keypoints")
-        if not kps:
-            return
-        v = kps[3 * index + 2]
-        if v <= 0:
-            return
-        self.editBaselineRequested.emit()
-        kps[3 * index + 2] = 1 if v == 2 else 2
-        # Point the selection at the live, mutated object (mirrors
-        # _commit_keypoint_drag / _commit_bbox_drag) so a list-selected
-        # (UserRole copy) instance doesn't go stale after the list rebuild.
-        self.highlighted_annotations = [live]
-        self.keypointEditCommitted.emit()
-        self.update()
+        return self._gestures._toggle_keypoint_visibility(live, index)
 
     def start_polygon_edit(self, pos):
         # Among all polygons containing the click, edit the smallest by

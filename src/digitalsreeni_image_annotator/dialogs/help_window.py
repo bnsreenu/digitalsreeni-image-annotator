@@ -1,5 +1,4 @@
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser
-from PyQt6.QtCore import Qt
 from ..ui.soft_dark_stylesheet import soft_dark_stylesheet
 from ..ui.default_stylesheet import default_stylesheet
 
@@ -65,7 +64,7 @@ class HelpWindow(QDialog):
         <h3>Starting a New Project</h3>
         <ol>
             <li>Click "New Project" or use Ctrl+N to start a new project.</li>
-            <li>Click "Add New Images" to import multiple images you want to annotate, including TIFF stacks and CZI files.</li>
+            <li>Click "Add Images / Videos" to import images (including TIFF stacks and CZI files) or videos (MP4/AVI/MOV).</li>
             <li>For multi-dimensional images, you'll be prompted to assign dimensions (e.g., T for time, Z for depth, C for channels).</li>
             <li>Use "Add Classes" to define classes of interest.</li>
             <li>Start annotating by selecting a class and using the Polygon, Rectangle Tool, or SAM-Assisted tool.</li>

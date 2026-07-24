@@ -11,6 +11,11 @@ from PyQt6.QtCore import Qt
 
 from ..utils import clip_polygon_to_bounds
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
 class ImageAugmenterDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -217,7 +222,7 @@ class ImageAugmenterDialog(QDialog):
             image = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
             
             if image is None:
-                print(f"Error loading image: {input_path}")
+                logger.warning(f"Error loading image: {input_path}")
                 continue
     
             # Determine image type and bit depth
@@ -268,8 +273,8 @@ class ImageAugmenterDialog(QDialog):
                     self.progress_bar.setValue(i * self.aug_count_spin.value() + j + 1)
                     QApplication.processEvents()
     
-                except Exception as e:
-                    print(f"Error processing {image_file} (augmentation {j+1}): {str(e)}")
+                except Exception:
+                    logger.exception(f"Error processing {image_file} (augmentation {j+1})")
                     continue  # Skip this augmentation and continue with the next
     
         if self.coco_check.isChecked():

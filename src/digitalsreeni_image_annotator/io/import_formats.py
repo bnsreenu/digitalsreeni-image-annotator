@@ -10,6 +10,10 @@ from PyQt6.QtWidgets import QMessageBox
 from ..core.keypoint_schema import sanitize_schema
 from ..utils import keypoint_instance_bbox
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def import_coco_json(file_path, class_mapping):
     try:
@@ -52,14 +56,14 @@ def import_coco_json(file_path, class_mapping):
             if schema is not None:
                 keypoint_schemas[cat['name']] = schema
             else:
-                print(f"Warning: Skipped malformed keypoint schema for COCO category '{cat.get('name')}'")
+                logger.warning(f"Skipped malformed keypoint schema for COCO category '{cat.get('name')}'")
 
         # Determine the image directory
         json_dir = os.path.dirname(file_path)
         images_dir = os.path.join(json_dir, 'images')
         
         if not os.path.exists(images_dir):
-            print(f"Warning: 'images' subdirectory not found at {images_dir}")
+            logger.warning(f"'images' subdirectory not found at {images_dir}")
 
         # Process images
         for image in coco_data['images']:
@@ -74,8 +78,8 @@ def import_coco_json(file_path, class_mapping):
                     'path': image_path,
                     'id': int(image['id'])
                 }
-            except KeyError as e:
-                print(f"Warning: Missing required field in image data: {e}")
+            except KeyError:
+                logger.exception("Missing required field in image data")
                 continue
 
         # Process annotations
@@ -84,11 +88,11 @@ def import_coco_json(file_path, class_mapping):
             try:
                 image_id = int(ann['image_id'])
                 if image_id not in image_info:
-                    print(f"Warning: Annotation refers to non-existent image ID: {image_id}")
+                    logger.warning(f"Annotation refers to non-existent image ID: {image_id}")
                     continue
 
                 if ann['category_id'] not in category_id_to_name:
-                    print(f"Warning: Invalid category ID: {ann['category_id']}")
+                    logger.warning(f"Invalid category ID: {ann['category_id']}")
                     continue
 
                 file_name = image_info[image_id]['file_name']
@@ -163,13 +167,13 @@ def import_coco_json(file_path, class_mapping):
 
                 imported_annotations[file_name][category_name].append(annotation)
                 
-            except (KeyError, ValueError, TypeError) as e:
-                print(f"Warning: Error processing annotation: {e}")
+            except (KeyError, ValueError, TypeError):
+                logger.exception("Error processing annotation")
                 continue
 
         if masks_dropped_for_keypoints:
-            print(
-                f"Note: {masks_dropped_for_keypoints} annotation(s) carried both "
+            logger.info(
+                f"{masks_dropped_for_keypoints} annotation(s) carried both "
                 f"'keypoints' and a 'segmentation' -- imported as keypoints-only, "
                 f"source mask(s) dropped (issue #35 PR-2)."
             )
@@ -253,7 +257,7 @@ def import_yolo_v4(yaml_file_path, class_mapping):
                 if len(parts) >= 5:
                     class_id = int(parts[0])
                     if class_id >= len(class_names):
-                        print(f"Warning: Class ID {class_id} in {label_file} is out of range. Skipping this annotation.")
+                        logger.warning(f"Class ID {class_id} in {label_file} is out of range. Skipping this annotation.")
                         continue
                     class_name = class_names[class_id]
                     
@@ -358,7 +362,7 @@ def import_yolo_v5plus(yaml_file_path, class_mapping):
         labels_dir = os.path.join(root_dir, 'labels', split)
         
         if not os.path.exists(images_dir) or not os.path.exists(labels_dir):
-            print(f"Warning: {split} directory not found, skipping")
+            logger.warning(f"{split} directory not found, skipping")
             continue
         
         for label_file in os.listdir(labels_dir):
@@ -377,7 +381,7 @@ def import_yolo_v5plus(yaml_file_path, class_mapping):
                         break
                 
                 if img_path is None:
-                    print(f"Warning: No image found for label {label_file}")
+                    logger.warning(f"No image found for label {label_file}")
                     continue
                 
                 with Image.open(img_path) as img:
@@ -403,7 +407,7 @@ def import_yolo_v5plus(yaml_file_path, class_mapping):
                     if len(parts) >= 5:
                         class_id = int(parts[0])
                         if class_id >= len(class_names):
-                            print(f"Warning: Class ID {class_id} in {label_file} is out of range")
+                            logger.warning(f"Class ID {class_id} in {label_file} is out of range")
                             continue
                         class_name = class_names[class_id]
                         

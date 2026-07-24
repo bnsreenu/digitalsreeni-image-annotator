@@ -18,6 +18,10 @@ from PyQt6.QtGui import QImage
 from .sam_trainer import SampleGroup
 from ..inference.sam_utils import _qimage_to_numpy
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def _specs_for(annotations) -> list:
     """Flatten ``{class: [ann, ...]}`` into raw instance specs the
@@ -54,7 +58,7 @@ def build_groups_from_project(all_annotations, image_paths, slices, image_slices
                     if qimage is not None:
                         break
             if qimage is None:
-                print(f"[SAM dataset] skip slice {image_name!r}: no image data")
+                logger.warning(f"skip slice {image_name!r}: no image data")
                 continue
             # Convert the in-memory slice QImage to numpy HERE, on the GUI
             # thread. The array is later consumed by the training worker
@@ -72,10 +76,10 @@ def build_groups_from_project(all_annotations, image_paths, slices, image_slices
                 (p for name, p in image_paths.items() if image_name in name), None
             )
         if not image_path:
-            print(f"[SAM dataset] skip {image_name!r}: no image_paths entry")
+            logger.warning(f"skip {image_name!r}: no image_paths entry")
             continue
         if image_path.lower().endswith((".tif", ".tiff", ".czi")):
-            print(f"[SAM dataset] skip TIFF/CZI source {image_name!r} (use slices)")
+            logger.debug(f"skip TIFF/CZI source {image_name!r} (use slices)")
             continue
         groups.append(SampleGroup(lambda p=image_path: _qimage_to_numpy(QImage(p)), specs, name=image_name))
 
