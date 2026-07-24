@@ -15,13 +15,20 @@ import json
 import os
 import shutil
 from datetime import datetime
+from pathlib import PurePath
 
 from PyQt6.QtCore import QObject
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
-from ..core import image_utils
+from ..core import image_utils, recovery
 from ..core.keypoint_schema import sanitize_schema as _sanitize_keypoint_schema
+from ..core.project_schema import validate_project_data
+from ..core.slice_cache import release_slices, slice_names
+
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class ProjectController(QObject):
@@ -70,12 +77,12 @@ class ProjectController(QObject):
             self.update_window_title()
 
     def open_project(self):
-        print("open_project method called")
+        logger.debug("open_project method called")
         self.mw.remove_all_temp_annotations()
         project_file, _ = QFileDialog.getOpenFileName(
             self.mw, "Open Project", "", "Image Annotator Project (*.iap)"
         )
-        print(f"Selected project file: {project_file}")
+        logger.debug(f"Selected project file: {project_file}")
         if project_file:
             try:
                 self.backup_project_before_open(project_file)
@@ -89,7 +96,7 @@ class ProjectController(QObject):
                     f"The project file has been restored from backup.",
                 )
         else:
-            print("No project file selected")
+            logger.debug("No project file selected")
 
     def backup_project_before_open(self, project_file):
         """Create a backup of the project file before opening it."""
@@ -107,18 +114,24 @@ class ProjectController(QObject):
         if self.mw.backup_project_path and os.path.exists(self.mw.backup_project_path):
             try:
                 shutil.copy2(self.mw.backup_project_path, self.mw.current_project_file)
-                print(f"Project restored from backup: {self.mw.backup_project_path}")
-            except Exception as e:
-                print(f"Failed to restore from backup: {str(e)}")
+                logger.info(f"Project restored from backup: {self.mw.backup_project_path}")
+            except Exception:
+                logger.exception("Failed to restore from backup")
 
     def open_specific_project(self, project_file):
-        print(f"Opening specific project: {project_file}")
+        logger.debug(f"Opening specific project: {project_file}")
         if os.path.exists(project_file):
             try:
                 self.mw.is_loading_project = True
 
                 with open(project_file, "r", encoding='utf-8') as f:
                     project_data = json.load(f)
+
+                problems = validate_project_data(project_data)
+                if problems:
+                    raise ValueError(
+                        "This project file is not valid:\n- " + "\n- ".join(problems)
+                    )
 
                 self.mw.clear_all(show_messages=False)
                 self.mw.current_project_file = project_file
@@ -150,13 +163,13 @@ class ProjectController(QObject):
                 # No success dialog — the loaded canvas + updated window title
                 # already make a successful open obvious; a modal just adds a
                 # click. Errors below still surface as dialogs.
-                print(f"Project opened successfully: {project_file}")
+                logger.info(f"Project opened successfully: {project_file}")
 
             except Exception as e:
                 self.mw.is_loading_project = False
                 raise e
         else:
-            print(f"Project file not found: {project_file}")
+            logger.warning(f"Project file not found: {project_file}")
             QMessageBox.critical(
                 self.mw, "Error", f"Project file not found: {project_file}"
             )
@@ -175,8 +188,8 @@ class ProjectController(QObject):
             if schema is not None:
                 self.mw.keypoint_schemas[class_info["name"]] = schema
             elif class_info.get("keypoint_schema") is not None:
-                print(f"  Skipped malformed keypoint schema for class "
-                      f"'{class_info['name']}'.")
+                logger.warning(f"Skipped malformed keypoint schema for class "
+                               f"'{class_info['name']}'.")
 
         self.mw.all_images = project_data.get("images", [])
         self.mw.image_paths = project_data.get("image_paths", {})
@@ -193,22 +206,31 @@ class ProjectController(QObject):
 
         missing_images = []
         for image_info in project_data["images"]:
-            image_path = os.path.join(
-                self.mw.current_project_dir, "images", image_info["file_name"]
-            )
+            image_path = self.resolve_image_path(image_info["file_name"], project_data)
 
-            if not os.path.exists(image_path):
+            if image_path is None:
                 missing_images.append(image_info["file_name"])
                 continue
 
             self.mw.image_paths[image_info["file_name"]] = image_path
 
             if image_info.get("is_multi_slice", False):
-                dimensions = image_info.get("dimensions", [])
-                shape = image_info.get("shape", [])
-                self.mw.load_multi_slice_image(image_path, dimensions, shape)
+                if image_info.get("is_video"):
+                    # A missing video already flowed through resolve_image_path
+                    # → missing_images above, so image_path exists here (#47).
+                    self.mw.image_controller.load_video(image_path)
+                else:
+                    dimensions = image_info.get("dimensions", [])
+                    shape = image_info.get("shape", [])
+                    self.mw.load_multi_slice_image(image_path, dimensions, shape)
             else:
                 self.mw.add_images_to_list([image_path])
+
+        # Per-image group tags (issue #43) need no restoration step: line ~193
+        # aliases self.mw.all_images to project_data["images"], and the load
+        # loop above does not rebuild it (add_images_to_list no-ops because
+        # image_paths[file_name] is set first, and load_multi_slice_image only
+        # loads slices), so the "group" keys parsed from JSON survive as-is.
 
         dino_cfg = project_data.get("dino_config", {})
         valid_classes = set(self.mw.class_mapping.keys())
@@ -217,8 +239,8 @@ class ProjectController(QObject):
         if phrases:
             kept = {k: v for k, v in phrases.items() if k in valid_classes}
             for orphan in phrases.keys() - kept.keys():
-                print(f"  Skipped saved DINO phrases for unknown class "
-                      f"'{orphan}' — class is not in the current project.")
+                logger.warning(f"Skipped saved DINO phrases for unknown class "
+                               f"'{orphan}' — class is not in the current project.")
             self.mw.dino_phrase_panel.set_phrases(kept)
 
         for cls_name, thr in dino_cfg.get("thresholds", {}).items():
@@ -229,8 +251,8 @@ class ProjectController(QObject):
                 thr.get("nms", 0.50),
             )
             if not ok:
-                print(f"  Skipped saved DINO thresholds for unknown class "
-                      f"'{cls_name}' — class is not in the current project.")
+                logger.warning(f"Skipped saved DINO thresholds for unknown class "
+                               f"'{cls_name}' — class is not in the current project.")
 
         self.mw.update_ui()
 
@@ -246,6 +268,36 @@ class ProjectController(QObject):
         if self.mw.class_list.count() > 0:
             self.mw.class_list.setCurrentRow(0)
             self.mw.on_class_selected()
+
+    def resolve_image_path(self, file_name, project_data):
+        """Resolve a stored image reference to an existing absolute path (#42).
+
+        Tries, in order, the first that exists on disk:
+          1. the project-relative path (portable across machines/OSes);
+          2. the stored absolute path (covers images referenced outside the
+             project's ``images/`` dir — previously dead data on load);
+          3. the historical ``<project_dir>/images/<file_name>`` convention
+             (so v1 projects with neither key resolve exactly as before).
+        Returns None when none exist — the caller reports it as missing.
+        """
+        project_dir = getattr(self.mw, "current_project_dir", None)
+
+        rel = (project_data.get("image_paths_rel") or {}).get(file_name)
+        if rel and project_dir:
+            candidate = os.path.normpath(os.path.join(project_dir, rel))
+            if os.path.exists(candidate):
+                return candidate
+
+        abs_path = (project_data.get("image_paths") or {}).get(file_name)
+        if abs_path and os.path.exists(abs_path):
+            return abs_path
+
+        if project_dir:
+            candidate = os.path.join(project_dir, "images", file_name)
+            if os.path.exists(candidate):
+                return candidate
+
+        return None
 
     def handle_missing_images(self, missing_images):
         message = "The following images have annotations but were not found in the project directory:\n\n"
@@ -277,9 +329,21 @@ class ProjectController(QObject):
 
             base_name = os.path.splitext(image_name)[0]
             if base_name in self.mw.image_slices:
-                for slice_name, _ in self.mw.image_slices[base_name]:
+                stack_slices = self.mw.image_slices[base_name]
+                for slice_name in slice_names(stack_slices):
                     self.mw.all_annotations.pop(slice_name, None)
+                release_slices(stack_slices)  # evict cached QImages (issue #45)
                 del self.mw.image_slices[base_name]
+                # Drop live refs if this was the active stack/video, else the
+                # update_ui() below resurrects the orphaned slices (video-removal
+                # bug; mirrors remove_image / delete_selected_image).
+                if self.mw.slices is stack_slices:
+                    self.mw.slices = []
+
+            # Release the video's cv2 capture if this base is a video (#47).
+            if base_name in self.mw.video_handlers:
+                self.mw.video_handlers[base_name].release()
+                del self.mw.video_handlers[base_name]
 
         self.mw.update_ui()
         QMessageBox.information(
@@ -307,11 +371,10 @@ class ProjectController(QObject):
             self.load_missing_images(missing_images)
 
     def load_missing_images(self, missing_images):
+        from ..core.video_handler import file_dialog_filter
+
         files, _ = QFileDialog.getOpenFileNames(
-            self.mw,
-            "Select Missing Images",
-            "",
-            "Image Files (*.png *.jpg *.bmp *.tif *.tiff *.czi)",
+            self.mw, "Select Missing Images or Videos", "", file_dialog_filter()
         )
         if files:
             images_loaded = 0
@@ -388,6 +451,123 @@ class ProjectController(QObject):
 
         self.update_window_title()
 
+    def build_project_data(self):
+        """Assemble the full project dict for serialization.
+
+        Pure data-building only: no dialogs, no file I/O, no image copying — so
+        it can be reused by both save_project() and the silent unsaved-project
+        recovery writer (issue #41). For a saved project the output matches the
+        previous inline block, plus the portable ``image_paths_rel`` key (#42).
+        """
+        images_data = []
+        for image_info in self.mw.all_images:
+            file_name = image_info["file_name"]
+            image_data = {
+                "file_name": file_name,
+                "width": image_info["width"],
+                "height": image_info["height"],
+                "is_multi_slice": image_info["is_multi_slice"],
+            }
+            # Persist the optional group tag (issue #43); absent for
+            # ungrouped images so old projects are unchanged.
+            if image_info.get("group"):
+                image_data["group"] = image_info["group"]
+
+            if image_data["is_multi_slice"]:
+                base_name_without_ext = os.path.splitext(file_name)[0]
+                image_data["slices"] = []
+                # Name-only (slice_names) — saving a project must not decode a
+                # single slice's pixels (issue #45); it also accepts a plain
+                # list or an absent/None entry.
+                for slice_name in slice_names(
+                    self.mw.image_slices.get(base_name_without_ext)
+                ):
+                    slice_data = {
+                        "name": slice_name,
+                        "annotations": image_utils.convert_to_serializable(
+                            self.mw.all_annotations.get(slice_name, {})
+                        ),
+                    }
+                    image_data["slices"].append(slice_data)
+
+                image_data["dimensions"] = image_utils.convert_to_serializable(
+                    self.mw.image_dimensions.get(base_name_without_ext, [])
+                )
+                image_data["shape"] = image_utils.convert_to_serializable(
+                    self.mw.image_shapes.get(base_name_without_ext, [])
+                )
+                # Videos carry no dimensions/shape but need their metadata so
+                # a reload knows to re-open them via load_video (issue #47).
+                # Slice entries (name + annotations) serialize unchanged — the
+                # LazySliceList persists names only, no pixels (issue #45).
+                if image_info.get("is_video"):
+                    image_data["is_video"] = True
+                    image_data["video_metadata"] = image_info.get("video_metadata")
+            else:
+                image_data["annotations"] = {}
+                for class_name, annotations in self.mw.all_annotations.get(
+                    file_name, {}
+                ).items():
+                    image_data["annotations"][class_name] = [
+                        ann.copy() for ann in annotations
+                    ]
+
+            images_data.append(image_data)
+
+        project_data = {
+            "classes": [
+                {
+                    "name": name,
+                    "color": color.name(),
+                    # Pose classes carry their keypoint schema inline (issue #35);
+                    # normal classes add nothing, so old projects are unchanged.
+                    **(
+                        {"keypoint_schema": self.mw.keypoint_schemas[name]}
+                        if name in self.mw.keypoint_schemas
+                        else {}
+                    ),
+                }
+                for name, color in self.mw.image_label.class_colors.items()
+            ],
+            "images": images_data,
+            "image_paths": {
+                k: v for k, v in self.mw.image_paths.items() if os.path.exists(v)
+            },
+            "notes": getattr(self.mw, "project_notes", ""),
+            "creation_date": getattr(
+                self.mw, "project_creation_date", datetime.now().isoformat()
+            ),
+            "last_modified": datetime.now().isoformat(),
+        }
+
+        # Portable, project-relative image paths alongside the absolutes (#42).
+        # Only when a project dir exists — recovery snapshots for an unsaved
+        # project have none and rely on the absolute paths (restore is
+        # same-machine). The absolute entries stay so older app versions still
+        # open the file; resolve_image_path() prefers the relative ones on load.
+        project_dir = getattr(self.mw, "current_project_dir", None)
+        if project_dir:
+            rel = {}
+            for file_name, abs_path in project_data["image_paths"].items():
+                try:
+                    rel[file_name] = PurePath(
+                        os.path.relpath(abs_path, project_dir)
+                    ).as_posix()
+                except ValueError:
+                    # Different drive (Windows): no relative path exists; the
+                    # absolute entry remains the fallback.
+                    pass
+            project_data["image_paths_rel"] = rel
+
+        dino_cfg = {
+            "phrases": self.mw.dino_phrase_panel.get_all_phrases(),
+            "thresholds": self.mw.dino_class_table.get_thresholds_dict(),
+        }
+        if dino_cfg["phrases"] or dino_cfg["thresholds"]:
+            project_data["dino_config"] = dino_cfg
+
+        return project_data
+
     def save_project(self, show_message=True):
         if not hasattr(self.mw, "current_project_file") or not self.mw.current_project_file:
             self.mw.current_project_file, _ = QFileDialog.getSaveFileName(
@@ -437,77 +617,7 @@ class ProjectController(QObject):
                 )
                 return
 
-        images_data = []
-        for image_info in self.mw.all_images:
-            file_name = image_info["file_name"]
-            image_data = {
-                "file_name": file_name,
-                "width": image_info["width"],
-                "height": image_info["height"],
-                "is_multi_slice": image_info["is_multi_slice"],
-            }
-
-            if image_data["is_multi_slice"]:
-                base_name_without_ext = os.path.splitext(file_name)[0]
-                image_data["slices"] = []
-                for slice_name, _ in self.mw.image_slices.get(base_name_without_ext, []):
-                    slice_data = {
-                        "name": slice_name,
-                        "annotations": image_utils.convert_to_serializable(
-                            self.mw.all_annotations.get(slice_name, {})
-                        ),
-                    }
-                    image_data["slices"].append(slice_data)
-
-                image_data["dimensions"] = image_utils.convert_to_serializable(
-                    self.mw.image_dimensions.get(base_name_without_ext, [])
-                )
-                image_data["shape"] = image_utils.convert_to_serializable(
-                    self.mw.image_shapes.get(base_name_without_ext, [])
-                )
-            else:
-                image_data["annotations"] = {}
-                for class_name, annotations in self.mw.all_annotations.get(
-                    file_name, {}
-                ).items():
-                    image_data["annotations"][class_name] = [
-                        ann.copy() for ann in annotations
-                    ]
-
-            images_data.append(image_data)
-
-        project_data = {
-            "classes": [
-                {
-                    "name": name,
-                    "color": color.name(),
-                    # Pose classes carry their keypoint schema inline (issue #35);
-                    # normal classes add nothing, so old projects are unchanged.
-                    **(
-                        {"keypoint_schema": self.mw.keypoint_schemas[name]}
-                        if name in self.mw.keypoint_schemas
-                        else {}
-                    ),
-                }
-                for name, color in self.mw.image_label.class_colors.items()
-            ],
-            "images": images_data,
-            "image_paths": {
-                k: v for k, v in self.mw.image_paths.items() if os.path.exists(v)
-            },
-            "notes": getattr(self.mw, "project_notes", ""),
-            "creation_date": getattr(
-                self.mw, "project_creation_date", datetime.now().isoformat()
-            ),
-            "last_modified": datetime.now().isoformat(),
-        }
-
-        dino_cfg = {
-            "phrases": self.mw.dino_phrase_panel.get_all_phrases(),
-            "thresholds": self.mw.dino_class_table.get_thresholds_dict(),
-        }
-        if dino_cfg["phrases"] or dino_cfg["thresholds"]:
-            project_data["dino_config"] = dino_cfg
+        project_data = self.build_project_data()
 
         with open(self.mw.current_project_file, "w", encoding='utf-8') as f:
             json.dump(image_utils.convert_to_serializable(project_data), f, indent=2)
@@ -516,6 +626,11 @@ class ProjectController(QObject):
             self.mw.show_info(
                 "Project Saved", f"Project saved to {self.mw.current_project_file}"
             )
+
+        # The project now has a real `.iap`; drop any unsaved-project recovery
+        # snapshot so a stale one is never offered on next launch (issue #41).
+        # Covers new_project() too, which saves immediately after creation.
+        recovery.clear_recovery()
 
         self.update_window_title()
 
@@ -549,19 +664,88 @@ class ProjectController(QObject):
         if self.mw.is_loading_project:
             return
 
-        if not hasattr(self.mw, "current_project_file"):
-            reply = QMessageBox.question(
-                self.mw,
-                "No Project",
-                "You need to save the project before auto-saving. Would you like to save now?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.save_project()
-            else:
+        if not getattr(self.mw, "current_project_file", None):
+            # No project file yet. NEVER pop a dialog here — auto_save fires from
+            # deep inside mutation handlers, and a modal there re-enters the event
+            # loop mid-edit. Instead write a silent recovery snapshot the app
+            # offers to restore on next launch (issue #41). Skip a trivially empty
+            # session so a fresh launch never creates a recovery file.
+            if self._project_is_trivially_empty():
                 return
+            try:
+                recovery.write_recovery(self.build_project_data())
+            except Exception:
+                logger.exception("Failed to write unsaved-project recovery snapshot.")
+            return
 
-        if hasattr(self.mw, "current_project_file"):
-            self.save_project(show_message=False)
-            print("Project auto-saved.")
+        self.save_project(show_message=False)
+        logger.info("Project auto-saved.")
+
+    def _project_is_trivially_empty(self):
+        """True when nothing worth recovering has been done yet (#41)."""
+        return (
+            not self.mw.all_images
+            and not self.mw.image_label.class_colors
+            and not any(self.mw.all_annotations.values())
+            and not self.mw.dino_phrase_panel.get_all_phrases()
+            and not self.mw.dino_class_table.get_thresholds_dict()
+        )
+
+    def offer_recovery(self, settings=None):
+        """On launch, offer to restore an unsaved-project recovery snapshot (#41).
+
+        Fired from ``main()`` after the window is shown — never from the
+        constructor, so tests that build ``ImageAnnotator()`` don't trigger it.
+        On accept, the snapshot loads through the normal ``load_project_data``
+        path but ``current_project_file`` is left unset, so the user still does a
+        first real save (and continued edits keep writing fresh snapshots).
+        """
+        path = recovery.pending_recovery(settings)
+        if not path:
+            return
+        try:
+            mtime = datetime.fromtimestamp(os.path.getmtime(path)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        except OSError:
+            mtime = "an earlier session"
+        reply = QMessageBox.question(
+            self.mw,
+            "Restore Unsaved Work",
+            f"An unsaved project from a previous session was found "
+            f"(last modified {mtime}). Restore it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            recovery.clear_recovery(settings)
+            return
+
+        try:
+            self.mw.is_loading_project = True
+            with open(path, "r", encoding="utf-8") as f:
+                project_data = json.load(f)
+            problems = validate_project_data(project_data)
+            if problems:
+                raise ValueError("\n".join(problems))
+            self.mw.clear_all(show_messages=False)
+            self.load_project_data(project_data)
+        except Exception:
+            # A decode/validation failure (or a partial load) means the snapshot
+            # is unusable — drop it so it isn't re-offered on every launch, and
+            # reset to a clean empty state rather than a half-loaded one.
+            logger.exception("Failed to restore recovery snapshot.")
+            self.mw.clear_all(show_messages=False)
+            recovery.clear_recovery(settings)
+            QMessageBox.warning(
+                self.mw,
+                "Restore Failed",
+                "The unsaved-project recovery file could not be restored.",
+            )
+        finally:
+            self.mw.is_loading_project = False
+
+        # On success the snapshot is deliberately KEPT: the restored project is
+        # still unsaved (current_project_file is unset), so the first real save
+        # retires it (save_project -> clear_recovery). Keeping it until then means
+        # a re-crash before that save can still re-offer the recovered work.

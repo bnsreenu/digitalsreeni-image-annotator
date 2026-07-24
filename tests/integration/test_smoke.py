@@ -40,6 +40,7 @@ INTERNAL_MODULES = [
     "digitalsreeni_image_annotator.controllers.annotation_history",
     # Widgets
     "digitalsreeni_image_annotator.widgets.image_label",
+    "digitalsreeni_image_annotator.widgets.video_timeline",
     # Inference
     "digitalsreeni_image_annotator.inference.sam_utils",
     "digitalsreeni_image_annotator.inference.dino_utils",

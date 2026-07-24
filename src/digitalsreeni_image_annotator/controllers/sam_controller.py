@@ -21,12 +21,14 @@ ADR-013 invariants preserved verbatim:
   responsive.
 """
 
-import traceback
-
 from PyQt6.QtCore import Qt, QObject
 from PyQt6.QtWidgets import QMessageBox
 
 from ..inference.sam_utils import InferenceBusyError
+
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class SAMController(QObject):
@@ -83,7 +85,7 @@ class SAMController(QObject):
             try:
                 if self.mw.image_label.current_tool == "sam_box":
                     if self.mw.image_label.sam_bbox is None:
-                        print("SAM bbox is None")
+                        logger.debug("SAM bbox is None")
                         return
                     x1, y1, x2, y2 = self.mw.image_label.sam_bbox
                     bbox = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
@@ -94,12 +96,12 @@ class SAMController(QObject):
                 elif self.mw.image_label.current_tool == "sam_points":
                     pos_points = self.mw.image_label.sam_positive_points
                     neg_points = self.mw.image_label.sam_negative_points
-                    print(
-                        f"[SAM-POINTS] Predicting with {len(pos_points)} positive points: {pos_points} "
+                    logger.debug(
+                        f"Predicting with {len(pos_points)} positive points: {pos_points} "
                         f"and {len(neg_points)} negative points: {neg_points}"
                     )
                     if not pos_points:
-                        print("No positive points for SAM-points")
+                        logger.debug("No positive points for SAM-points")
                         return
                     prediction = self.mw.sam_utils.apply_sam_points(
                         self.mw.current_image,
@@ -116,7 +118,7 @@ class SAMController(QObject):
                 # will restart the debounce.
                 return
             except Exception as exc:
-                traceback.print_exc()
+                logger.exception("SAM inference failed")
                 QMessageBox.critical(
                     self.mw,
                     "SAM Error",
@@ -142,7 +144,7 @@ class SAMController(QObject):
                     "Try adjusting the box or point positions."
                 )
             else:
-                print("Failed to generate prediction")
+                logger.warning("Failed to generate prediction")
 
             if self.mw.image_label.current_tool == "sam_box":
                 self.mw.image_label.sam_bbox = None
@@ -164,44 +166,76 @@ class SAMController(QObject):
             self.mw.image_label.sam_positive_points = []
             self.mw.image_label.sam_negative_points = []
             self.mw.image_label.update()
-            print("SAM prediction accepted, points cleared, and added to annotations.")
+            logger.info("SAM prediction accepted, points cleared, and added to annotations.")
 
     def toggle_sam_box(self):
         # Route through the unified tool choke-point so SAM-box is mutually
         # exclusive with the manual tools and with SAM-points (F).
         if self.mw.sam_box_button.isChecked():
+            if self._pose_class_blocks_tool(self.mw.sam_box_button):
+                return
             self.mw.activate_tool("sam_box")
         else:
             self.mw.activate_tool(None)
 
     def toggle_sam_points(self):
         if self.mw.sam_points_button.isChecked():
+            if self._pose_class_blocks_tool(self.mw.sam_points_button):
+                return
             self.mw.activate_tool("sam_points")
         else:
             self.mw.activate_tool(None)
+
+    def _pose_class_blocks_tool(self, button):
+        """A pose class admits only the keypoint tool; refuse SAM on it (#44).
+
+        Unchecks the button and returns True when blocked, mirroring the
+        manual-tool guard in ImageAnnotator.toggle_tool.
+        """
+        if self.mw.current_class in self.mw.keypoint_schemas:
+            QMessageBox.warning(
+                self.mw,
+                "Pose Class",
+                f"'{self.mw.current_class}' is a pose class — only the "
+                "Keypoint tool can annotate it.",
+            )
+            button.setChecked(False)
+            return True
+        return False
 
     def change_sam_model(self, model_name):
         try:
             self.mw.sam_utils.change_sam_model(model_name)
         except Exception as e:
-            QMessageBox.critical(
-                self.mw,
-                "SAM Model Error",
-                f"Failed to load SAM model '{model_name}':\n\n{str(e)}\n\n"
-                "Check that the model weights are downloadable and that torch "
-                "is correctly installed for your platform / GPU."
-            )
+            from ..core.torch_utils import _is_oom
+            logger.exception("Failed to load SAM model '%s'", model_name)
+            if _is_oom(e):
+                QMessageBox.critical(
+                    self.mw,
+                    "Not Enough Memory",
+                    f"Not enough GPU/system memory to load '{model_name}'.\n\n"
+                    "Close other applications or pick a smaller model "
+                    "(SAM 2 tiny or small are recommended)."
+                )
+            else:
+                QMessageBox.critical(
+                    self.mw,
+                    "SAM Model Error",
+                    f"Failed to load SAM model '{model_name}':\n\n{str(e)}\n\n"
+                    "Check that the model weights are downloadable and that torch "
+                    "is correctly installed for your platform / GPU."
+                )
             self.mw.sam_model_selector.setCurrentIndex(0)
             return
 
         self.mw.current_sam_model = self.mw.sam_utils.current_sam_model
 
         if model_name != "Pick a SAM Model":
-            print(f"Changed SAM model to: {model_name}")
+            logger.info(f"Changed SAM model to: {model_name}")
             # One-time dialog if CUDA exists but the torch wheels can't
             # run it (e.g. Pascal sm_61 on torch>=2.8) — upstream #57.
             from ..core.torch_utils import maybe_warn_cpu_fallback
             maybe_warn_cpu_fallback(self.mw)
         else:
             self.deactivate_sam_tools()
-            print("SAM model unset")
+            logger.info("SAM model unset")

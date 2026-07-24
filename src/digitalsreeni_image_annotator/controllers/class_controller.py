@@ -15,8 +15,6 @@ State stays on the main window (consistent with prior phases):
 - DINO widgets (`dino_class_table`, `dino_phrase_panel`)
 """
 
-import traceback
-
 from PyQt6.QtCore import Qt, QObject
 from PyQt6.QtGui import QColor, QIcon, QPixmap
 from PyQt6.QtWidgets import (
@@ -29,6 +27,10 @@ from PyQt6.QtWidgets import (
 
 from ..core.constants import default_class_color
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class ClassController(QObject):
     def __init__(self, main_window):
@@ -40,9 +42,9 @@ class ClassController(QObject):
             item = self.mw.class_list.item(index)
             self.mw.class_list.setCurrentItem(item)
             self.mw.current_class = item.text()
-            print(f"Selected class: {self.mw.current_class}")
+            logger.debug(f"Selected class: {self.mw.current_class}")
         else:
-            print("Invalid class index")
+            logger.warning("Invalid class index")
 
     def delete_selected_class(self):
         selected_items = self.mw.class_list.selectedItems()
@@ -105,6 +107,13 @@ class ClassController(QObject):
         # keep one of those two routes.
         self.mw.image_controller.apply_image_filter()
 
+        # Repaint the video timeline's annotated-frame marks (issue #48). This
+        # is THE mark-refresh choke point (runs on every annotation mutation AND
+        # at the end of switch_image / switch_slice), so hooking here keeps the
+        # timeline in sync with a single call rather than duplicating it in each
+        # frame-switch path. No-op unless the active image is a video.
+        self.mw.image_controller.update_video_timeline()
+
     def add_class(self, class_name=None, color=None):
         if not self.mw.image_label.check_unsaved_changes():
             return
@@ -115,7 +124,7 @@ class ClassController(QObject):
                     self.mw, "Add Class", "Enter class name:"
                 )
                 if not ok:
-                    print("Class addition cancelled")
+                    logger.debug("Class addition cancelled")
                     return
                 if not class_name.strip():
                     QMessageBox.warning(
@@ -134,12 +143,12 @@ class ClassController(QObject):
                 break
         else:
             if class_name in self.mw.class_mapping:
-                print(f"Class '{class_name}' already exists. Skipping addition.")
+                logger.warning(f"Class '{class_name}' already exists. Skipping addition.")
                 return
 
         if not isinstance(class_name, str):
-            print(
-                f"Warning: class_name is not a string. Converting {class_name} to string."
+            logger.warning(
+                f"class_name is not a string. Converting {class_name} to string."
             )
             class_name = str(class_name)
 
@@ -150,7 +159,7 @@ class ClassController(QObject):
         elif isinstance(color, str):
             color = QColor(color)
 
-        print(f"Adding class: {class_name}, color: {color.name()}")
+        logger.debug(f"Adding class: {class_name}, color: {color.name()}")
 
         self.mw.image_label.class_colors[class_name] = color
         self.mw.class_mapping[class_name] = len(self.mw.class_mapping) + 1
@@ -171,7 +180,7 @@ class ClassController(QObject):
 
             self.mw.class_list.setCurrentItem(item)
             self.mw.current_class = class_name
-            print(f"Class added successfully: {class_name}")
+            logger.info(f"Class added successfully: {class_name}")
 
             # DINO phrase/threshold sync. Skip the row-select during
             # project load (classes are added in a loop and we don't
@@ -185,9 +194,8 @@ class ClassController(QObject):
 
             if not self.mw.is_loading_project:
                 self.mw.auto_save()
-        except Exception as e:
-            print(f"Error adding class: {e}")
-            traceback.print_exc()
+        except Exception:
+            logger.exception("Error adding class")
 
     def update_class_item_color(self, item, color):
         pixmap = QPixmap(16, 16)
@@ -226,7 +234,7 @@ class ClassController(QObject):
         elif self.mw.class_list.count() > 0:
             self.mw.class_list.setCurrentItem(self.mw.class_list.item(0))
 
-        print(f"Updated class list with {self.mw.class_list.count()} items")
+        logger.debug(f"Updated class list with {self.mw.class_list.count()} items")
 
     def update_class_selection(self):
         for i in range(self.mw.class_list.count()):
@@ -252,7 +260,17 @@ class ClassController(QObject):
 
         if current:
             self.mw.current_class = current.text()
-            print(f"Class selected: {self.mw.current_class}")
+            logger.debug(f"Class selected: {self.mw.current_class}")
+
+            # Keep the DINO phrase/threshold panel in sync with the top
+            # class list -- the top list is the single source of truth.
+            # Selecting the matching threshold-table row cascades to the
+            # phrase panel via the table's itemSelectionChanged ->
+            # on_dino_class_row_changed. A no-op for Temp-* classes (not in
+            # the table). Skipped during project load to avoid signal churn
+            # while classes are restored in bulk. (#63)
+            if not self.mw.is_loading_project:
+                self.mw.dino_class_table.select_class_by_name(self.mw.current_class)
 
             if self.mw.current_class.startswith("Temp-"):
                 self.mw.disable_annotation_tools()
@@ -269,7 +287,19 @@ class ClassController(QObject):
                 and self.mw.current_class not in self.mw.keypoint_schemas
             ):
                 self.mw.activate_tool(None)
+            # Conversely, a pose class admits only the keypoint tool: if a
+            # shape/SAM tool is active when a pose class is selected, deactivate
+            # it so a tool can't stay active-but-invalid on a pose class. (#44)
+            elif (
+                self.mw.current_class in self.mw.keypoint_schemas
+                and self.mw.image_label.current_tool is not None
+                and self.mw.image_label.current_tool != "keypoint"
+            ):
+                self.mw.activate_tool(None)
         else:
+            # Deliberately one-directional: an empty top-list selection leaves
+            # the DINO table/panel showing the last class rather than blanking
+            # the phrase editor. Sync follows *selection*, not deselection.
             self.mw.current_class = None
             self.mw.disable_annotation_tools()
 
@@ -325,6 +355,21 @@ class ClassController(QObject):
         from ..dialogs.keypoint_schema_dialog import KeypointSchemaDialog
 
         class_name = item.text()
+        # A class is pose OR regular, not both (ADR-029). Refuse to turn a class
+        # that already holds plain annotations into a pose class; editing the
+        # schema of an existing pose class (even a legacy-mixed one) stays
+        # allowed so names/skeleton can still be fixed. (#44)
+        is_new_pose_class = class_name not in self.mw.keypoint_schemas
+        if is_new_pose_class and self._class_has_plain_annotations(class_name):
+            QMessageBox.warning(
+                self.mw,
+                "Cannot Define Keypoint Schema",
+                f"'{class_name}' already has regular (polygon/box/paint) "
+                "annotations. A class can be a pose class or a regular class, "
+                "not both. Move or delete those annotations first, or create a "
+                "new class for poses.",
+            )
+            return
         has_instances = self._class_has_keypoint_instances(class_name)
         dialog = KeypointSchemaDialog(
             self.mw,
@@ -354,6 +399,15 @@ class ClassController(QObject):
         if not self.mw.is_loading_project:
             self.mw.auto_save()
 
+    def _class_has_plain_annotations(self, class_name):
+        """True if the class holds any non-keypoint (polygon/box/paint)
+        annotation. A class is pose OR regular, not both (ADR-029 / #44)."""
+        for image_annotations in self.mw.all_annotations.values():
+            for ann in image_annotations.get(class_name, []):
+                if "keypoints" not in ann:
+                    return True
+        return False
+
     def _class_has_keypoint_instances(self, class_name):
         for image_annotations in self.mw.all_annotations.values():
             for ann in image_annotations.get(class_name, []):
@@ -366,28 +420,100 @@ class ClassController(QObject):
         new_name, ok = QInputDialog.getText(
             self.mw, "Rename Class", "Enter new class name:", text=old_name
         )
+        # Strip before every guard: "Drone " would otherwise clear both the
+        # collision check and the Temp- prefix check, creating a class
+        # distinguishable from "Drone" only by trailing whitespace -- which
+        # then keys all seven registries. The phrase editor already sanitises
+        # its input the same way (_add_phrase / _rename_phrase).
+        if new_name:
+            new_name = new_name.strip()
         if ok and new_name and new_name != old_name:
-            if old_name in self.mw.class_mapping:
-                old_id = self.mw.class_mapping[old_name]
-                self.mw.class_mapping[new_name] = old_id
-                del self.mw.class_mapping[old_name]
-            else:
-                print(f"Warning: Class '{old_name}' not found in class_mapping")
+            # --- Pre-flight ------------------------------------------------
+            # Validate every precondition BEFORE mutating anything. A rename
+            # touches seven name-keyed registries (docs/08 "Class Name Is a
+            # Primary Key"); bailing out partway leaves the class renamed in
+            # some and not others. Check first, then commit.
+
+            # A pending Temp-* review class isn't in class_mapping, so it would
+            # otherwise fall into the bailout below and fail *silently* -- the
+            # one rejection a user is most likely to hit by accident. Every
+            # other path in this block tells them why.
+            if old_name.startswith("Temp-"):
+                QMessageBox.warning(
+                    self.mw,
+                    "Pending Review Class",
+                    "Pending detection-review classes can't be renamed. "
+                    "Accept or reject them first.",
+                )
                 return
 
-            if old_name in self.mw.image_label.class_colors:
-                self.mw.image_label.class_colors[new_name] = (
-                    self.mw.image_label.class_colors.pop(old_name)
-                )
-            else:
-                print(f"Warning: Class '{old_name}' not found in class_colors")
+            if old_name not in self.mw.class_mapping:
+                logger.warning(f"Class '{old_name}' not found in class_mapping")
                 return
+            if old_name not in self.mw.image_label.class_colors:
+                logger.warning(f"Class '{old_name}' not found in class_colors")
+                return
+
+            # Collision check against class_colors, NOT class_mapping:
+            # Temp-* review classes are registered in class_colors + class_list
+            # only (add_temp_classes never writes class_mapping), so a
+            # class_mapping check lets a rename onto a *pending* temp class
+            # through -- the real class's annotation bucket then merges into
+            # the temp one, and the next Reject sweeps Temp-* and deletes it.
+            # Without any check the rename half-clobbers every registry: the
+            # old class's id and colour overwrite the target's, buckets merge,
+            # and the DINO table ends up with two rows of one name (duplicate
+            # detection passes + one row's thresholds silently dropped).
+            if new_name in self.mw.image_label.class_colors:
+                QMessageBox.warning(
+                    self.mw,
+                    "Duplicate Class",
+                    f"A class named '{new_name}' already exists. "
+                    "Please choose a different name.",
+                )
+                return
+
+            # "Temp-" is a reserved prefix with destructive semantics -- the
+            # DINO review sweeps Temp-* wholesale on accept/reject -- so a
+            # class renamed into that namespace would be silently consumed by
+            # the next review.
+            if new_name.startswith("Temp-"):
+                QMessageBox.warning(
+                    self.mw,
+                    "Reserved Name",
+                    "Names starting with 'Temp-' are reserved for pending "
+                    "detection-review classes. Please choose a different name.",
+                )
+                return
+
+            # --- Commit ----------------------------------------------------
+            self.mw.class_mapping[new_name] = self.mw.class_mapping.pop(old_name)
+
+            self.mw.image_label.class_colors[new_name] = (
+                self.mw.image_label.class_colors.pop(old_name)
+            )
+
+            # Visibility is name-keyed too (read via .get(name, True)), so a
+            # rename that skips it silently un-hides a hidden class.
+            if old_name in self.mw.image_label.class_visibility:
+                self.mw.image_label.class_visibility[new_name] = (
+                    self.mw.image_label.class_visibility.pop(old_name)
+                )
 
             # Keypoint schema follows the class name (issue #35).
             if old_name in self.mw.keypoint_schemas:
                 self.mw.keypoint_schemas[new_name] = (
                     self.mw.keypoint_schemas.pop(old_name)
                 )
+
+            # The DINO threshold row and phrase list are keyed by class name
+            # too. Without this they stay under the dead name: detection runs
+            # against a class that no longer exists, and the next project load
+            # silently discards the renamed class's phrases *and* thresholds
+            # (both are filtered against the live class list). Same
+            # registry-drift family as #63.
+            self.mw.dino_class_table.rename_class(old_name, new_name)
+            self.mw.dino_phrase_panel.on_class_renamed(old_name, new_name)
 
             for image_name, image_annotations in self.mw.all_annotations.items():
                 if old_name in image_annotations:
@@ -407,12 +533,20 @@ class ClassController(QObject):
 
             self.mw.update_all_annotation_lists()
 
-            item.setText(new_name)
+            # Block signals: setText emits itemChanged -> toggle_class_visibility,
+            # which re-derives class_visibility from the checkbox and would be a
+            # hidden co-author of the re-key above (masking a broken re-key).
+            # A rename changes the name, never the visibility.
+            self.mw.class_list.blockSignals(True)
+            try:
+                item.setText(new_name)
+            finally:
+                self.mw.class_list.blockSignals(False)
 
             self.mw.image_label.update()
             self.mw.auto_save()
 
-            print(f"Class renamed from '{old_name}' to '{new_name}'")
+            logger.info(f"Class renamed from '{old_name}' to '{new_name}'")
 
     def delete_class(self, item=None):
         if item is None:

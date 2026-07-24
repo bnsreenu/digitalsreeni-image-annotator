@@ -15,6 +15,10 @@ import numpy as np
 import skimage.draw
 from PIL import Image
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 # Utility function to handle the COCO conversion for all export formats
 def convert_to_coco(all_annotations, class_mapping, image_paths, slices, image_slices, keypoint_schemas=None):
@@ -85,7 +89,7 @@ def export_coco_json(all_annotations, class_mapping, image_paths, slices, image_
                             qimage = matching_slices[0][1]
                             break
                 if qimage is None:
-                    print(f"No image data found for slice {image_name}, skipping")
+                    logger.warning(f"No image data found for slice {image_name}, skipping")
                     continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
@@ -93,15 +97,15 @@ def export_coco_json(all_annotations, class_mapping, image_paths, slices, image_
             if not os.path.exists(save_path):
                 qimage.save(save_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping save.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping save.")
         else:
             # Check if the image_name exists in image_paths
             image_path = next((path for name, path in image_paths.items() if image_name in name), None)
             if not image_path:
-                print(f"No image path found for {image_name}, skipping")
+                logger.warning(f"No image path found for {image_name}, skipping")
                 continue
             if image_path.lower().endswith(('.tif', '.tiff', '.czi')):
-                print(f"Skipping main tiff/czi file: {image_name}")
+                logger.debug(f"Skipping main tiff/czi file: {image_name}")
                 continue
             file_name_img = image_name
             # Copy the image file
@@ -109,7 +113,7 @@ def export_coco_json(all_annotations, class_mapping, image_paths, slices, image_
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
 
         image_info = {
             "file_name": file_name_img,
@@ -236,7 +240,7 @@ def export_yolo_v4(all_annotations, class_mapping, image_paths, slices, image_sl
                     if qimage:
                         break
             if qimage is None:
-                print(f"No image data found for slice {image_name}, skipping")
+                logger.warning(f"No image data found for slice {image_name}, skipping")
                 continue
             file_name_img = f"{image_name}.png"
             save_path = os.path.join(images_dir, file_name_img)
@@ -254,7 +258,7 @@ def export_yolo_v4(all_annotations, class_mapping, image_paths, slices, image_sl
                     None,
                 )
             if not image_path or image_path.lower().endswith(('.tif', '.tiff', '.czi')):
-                print(f"[YOLO v4] skipping {image_name!r}: no image path / TIFF source")
+                logger.warning(f"skipping {image_name!r}: no image path / TIFF source")
                 continue
             file_name_img = image_name
             dst_path = os.path.join(images_dir, file_name_img)
@@ -268,7 +272,7 @@ def export_yolo_v4(all_annotations, class_mapping, image_paths, slices, image_sl
         with open(os.path.join(labels_dir, label_file), 'w', encoding='utf-8') as f:
             for class_name, class_annotations in annotations.items():
                 if class_name not in class_to_index:
-                    print(f"[YOLO v4] warning: class {class_name!r} not in class_mapping, skipped")
+                    logger.warning(f"class {class_name!r} not in class_mapping, skipped")
                     continue
                 class_index = class_to_index[class_name]
                 for ann in class_annotations:
@@ -404,7 +408,7 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
     annotated = [name for name, ann in all_annotations.items() if ann]
     _, val_names = assign_train_val(annotated, val_split)
 
-    print(f"[YOLO v5+] export: {len(all_annotations)} image entries, "
+    logger.debug(f"export: {len(all_annotations)} image entries, "
           f"{len(image_paths)} known image paths, "
           f"{len(class_to_index)} class(es) -> {list(class_to_index.keys())}; "
           f"val_split={val_split}% -> {len(val_names)} val / "
@@ -412,10 +416,10 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
 
     label_files_written = 0
     for image_name, annotations in all_annotations.items():
-        print(f"[YOLO v5+]   image={image_name!r} annotation-classes={list(annotations.keys()) if annotations else '(none)'}")
+        logger.debug(f"image={image_name!r} annotation-classes={list(annotations.keys()) if annotations else '(none)'}")
         # Skip if there are no annotations for this image/slice
         if not annotations:
-            print("[YOLO v5+]     skipping: no annotations")
+            logger.debug("skipping: no annotations")
             continue
 
         # Route this image into the train or val directory.
@@ -434,7 +438,7 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
                     if qimage:
                         break
             if qimage is None:
-                print(f"[YOLO v5+]     skipping: no image data for slice {image_name}")
+                logger.warning(f"skipping: no image data for slice {image_name}")
                 continue
             file_name_img = f"{image_name}.png"
             save_path = os.path.join(images_dir, file_name_img)
@@ -453,16 +457,16 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
                     None,
                 )
             if not image_path:
-                print(f"[YOLO v5+]     skipping: no image_paths entry for {image_name!r}")
+                logger.warning(f"skipping: no image_paths entry for {image_name!r}")
                 continue
             if image_path.lower().endswith(('.tif', '.tiff', '.czi')):
-                print(f"[YOLO v5+]     skipping: TIFF/CZI source {image_name!r} (use slice export)")
+                logger.debug(f"skipping: TIFF/CZI source {image_name!r} (use slice export)")
                 continue
             file_name_img = image_name
             dst_path = os.path.join(images_dir, file_name_img)
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
-                print(f"[YOLO v5+]     copied image -> {dst_path}")
+                logger.debug(f"copied image -> {dst_path}")
             img = QImage(image_path)
             img_width, img_height = img.width(), img.height()
 
@@ -473,7 +477,7 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
         with open(label_path, 'w', encoding='utf-8') as f:
             for class_name, class_annotations in annotations.items():
                 if class_name not in class_to_index:
-                    print(f"[YOLO v5+]     warning: class {class_name!r} not in class_mapping, skipped")
+                    logger.warning(f"class {class_name!r} not in class_mapping, skipped")
                     continue
                 class_index = class_to_index[class_name]
                 for ann in class_annotations:
@@ -507,10 +511,10 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
                         h = h / img_height
                         f.write(f"{class_index} {x_center:.6f} {y_center:.6f} {w:.6f} {h:.6f}\n")
                         ann_lines += 1
-        print(f"[YOLO v5+]     wrote {ann_lines} annotation line(s) -> {label_path}")
+        logger.debug(f"wrote {ann_lines} annotation line(s) -> {label_path}")
         label_files_written += 1
 
-    print(f"[YOLO v5+] export complete: {label_files_written} label file(s) written")
+    logger.info(f"export complete: {label_files_written} label file(s) written")
 
     # Create YAML file. Point val at the val split only when images were
     # actually routed there; otherwise fall back to train so `yolo train`
@@ -606,7 +610,7 @@ def export_sam_dataset(all_annotations, class_mapping, image_paths, slices, imag
     manifest_path = os.path.join(output_dir, 'manifest.json')
     with open(manifest_path, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=2)
-    print(f"[SAM dataset] wrote {len(manifest['images'])} image entries -> {manifest_path}")
+    logger.info(f"wrote {len(manifest['images'])} image entries -> {manifest_path}")
     return output_dir, manifest_path
 
 
@@ -650,7 +654,7 @@ def export_labeled_images(all_annotations, class_mapping, image_paths, slices, i
                             qimage = matching_slices[0][1]
                             break
                 if qimage is None:
-                    print(f"No image data found for slice {image_name}, skipping")
+                    logger.warning(f"No image data found for slice {image_name}, skipping")
                     continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
@@ -658,16 +662,16 @@ def export_labeled_images(all_annotations, class_mapping, image_paths, slices, i
             if not os.path.exists(save_path):
                 qimage.save(save_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
             img_width, img_height = qimage.width(), qimage.height()
         else:
             # Check if the image_name exists in image_paths
             image_path = next((path for name, path in image_paths.items() if image_name in name), None)
             if not image_path:
-                print(f"No image path found for {image_name}, skipping")
+                logger.warning(f"No image path found for {image_name}, skipping")
                 continue
             if image_path.lower().endswith(('.tif', '.tiff', '.czi')):
-                print(f"Skipping main tiff/czi file: {image_name}")
+                logger.debug(f"Skipping main tiff/czi file: {image_name}")
                 continue
             file_name_img = image_name
             # Copy the image file
@@ -675,7 +679,7 @@ def export_labeled_images(all_annotations, class_mapping, image_paths, slices, i
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
 
 
             img = Image.open(image_path)
@@ -755,7 +759,7 @@ def export_semantic_labels(all_annotations, class_mapping, image_paths, slices, 
                             qimage = matching_slices[0][1]
                             break
                 if qimage is None:
-                    print(f"No image data found for slice {image_name}, skipping")
+                    logger.warning(f"No image data found for slice {image_name}, skipping")
                     continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
@@ -763,16 +767,16 @@ def export_semantic_labels(all_annotations, class_mapping, image_paths, slices, 
             if not os.path.exists(save_path):
                 qimage.save(save_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
             img_width, img_height = qimage.width(), qimage.height()
         else:
             # Check if the image_name exists in image_paths
             image_path = next((path for name, path in image_paths.items() if image_name in name), None)
             if not image_path:
-                print(f"No image path found for {image_name}, skipping")
+                logger.warning(f"No image path found for {image_name}, skipping")
                 continue
             if image_path.lower().endswith(('.tif', '.tiff', '.czi')):
-                print(f"Skipping main tiff/czi file: {image_name}")
+                logger.debug(f"Skipping main tiff/czi file: {image_name}")
                 continue
             file_name_img = image_name
             # Copy the image file
@@ -780,7 +784,7 @@ def export_semantic_labels(all_annotations, class_mapping, image_paths, slices, 
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
 
             img = Image.open(image_path)
             img_width, img_height = img.size
@@ -848,7 +852,7 @@ def export_pascal_voc_bbox(all_annotations, class_mapping, image_paths, slices, 
                             qimage = matching_slices[0][1]
                             break
                 if qimage is None:
-                    print(f"No image data found for slice {image_name}, skipping")
+                    logger.warning(f"No image data found for slice {image_name}, skipping")
                     continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
@@ -856,16 +860,16 @@ def export_pascal_voc_bbox(all_annotations, class_mapping, image_paths, slices, 
             if not os.path.exists(save_path):
                 qimage.save(save_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
             img_width, img_height = qimage.width(), qimage.height()
         else:
             # Check if the image_name exists in image_paths
             image_path = next((path for name, path in image_paths.items() if image_name in name), None)
             if not image_path:
-                print(f"No image path found for {image_name}, skipping")
+                logger.warning(f"No image path found for {image_name}, skipping")
                 continue
             if image_path.lower().endswith(('.tif', '.tiff', '.czi')):
-                print(f"Skipping main tiff/czi file: {image_name}")
+                logger.debug(f"Skipping main tiff/czi file: {image_name}")
                 continue
             file_name_img = image_name
             # Copy the image file
@@ -873,7 +877,7 @@ def export_pascal_voc_bbox(all_annotations, class_mapping, image_paths, slices, 
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
 
             img = QImage(image_path)
             img_width, img_height = img.width(), img.height()
@@ -951,7 +955,7 @@ def export_pascal_voc_both(all_annotations, class_mapping, image_paths, slices, 
                             qimage = matching_slices[0][1]
                             break
                 if qimage is None:
-                    print(f"No image data found for slice {image_name}, skipping")
+                    logger.warning(f"No image data found for slice {image_name}, skipping")
                     continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
@@ -959,16 +963,16 @@ def export_pascal_voc_both(all_annotations, class_mapping, image_paths, slices, 
             if not os.path.exists(save_path):
                 qimage.save(save_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
             img_width, img_height = qimage.width(), qimage.height()
         else:
             # Check if the image_name exists in image_paths
             image_path = next((path for name, path in image_paths.items() if image_name in name), None)
             if not image_path:
-                print(f"No image path found for {image_name}, skipping")
+                logger.warning(f"No image path found for {image_name}, skipping")
                 continue
             if image_path.lower().endswith(('.tif', '.tiff', '.czi')):
-                print(f"Skipping main tiff/czi file: {image_name}")
+                logger.debug(f"Skipping main tiff/czi file: {image_name}")
                 continue
             file_name_img = image_name
             # Copy the image file
@@ -976,7 +980,7 @@ def export_pascal_voc_both(all_annotations, class_mapping, image_paths, slices, 
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
             else:
-                print(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
+                logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
 
             img = QImage(image_path)
             img_width, img_height = img.width(), img.height()

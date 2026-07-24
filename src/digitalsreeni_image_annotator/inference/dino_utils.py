@@ -27,6 +27,10 @@ from PyQt6.QtGui import QImage
 from .sam_utils import _qimage_to_numpy, _run_sync
 from ..utils import models_base_dir
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 GDINO_MODEL_NAMES = [
     "grounding-dino-base",
@@ -93,9 +97,9 @@ class DINOUtils(QObject):
         )
 
         device = self._resolve_device()
-        print(f"[DINO] Loading from {model_path} on {device} ...")
+        logger.info(f"Loading from {model_path} on {device} ...")
         if not Path(model_path).exists():
-            print(f"[DINO] Local path missing; will attempt HF hub download.")
+            logger.warning("Local path missing; will attempt HF hub download.")
 
         proc = AutoProcessor.from_pretrained(model_path)
         model = AutoModelForZeroShotObjectDetection.from_pretrained(model_path)
@@ -105,7 +109,7 @@ class DINOUtils(QObject):
         self._model = model
         self._loaded_model_path = model_path
         self._device = device
-        print("[DINO] Model loaded successfully.")
+        logger.info("Model loaded successfully.")
 
     def unload(self) -> None:
         """Drop the cached model so its GPU/CPU memory comes back.
@@ -119,8 +123,8 @@ class DINOUtils(QObject):
         try:
             if self._model is not None:
                 self._model.cpu()
-        except Exception as e:
-            print(f"[DINO] unload: warning moving model to CPU: {e}")
+        except Exception:
+            logger.exception("unload: moving model to CPU")
         self._proc = None
         self._model = None
         self._loaded_model_path = None
@@ -133,8 +137,11 @@ class DINOUtils(QObject):
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
         except Exception:
-            pass
-        print("[DINO] unload complete")
+            logger.warning(
+                "CUDA cache cleanup failed during unload; GPU memory may not "
+                "be fully released", exc_info=True,
+            )
+        logger.info("unload complete")
 
     # ── inference ─────────────────────────────────────────────────────
 
@@ -157,7 +164,7 @@ class DINOUtils(QObject):
         """
         model_path = custom_model_path or GDINO_MODEL_PATHS.get(model_name)
         if model_path is None:
-            print(f"Unknown DINO model: {model_name}")
+            logger.warning(f"Unknown DINO model: {model_name}")
             return None
 
         # Marshal to numpy on the calling thread, with the array
@@ -212,12 +219,12 @@ class DINOUtils(QObject):
                 all_labels.extend(labels)
 
         if not all_boxes:
-            print('[DINO]   total candidates pre-CCNMS: 0 (no class produced any boxes)')
+            logger.debug('total candidates pre-CCNMS: 0 (no class produced any boxes)')
             return []
 
         all_boxes = torch.cat(all_boxes, dim=0)
         all_scores = torch.cat(all_scores, dim=0)
-        print(f'[DINO]   total candidates pre-CCNMS: {len(all_boxes)}')
+        logger.debug(f'total candidates pre-CCNMS: {len(all_boxes)}')
 
         # Cross-class NMS — drop boxes that overlap heavily across
         # classes so the user doesn't get two near-identical masks
@@ -231,8 +238,8 @@ class DINOUtils(QObject):
         all_boxes = all_boxes[cross_keep]
         all_scores = all_scores[cross_keep]
         all_labels = [all_labels[i] for i in cross_keep]
-        print(
-            f'[DINO]   cross-class NMS (iou={cc_thr:.2f}): '
+        logger.debug(
+            f'cross-class NMS (iou={cc_thr:.2f}): '
             f'{len(cross_keep)} survivor(s)'
         )
 
@@ -245,7 +252,7 @@ class DINOUtils(QObject):
                 "score": float(all_scores[i].item()),
                 "label": all_labels[i],
             })
-        print(f'[DINO] detect() returning {len(results)} result(s)')
+        logger.debug(f'detect() returning {len(results)} result(s)')
         return results
 
     def _run_for_class(self, image_pil, class_cfg, device):
@@ -268,8 +275,8 @@ class DINOUtils(QObject):
         txt_thr = class_cfg.get("txt_thr", 0.25)
         nms_thr = class_cfg.get("nms_thr", 0.50)
 
-        print(
-            f'[DINO]   Class: "{class_cfg["name"]}" '
+        logger.debug(
+            f'Class: "{class_cfg["name"]}" '
             f'({len(clean_phrases)} phrase(s), '
             f'box={box_thr:.2f} txt={txt_thr:.2f} nms={nms_thr:.2f})'
         )
@@ -296,8 +303,8 @@ class DINOUtils(QObject):
         raw_labels = det.get("text_labels", det.get("labels", []))
 
         top_scores = [float(s) for s in scores[:5].tolist()] if len(scores) else []
-        print(
-            f'[DINO]     post_process: {len(boxes)} raw box(es), '
+        logger.debug(
+            f'post_process: {len(boxes)} raw box(es), '
             f'top scores={top_scores}'
         )
 
@@ -311,7 +318,7 @@ class DINOUtils(QObject):
             i for i, b in enumerate(boxes)
             if ((b[2] - b[0]) * (b[3] - b[1])).item() / area < MAX_AREA_FRAC
         ]
-        print(f'[DINO]     after area filter (<{MAX_AREA_FRAC} of image): {len(keep)} kept')
+        logger.debug(f'after area filter (<{MAX_AREA_FRAC} of image): {len(keep)} kept')
         if not keep:
             return torch.zeros((0, 4)), torch.zeros(0), []
 
@@ -321,7 +328,7 @@ class DINOUtils(QObject):
 
         # Per-class NMS
         keep2 = nms(boxes, scores, nms_thr).tolist()
-        print(f'[DINO]     after per-class NMS (iou={nms_thr:.2f}): {len(keep2)} kept')
+        logger.debug(f'after per-class NMS (iou={nms_thr:.2f}): {len(keep2)} kept')
         boxes = boxes[keep2]
         scores = scores[keep2]
         raw_labels = [raw_labels[i] for i in keep2]
@@ -340,21 +347,21 @@ class DINOUtils(QObject):
         try:
             from huggingface_hub import snapshot_download
         except ImportError:
-            print("huggingface_hub not installed. Cannot download models.")
+            logger.warning("huggingface_hub not installed. Cannot download models.")
             return None
 
         repo_id = GDINO_REPO_IDS.get(model_name)
         if not repo_id:
-            print(f"No repo ID for model: {model_name}")
+            logger.warning(f"No repo ID for model: {model_name}")
             return None
 
         local_path = GDINO_MODEL_PATHS.get(model_name) or _gdino_local_path(model_name)
         if os.path.exists(local_path):
-            print(f"Model already exists at {local_path}")
+            logger.info(f"Model already exists at {local_path}")
             return local_path
 
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        print(f"Downloading {repo_id} -> {local_path} ...")
+        logger.info(f"Downloading {repo_id} -> {local_path} ...")
         snapshot_download(repo_id, local_dir=local_path)
-        print(f"Done. Model at {local_path}")
+        logger.info(f"Done. Model at {local_path}")
         return local_path

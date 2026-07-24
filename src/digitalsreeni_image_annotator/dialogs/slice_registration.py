@@ -9,6 +9,11 @@ from PIL import Image
 import numpy as np
 import os
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
 class SliceRegistrationTool(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -263,10 +268,10 @@ class SliceRegistrationTool(QDialog):
     
             # Store original properties
             original_dtype = img0.dtype
-            print(f"Original image properties:")
-            print(f"Dtype: {original_dtype}")
-            print(f"Range: {img0.min()} - {img0.max()}")
-            print(f"Shape: {img0.shape}")
+            logger.debug("Original image properties:")
+            logger.debug(f"Dtype: {original_dtype}")
+            logger.debug(f"Range: {img0.min()} - {img0.max()}")
+            logger.debug(f"Shape: {img0.shape}")
     
             progress.setValue(30)
             progress.setLabelText("Performing registration...")
@@ -314,10 +319,10 @@ class SliceRegistrationTool(QDialog):
             # Convert back to original dtype without changing values
             out_registered = out_registered.astype(original_dtype)
     
-            print(f"Output image properties:")
-            print(f"Dtype: {out_registered.dtype}")
-            print(f"Range: {out_registered.min()} - {out_registered.max()}")
-            print(f"Shape: {out_registered.shape}")
+            logger.debug("Output image properties:")
+            logger.debug(f"Dtype: {out_registered.dtype}")
+            logger.debug(f"Range: {out_registered.min()} - {out_registered.max()}")
+            logger.debug(f"Shape: {out_registered.shape}")
     
             # Save output
             if self.stack_radio.isChecked():
@@ -365,9 +370,7 @@ class SliceRegistrationTool(QDialog):
                                   f"Z Spacing: {self.z_size_value.value()} {unit}")
     
         except Exception as e:
-            print(f"Error occurred: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Error occurred")
             QMessageBox.critical(self, "Error", str(e))
             
             
@@ -381,15 +384,15 @@ class SliceRegistrationTool(QDialog):
         
 
     def load_images(self):
-        print("Starting image loading...")
+        logger.debug("Starting image loading...")
         try:
             if self.stack_radio.isChecked():
-                print(f"Loading TIFF stack from: {self.input_path}")
+                logger.debug(f"Loading TIFF stack from: {self.input_path}")
                 # Explicitly use scikit-image's imread for TIFF stacks
                 stack = io.imread(self.input_path)
                 if stack.dtype != np.float32:
                     stack = stack.astype(np.float32)
-                print(f"Loaded TIFF stack shape: {stack.shape}")
+                logger.debug(f"Loaded TIFF stack shape: {stack.shape}")
                 return stack
             else:
                 # Load individual images
@@ -398,34 +401,34 @@ class SliceRegistrationTool(QDialog):
                 files = sorted([f for f in os.listdir(self.input_path) 
                               if f.lower().endswith(valid_extensions)])
                 
-                print(f"Found {len(files)} image files")
+                logger.debug(f"Found {len(files)} image files")
                 
                 if not files:
                     raise ValueError("No valid image files found in directory")
     
                 # Check first image size
                 first_path = os.path.join(self.input_path, files[0])
-                print(f"Loading first image: {first_path}")
+                logger.debug(f"Loading first image: {first_path}")
                 first_img = np.array(Image.open(first_path))
                 ref_shape = first_img.shape
                 images.append(first_img)
-                print(f"First image shape: {ref_shape}")
+                logger.debug(f"First image shape: {ref_shape}")
     
                 # Load remaining images and check sizes
                 for f in files[1:]:
                     img_path = os.path.join(self.input_path, f)
-                    print(f"Loading: {f}")
+                    logger.debug(f"Loading: {f}")
                     img = np.array(Image.open(img_path))
                     if img.shape != ref_shape:
                         raise ValueError(f"Image {f} has different dimensions from the first image")
                     images.append(img)
     
                 stack = np.stack(images)
-                print(f"Final stack shape: {stack.shape}")
+                logger.debug(f"Final stack shape: {stack.shape}")
                 return stack
                 
-        except Exception as e:
-            print(f"Error in load_images: {str(e)}")
+        except Exception:
+            logger.exception("Error in load_images")
             raise
 
 

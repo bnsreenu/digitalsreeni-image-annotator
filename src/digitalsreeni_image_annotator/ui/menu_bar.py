@@ -151,6 +151,27 @@ def build_menu_bar(window):
     dicom_converter_action.triggered.connect(window.show_dicom_converter)
     tools_menu.addAction(dicom_converter_action)
 
+    export_frames_action = QAction("Export Annotated Video Frames…", window)
+    export_frames_action.triggered.connect(window.export_annotated_frames)
+    tools_menu.addAction(export_frames_action)
+
+    tools_menu.addSeparator()
+
+    # SAM 3 video object tracking (issue #51). "Track Selected Object" is only
+    # meaningful with a video + SAM 3 loaded + one segmentation selected, so its
+    # enabled state is refreshed from can_track() each time the menu opens.
+    track_object_action = QAction("Track Selected Object…", window)
+    track_object_action.triggered.connect(window.track_selected_object)
+    tools_menu.addAction(track_object_action)
+
+    undo_track_action = QAction("Undo Last Track", window)
+    undo_track_action.triggered.connect(window.undo_last_track)
+    tools_menu.addAction(undo_track_action)
+
+    tools_menu.aboutToShow.connect(
+        lambda: track_object_action.setEnabled(window.can_track())
+    )
+
     tools_menu.addSeparator()
 
     unload_models_action = QAction("Unload AI Models (Free GPU Memory)", window)

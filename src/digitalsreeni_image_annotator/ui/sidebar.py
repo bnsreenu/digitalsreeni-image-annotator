@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -31,6 +32,8 @@ from ..core.constants import (
     ANNOT_COL_ID,
 )
 from ..dialogs.dino_phrase_editor import ClassThresholdTable, PhraseEditorPanel
+from ..inference.sam3_utils import SAM3_MODEL_LABEL
+from ..widgets.video_timeline import VideoTimeline
 
 
 def _section_header(text):
@@ -43,7 +46,32 @@ def _section_header(text):
 def build_sidebar(window):
     window.sidebar = QWidget()
     window.sidebar_layout = QVBoxLayout(window.sidebar)
-    window.layout.addWidget(window.sidebar, 1)
+
+    # Wrap the sidebar contents in a scroll area (upstream #88). The DINO,
+    # Annotations and Export sections each keep a usable minimum height (set
+    # below) and the sidebar scrolls vertically when the window is too short,
+    # instead of the Annotations table collapsing to just its header row on
+    # small screens or at large UI font sizes. Horizontal scrolling is off:
+    # with setWidgetResizable(True) the content is resized to the viewport
+    # width rather than scrolling sideways.
+    window.sidebar_scroll = QScrollArea()
+    window.sidebar_scroll.setWidgetResizable(True)
+    window.sidebar_scroll.setHorizontalScrollBarPolicy(
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    window.sidebar_scroll.setVerticalScrollBarPolicy(
+        Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
+    # Preserve the window-width floor the sidebar's own minimumSizeHint used to
+    # impose (a width-resizable scroll area with horizontal scroll off would
+    # otherwise let the window shrink until the multi-button rows clip).
+    window.sidebar_scroll.setMinimumWidth(260)
+    # Structural only (no background/border literals) so the active stylesheet
+    # still paints the sidebar; a visible frame would punch a box into the
+    # soft-dark sidebar. See "No Hardcoded Colors Rule" in CLAUDE.md.
+    window.sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
+    window.sidebar_scroll.setWidget(window.sidebar)
+    window.layout.addWidget(window.sidebar_scroll, 1)
 
     # Import functionality
     window.import_button = QPushButton("Import Annotations with Images")
@@ -59,7 +87,7 @@ def build_sidebar(window):
     # Add spacing
     window.sidebar_layout.addSpacing(20)
 
-    window.add_images_button = QPushButton("Add New Images")
+    window.add_images_button = QPushButton("Add Images / Videos")
     window.add_images_button.clicked.connect(window.add_images)
     window.sidebar_layout.addWidget(window.add_images_button)
 
@@ -77,6 +105,9 @@ def build_sidebar(window):
     # ImageAnnotator.__init__ post-setup_ui; moved here to live next
     # to the widget construction.
     window.class_list.itemChanged.connect(window.toggle_class_visibility)
+    # Usable minimum (~4 rows) so the class list can't be squeezed to nothing
+    # when the sidebar scrolls (#88); the scroll area supplies scrolling.
+    window.class_list.setMinimumHeight(100)
     window.sidebar_layout.addWidget(window.class_list)
 
     # Annotation section
@@ -154,6 +185,9 @@ def build_sidebar(window):
     window.dino_model_selector.addItem("Pick a DINO Model")
     window.dino_model_selector.addItem("grounding-dino-base")
     window.dino_model_selector.addItem("grounding-dino-tiny")
+    # SAM 3 text-prompt producer (issue #50): reuses the whole DINO review
+    # pipeline; no SAM 2 refinement step. See dino_controller._run_text_detection.
+    window.dino_model_selector.addItem(SAM3_MODEL_LABEL)
     window.dino_model_selector.addItem("Custom / fine-tuned (browse)")
     window.dino_model_selector.currentTextChanged.connect(window._on_dino_model_changed)
     dino_layout.addWidget(window.dino_model_selector)
@@ -194,10 +228,12 @@ def build_sidebar(window):
     window.dino_class_table.itemSelectionChanged.connect(
         window.on_dino_class_row_changed
     )
+    window.dino_class_table.setMinimumHeight(80)  # ~3 rows, usable when scrolled (#88)
     dino_layout.addWidget(window.dino_class_table)
 
     # Phrase editor
     window.dino_phrase_panel = PhraseEditorPanel()
+    window.dino_phrase_panel.setMinimumHeight(100)  # ~4 rows, usable when scrolled (#88)
     dino_layout.addWidget(window.dino_phrase_panel)
 
     # Detect buttons
@@ -264,6 +300,9 @@ def build_sidebar(window):
     # themes. See dino_phrase_editor.ClassThresholdTable.
     table.setStyleSheet("QHeaderView::section { font-weight: bold; padding: 2px; }")
     window.annotation_list = table
+    # Usable minimum (~5 rows) so the Annotations table can't collapse to its
+    # header row when the DINO panel expands (#88); the sidebar scrolls instead.
+    window.annotation_list.setMinimumHeight(140)
     window.annotation_list.itemSelectionChanged.connect(
         window.update_highlighted_annotations
     )
@@ -335,6 +374,13 @@ def build_image_area(window):
 
     window.image_layout.addWidget(window.scroll_area)
 
+    # Video scrub timeline (issue #48) sits BETWEEN the canvas and the zoom
+    # slider; hidden until a video is the active image (update_video_timeline).
+    window.video_timeline = VideoTimeline()
+    window.video_timeline.setVisible(False)
+    window.video_timeline.frameSelected.connect(window.on_timeline_frame_selected)
+    window.image_layout.addWidget(window.video_timeline)
+
     window.zoom_slider = QSlider(Qt.Orientation.Horizontal)
     window.zoom_slider.setMinimum(10)
     window.zoom_slider.setMaximum(500)
@@ -369,6 +415,17 @@ def build_image_list(window):
         lambda _index: window.apply_image_filter()
     )
     window.image_list_layout.addWidget(window.image_filter_combo)
+
+    # Group filter (issue #43). Index 0 ("All groups") means "hide
+    # nothing"; the other entries are the derived group names, repopulated
+    # by ImageController.sort_image_list with signals blocked.
+    window.image_group_combo = QComboBox()
+    window.image_group_combo.addItem("All groups")
+    window.image_group_combo.setToolTip("Filter the image list by group")
+    window.image_group_combo.currentIndexChanged.connect(
+        lambda _index: window.apply_image_filter()
+    )
+    window.image_list_layout.addWidget(window.image_group_combo)
 
     window.image_list = QListWidget()
     window.image_list.itemClicked.connect(window.switch_image)

@@ -14,6 +14,7 @@ and three controllers.
 """
 
 import pytest
+from PyQt6.QtCore import Qt
 
 
 FILTER_WITHOUT = 1  # combo index: "Without annotations"
@@ -85,3 +86,61 @@ def test_hiding_current_row_keeps_canvas_and_fires_no_switch(window):
     assert not window.image_list.isRowHidden(1)
     assert window.current_image is sentinel  # canvas unchanged
     assert calls == []  # hiding the current row fired no switch_image
+
+
+def test_annotation_commit_sets_status_badge(window):
+    # The same real mutation path (issue #43): finishing an annotation must
+    # refresh the per-row status badge via update_slice_list_colors ->
+    # apply_image_filter -> refresh_image_status_icons.
+    for name in ("a.png", "b.png"):
+        window.all_images.append({"file_name": name, "is_multi_slice": False})
+        window.image_list.addItem(name)
+    window.image_controller.refresh_image_status_icons()
+
+    def _icon_for(name):
+        items = window.image_list.findItems(name, Qt.MatchFlag.MatchExactly)
+        return items[0].icon()
+
+    window.image_file_name = "a.png"
+    window.image_label.annotations = {
+        "cell": [{"segmentation": [0, 0, 10, 0, 10, 10], "category_name": "cell"}]
+    }
+    window.image_label.annotationsBatchSaved.emit()
+
+    icon_a = _icon_for("a.png")
+    icon_b = _icon_for("b.png")
+    assert not icon_a.isNull()  # badge was set on the annotated row
+    # Annotated (green) vs un-annotated (hollow) badges differ.
+    assert icon_a.pixmap(12, 12).toImage() != icon_b.pixmap(12, 12).toImage()
+
+
+def test_group_survives_save_reload_roundtrip(window, tmp_path):
+    from PyQt6.QtGui import QImage
+
+    # A real (tiny) image on disk so the load path can resolve it.
+    img_path = tmp_path / "photo.png"
+    QImage(4, 4, QImage.Format.Format_RGB32).save(str(img_path))
+
+    # Stub auto_save so add/assign don't pop a blocking Save dialog.
+    window.auto_save = lambda *a, **k: None
+
+    window.image_controller.add_images_to_list([str(img_path)])
+    window.image_controller.set_image_group("photo.png", "Batch A")
+    info = next(i for i in window.all_images if i["file_name"] == "photo.png")
+    assert info["group"] == "Batch A"
+
+    project_data = window.project_controller.build_project_data()
+    assert any(
+        img.get("file_name") == "photo.png" and img.get("group") == "Batch A"
+        for img in project_data["images"]
+    )
+
+    # Reload the saved data into the same window (open-project data contract).
+    window.is_loading_project = True
+    try:
+        window.project_controller.load_project_data(project_data)
+    finally:
+        window.is_loading_project = False
+
+    reloaded = next(i for i in window.all_images if i["file_name"] == "photo.png")
+    assert reloaded.get("group") == "Batch A"

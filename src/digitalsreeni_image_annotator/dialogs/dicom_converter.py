@@ -9,6 +9,11 @@ import pydicom
 from pydicom.pixel_data_handlers.util import apply_voi_lut
 import tifffile
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
 class DicomConverter(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -168,8 +173,11 @@ class DicomConverter(QDialog):
         try:
             if hasattr(ds, 'WindowCenter') and hasattr(ds, 'WindowWidth'):
                 return apply_voi_lut(image, ds)
-        except:
-            pass
+        except Exception:
+            logger.warning(
+                "DICOM window/level could not be applied; using raw pixel data",
+                exc_info=True,
+            )
         return image
 
 
@@ -190,7 +198,7 @@ class DicomConverter(QDialog):
                 raise ValueError("Selected file is not a valid DICOM file")
             
             # Read DICOM data
-            print("Reading DICOM file...")
+            logger.debug("Reading DICOM file...")
             progress.setLabelText("Reading DICOM file...")
             progress.setValue(20)
             
@@ -198,29 +206,29 @@ class DicomConverter(QDialog):
             series_metadata = self.extract_metadata(ds)
             
             # Process pixel data
-            print("Processing pixel data...")
+            logger.debug("Processing pixel data...")
             progress.setLabelText("Processing pixel data...")
             progress.setValue(40)
             
             pixel_array = ds.pixel_array
             original_dtype = pixel_array.dtype
-            print(f"Original data type: {original_dtype}")
-            print(f"Original data range: {pixel_array.min()} to {pixel_array.max()}")
+            logger.debug(f"Original data type: {original_dtype}")
+            logger.debug(f"Original data range: {pixel_array.min()} to {pixel_array.max()}")
             
             # Apply rescale slope and intercept
             if hasattr(ds, 'RescaleSlope') or hasattr(ds, 'RescaleIntercept'):
                 slope = getattr(ds, 'RescaleSlope', 1)
                 intercept = getattr(ds, 'RescaleIntercept', 0)
-                print(f"Applying rescale slope ({slope}) and intercept ({intercept})")
+                logger.debug(f"Applying rescale slope ({slope}) and intercept ({intercept})")
                 pixel_array = (pixel_array * slope + intercept)
             
             # Apply window/level
-            print("Applying window/level adjustments...")
+            logger.debug("Applying window/level adjustments...")
             pixel_array = self.apply_window_level(pixel_array, ds)
-            print(f"Adjusted data range: {pixel_array.min()} to {pixel_array.max()}")
+            logger.debug(f"Adjusted data range: {pixel_array.min()} to {pixel_array.max()}")
             
-            print(f"Image shape: {pixel_array.shape}")
-            print(f"Original dtype: {original_dtype}")
+            logger.debug(f"Image shape: {pixel_array.shape}")
+            logger.debug(f"Original dtype: {original_dtype}")
             
             # Save metadata
             progress.setLabelText("Saving metadata...")
@@ -236,8 +244,8 @@ class DicomConverter(QDialog):
             pixel_spacing = series_metadata.get("PixelSpacing", [1, 1])
             slice_thickness = series_metadata.get("SliceThickness", 1)
             
-            print(f"Pixel spacing: {pixel_spacing}")
-            print(f"Slice thickness: {slice_thickness}")
+            logger.debug(f"Pixel spacing: {pixel_spacing}")
+            logger.debug(f"Slice thickness: {slice_thickness}")
             
             # Save TIFF
             progress.setLabelText("Saving TIFF file(s)...")
@@ -245,7 +253,7 @@ class DicomConverter(QDialog):
             
             # Convert back to original dtype if needed
             if np.issubdtype(original_dtype, np.integer):
-                print("Converting back to original integer dtype...")
+                logger.debug("Converting back to original integer dtype...")
                 data_min = pixel_array.min()
                 data_max = pixel_array.max()
                 
@@ -255,7 +263,7 @@ class DicomConverter(QDialog):
                 else:
                     pixel_array = np.zeros_like(pixel_array, dtype=original_dtype)
                 
-                print(f"Final data range: {pixel_array.min()} to {pixel_array.max()}")
+                logger.debug(f"Final data range: {pixel_array.min()} to {pixel_array.max()}")
             
             # Prepare ImageJ metadata
             imagej_metadata = {
@@ -275,7 +283,7 @@ class DicomConverter(QDialog):
                 if len(pixel_array.shape) > 2:
                     imagej_metadata['axes'] = 'ZYX'
                 
-                print(f"Saving stack with metadata: {imagej_metadata}")
+                logger.debug(f"Saving stack with metadata: {imagej_metadata}")
                 
                 tifffile.imwrite(
                     output_file,
@@ -285,8 +293,8 @@ class DicomConverter(QDialog):
                     resolution=(1.0/float(pixel_spacing[0]), 1.0/float(pixel_spacing[1]))
                 )
                 
-                print(f"Saved stack to: {output_file}")
-                print(f"Stack shape: {pixel_array.shape}")
+                logger.info(f"Saved stack to: {output_file}")
+                logger.debug(f"Stack shape: {pixel_array.shape}")
                 
             # Replace the individual slices saving section in convert_dicom method with this:
             else:
@@ -303,13 +311,13 @@ class DicomConverter(QDialog):
                         QApplication.processEvents()
                         
                         if progress.wasCanceled():
-                            print("Operation cancelled by user")
+                            logger.warning("Operation cancelled by user")
                             return
                         
                         output_file = os.path.join(self.output_directory, 
                                                  f"{base_name}_slice_{i+1:03d}.tif")
                         
-                        print(f"Saving slice {i+1} with metadata: {imagej_metadata}")
+                        logger.debug(f"Saving slice {i+1} with metadata: {imagej_metadata}")
                         
                         tifffile.imwrite(
                             output_file,
@@ -319,13 +327,13 @@ class DicomConverter(QDialog):
                             resolution=(1.0/float(pixel_spacing[0]), 1.0/float(pixel_spacing[1]))
                         )
                         
-                    print(f"Saved {total_slices} individual slices")
+                    logger.info(f"Saved {total_slices} individual slices")
                     
                 else:
                     # Single slice DICOM
                     output_file = os.path.join(self.output_directory, f"{base_name}.tif")
                     
-                    print(f"Saving single slice with metadata: {imagej_metadata}")
+                    logger.debug(f"Saving single slice with metadata: {imagej_metadata}")
                     
                     tifffile.imwrite(
                         output_file,
@@ -335,7 +343,7 @@ class DicomConverter(QDialog):
                         resolution=(1.0/float(pixel_spacing[0]), 1.0/float(pixel_spacing[1]))
                     )
                     
-                    print(f"Saved single slice to: {output_file}")
+                    logger.info(f"Saved single slice to: {output_file}")
             
             progress.setValue(100)
             
@@ -361,9 +369,7 @@ class DicomConverter(QDialog):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
-            print(f"Error occurred: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Error occurred")
 
 
     def show_centered(self, parent):

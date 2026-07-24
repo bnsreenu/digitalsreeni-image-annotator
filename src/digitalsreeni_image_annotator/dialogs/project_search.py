@@ -6,6 +6,11 @@ import os
 import json
 from datetime import datetime
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
 class ProjectSearchDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -88,8 +93,8 @@ class ProjectSearchDialog(QDialog):
                         
                         if self.project_matches(project_data, query, start_date, end_date):
                             self.results_list.addItem(project_path)
-                    except Exception as e:
-                        print(f"Error reading project file {filename}: {str(e)}")
+                    except Exception:
+                        logger.exception(f"Error reading project file {filename}")
 
         if self.results_list.count() == 0:
             QMessageBox.information(self, "Search Results", "No matching projects found.")
@@ -105,7 +110,7 @@ class ProjectSearchDialog(QDialog):
                 if creation_date < start_date or creation_date > end_date:
                     return False
             except ValueError:
-                print(f"Invalid date format in project: {creation_date}")
+                logger.warning(f"Invalid date format in project: {creation_date}")
 
         if not query:
             return True

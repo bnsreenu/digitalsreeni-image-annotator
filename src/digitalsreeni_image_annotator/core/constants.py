@@ -8,7 +8,8 @@ Dr. Sreenivas Bhattiprolu
 """
 
 # File dialog filters
-IMAGE_FILE_FILTER = "Image Files (*.png *.jpg *.bmp)"
+# (image/video open filter lives in video_handler.file_dialog_filter(), derived
+#  from VIDEO_EXTS so it can't drift from is_video() -- #47/#48)
 JSON_FILE_FILTER = "JSON Files (*.json)"
 
 # Default window size

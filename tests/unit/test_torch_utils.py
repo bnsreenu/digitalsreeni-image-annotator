@@ -126,3 +126,26 @@ def test_no_warning_dialog_when_device_ok(fake_torch, monkeypatch, qt_applicatio
 
     torch_utils.maybe_warn_cpu_fallback(None)
     assert calls == []
+
+
+class TestIsOom:
+    """``_is_oom`` classifies out-of-memory failures torch-free (issue #34)."""
+
+    def test_memoryerror_is_oom(self):
+        assert torch_utils._is_oom(MemoryError()) is True
+
+    def test_cuda_out_of_memory_message_is_oom(self):
+        assert torch_utils._is_oom(
+            RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        ) is True
+
+    def test_not_enough_memory_message_is_oom(self):
+        assert torch_utils._is_oom(RuntimeError("not enough memory")) is True
+
+    def test_plain_runtimeerror_is_not_oom(self):
+        assert torch_utils._is_oom(RuntimeError("weights corrupt")) is False
+
+    def test_wrong_type_with_oom_text_is_not_oom(self):
+        # Only MemoryError or RuntimeError qualify; the message text alone on a
+        # different exception type must not be treated as OOM.
+        assert torch_utils._is_oom(ValueError("out of memory")) is False

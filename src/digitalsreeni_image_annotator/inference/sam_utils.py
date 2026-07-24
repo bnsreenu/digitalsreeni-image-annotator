@@ -30,7 +30,6 @@ startup stays fast for users who never touch SAM.
 from __future__ import annotations
 
 import os
-import traceback
 
 import cv2
 import numpy as np
@@ -38,6 +37,10 @@ from PyQt6.QtCore import QEventLoop, QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QImage
 
 from ..utils import models_base_dir
+
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 MODEL_NAMES = [
@@ -213,8 +216,7 @@ class _InferenceThread(QThread):
             # We DO emit a traceback to the console here so the failure
             # mode is visible even if a caller swallows the exception in
             # a broad except block (debugging silent-failure regressions).
-            print(f"[InferenceThread] {type(exc).__name__}: {exc}")
-            traceback.print_exc()
+            logger.exception("Exception in inference thread")
             self._exc = exc
         self.finished_with_result.emit()
 
@@ -326,7 +328,7 @@ class SAMUtils(QObject):
             self.current_sam_model = None
             self._model = None
             self._loaded_model_file = None
-            print("SAM model unset")
+            logger.info("SAM model unset")
             return
 
         # Resolve to a checkpoint path first (built-in name or fine-tuned
@@ -341,7 +343,7 @@ class SAMUtils(QObject):
         _run_sync(self._load_model_blocking, model_file)
         self.current_sam_model = model_name
         self.model_changed.emit(model_name)
-        print(f"SAM model loaded: {model_name}")
+        logger.info(f"SAM model loaded: {model_name}")
 
     def _load_model_blocking(self, model_file: str) -> None:
         # Lazy import keeps app startup fast for users who never use SAM.
@@ -359,11 +361,11 @@ class SAMUtils(QObject):
             import torch
             if self._device == "cuda":
                 dev = torch.cuda.get_device_name(0)
-                print(f"[SAM] Using CUDA: {torch.version.cuda} — {dev}")
+                logger.info(f"Using CUDA: {torch.version.cuda} — {dev}")
             else:
-                print("[SAM] Running on CPU")
+                logger.info("Running on CPU")
         except Exception:
-            pass
+            logger.debug("could not query torch device", exc_info=True)
 
     def unload(self) -> None:
         """Free GPU/CPU memory held by the loaded model.
@@ -389,8 +391,11 @@ class SAMUtils(QObject):
         try:
             if self._model is not None and hasattr(self._model, "model"):
                 self._model.model.cpu()
-        except Exception as e:
-            print(f"[SAM] unload: warning moving model to CPU: {e}")
+        except Exception:
+            logger.warning(
+                "unload: moving model to CPU failed; GPU memory may not be "
+                "fully released", exc_info=True,
+            )
         self._model = None
         self.current_sam_model = None
         self._loaded_model_file = None
@@ -402,17 +407,20 @@ class SAMUtils(QObject):
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
         except Exception:
-            pass
-        print("[SAM] unload complete")
+            logger.warning(
+                "CUDA cache cleanup failed during unload; GPU memory may not "
+                "be fully released", exc_info=True,
+            )
+        logger.info("unload complete")
 
     # ── inference ──────────────────────────────────────────────────────
 
     def apply_sam_points(self, image: QImage, positive_points, negative_points):
         if not self.current_sam_model or self._model is None:
-            print("No SAM model selected.")
+            logger.warning("No SAM model selected.")
             return None
         if not positive_points:
-            print("No positive points for SAM-points")
+            logger.warning("No positive points for SAM-points")
             return None
         return _run_sync(
             self._sam_points_blocking,
@@ -449,7 +457,7 @@ class SAMUtils(QObject):
 
     def apply_sam_prediction(self, image: QImage, bbox):
         if not self.current_sam_model or self._model is None:
-            print("No SAM model selected.")
+            logger.warning("No SAM model selected.")
             return None
         return _run_sync(
             self._sam_bbox_blocking,
@@ -488,12 +496,12 @@ class SAMUtils(QObject):
 
     def apply_sam_predictions_batch(self, image: QImage, bboxes: list):
         if not self.current_sam_model or self._model is None:
-            print("[SAM] apply_sam_predictions_batch: no SAM model selected")
+            logger.warning("apply_sam_predictions_batch: no SAM model selected")
             return None
         if not bboxes:
-            print("[SAM] apply_sam_predictions_batch: empty bbox list")
+            logger.debug("apply_sam_predictions_batch: empty bbox list")
             return []
-        print(f"[SAM] apply_sam_predictions_batch: running on {len(bboxes)} bbox(es)")
+        logger.debug(f"apply_sam_predictions_batch: running on {len(bboxes)} bbox(es)")
         return _run_sync(
             self._sam_batch_blocking,
             _qimage_to_numpy(image),

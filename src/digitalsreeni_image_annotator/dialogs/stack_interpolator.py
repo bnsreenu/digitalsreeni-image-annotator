@@ -8,6 +8,11 @@ from scipy.interpolate import RegularGridInterpolator
 from skimage import io
 import tifffile
 
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
 class StackInterpolator(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -218,8 +223,8 @@ class StackInterpolator(QDialog):
                 
                 # Load stack preserving original dtype
                 stack = io.imread(self.input_path)
-                print(f"Loaded stack dtype: {stack.dtype}")
-                print(f"Value range: [{stack.min()}, {stack.max()}]")
+                logger.debug(f"Loaded stack dtype: {stack.dtype}")
+                logger.debug(f"Value range: [{stack.min()}, {stack.max()}]")
                 
                 progress.setValue(90)
                 QApplication.processEvents()
@@ -239,8 +244,8 @@ class StackInterpolator(QDialog):
                 stack = np.zeros((len(files), *first_img.shape), dtype=first_img.dtype)
                 stack[0] = first_img
                 
-                print(f"Created stack with dtype: {stack.dtype}")
-                print(f"First image range: [{first_img.min()}, {first_img.max()}]")
+                logger.debug(f"Created stack with dtype: {stack.dtype}")
+                logger.debug(f"First image range: [{first_img.min()}, {first_img.max()}]")
     
                 # Load remaining images
                 for i, fname in enumerate(files[1:], 1):
@@ -290,9 +295,9 @@ class StackInterpolator(QDialog):
             original_dtype = input_stack.dtype
             type_range = np.iinfo(original_dtype) if np.issubdtype(original_dtype, np.integer) else None
             
-            print(f"Original data type: {original_dtype}")
-            print(f"Original shape: {input_stack.shape}")
-            print(f"Original range: {input_stack.min()} - {input_stack.max()}")
+            logger.debug(f"Original data type: {original_dtype}")
+            logger.debug(f"Original shape: {input_stack.shape}")
+            logger.debug(f"Original range: {input_stack.min()} - {input_stack.max()}")
             
             # Normalize input data to float64 for interpolation
             input_stack_normalized = input_stack.astype(np.float64)
@@ -316,7 +321,7 @@ class StackInterpolator(QDialog):
             x_new = x_new[x_new < x_old[-1] + self.new_xy_size.value()]
     
             new_shape = (len(z_new), len(y_new), len(x_new))
-            print(f"New dimensions will be: {new_shape}")
+            logger.debug(f"New dimensions will be: {new_shape}")
     
             # Initialize output array
             interpolated_data = np.zeros(new_shape, dtype=np.float64)
@@ -435,8 +440,8 @@ class StackInterpolator(QDialog):
             else:
                 interpolated_data = interpolated_data.astype(original_dtype)
     
-            print(f"Final dtype: {interpolated_data.dtype}")
-            print(f"Final range: [{interpolated_data.min()}, {interpolated_data.max()}]")
+            logger.debug(f"Final dtype: {interpolated_data.dtype}")
+            logger.debug(f"Final range: [{interpolated_data.min()}, {interpolated_data.max()}]")
     
             # Save output
             progress.setLabelText("Saving interpolated stack...")
@@ -492,9 +497,7 @@ class StackInterpolator(QDialog):
     
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
-            print(f"Error occurred: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Error occurred")
         finally:
             progress.close()
             QApplication.processEvents()

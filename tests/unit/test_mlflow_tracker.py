@@ -196,3 +196,31 @@ class TestLiveLogging:
         assert t.run_id and t.experiment_id
         assert seen[0] == mlflow_tracker.run_ui_url(t.experiment_id, t.run_id)
         assert t.run_id in seen[0] and t.experiment_id in seen[0]
+
+
+class TestEmitCrashSafety:
+    def test_emit_swallows_and_logs_broken_sink(self):
+        """A raising log sink must not propagate out of ``_emit``; the dropped
+        message is logged via the module logger instead (issue #34). Capture is
+        done by attaching a handler to ``mlflow_tracker.logger`` directly, which
+        is robust to the package logger's ``propagate = False`` (ADR-030)."""
+        import logging
+
+        def broken_sink(msg):
+            raise RuntimeError("sink is broken")
+
+        t = MLflowTracker(tracking_uri="x", log=broken_sink)
+
+        records = []
+        handler = logging.Handler()
+        handler.emit = lambda r: records.append(r.getMessage())
+        old_level = mlflow_tracker.logger.level
+        mlflow_tracker.logger.addHandler(handler)
+        mlflow_tracker.logger.setLevel(logging.DEBUG)
+        try:
+            t._emit("hello")  # must NOT raise even though the sink throws
+        finally:
+            mlflow_tracker.logger.removeHandler(handler)
+            mlflow_tracker.logger.setLevel(old_level)
+
+        assert any("hello" in m for m in records)

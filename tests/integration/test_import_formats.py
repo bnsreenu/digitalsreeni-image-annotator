@@ -7,7 +7,6 @@ for full round-trips.
 """
 
 import json
-import os
 
 import pytest
 import yaml as yaml_lib
@@ -93,11 +92,17 @@ class TestCOCOImportKeypoints:
         assert "segmentation" not in ann
         assert "type" not in ann
 
-    def test_keypoint_annotation_with_mask_drops_mask_and_notes_it(self, tmp_path, capsys):
+    def test_keypoint_annotation_with_mask_drops_mask_and_notes_it(self, tmp_path):
         """A real-world person_keypoints-style annotation can carry BOTH
         keypoints and a segmentation mask; the app's pose model has no mask
         (ADR-029) so it's dropped -- but that's a data reduction, not a
-        silent one (issue #35 PR-2 review)."""
+        silent one (issue #35 PR-2 review).
+
+        The drop is now announced via ``logger.info`` (issue #33), not a
+        ``print``; capture it with a handler attached directly to the module's
+        own logger (resolved from ``import_coco_json.__module__`` so it matches
+        this file's ``src.`` import path, not a differently-rooted logger)."""
+        import logging
         json_path = self._coco_with_pose_category(
             tmp_path,
             keypoints_ann={
@@ -109,12 +114,23 @@ class TestCOCOImportKeypoints:
             },
         )
 
-        imported, _, _ = import_coco_json(str(json_path), {})
+        records = []
+        handler = logging.Handler()
+        handler.emit = lambda r: records.append(r.getMessage())
+        mod_logger = logging.getLogger(import_coco_json.__module__)
+        old_level = mod_logger.level
+        mod_logger.addHandler(handler)
+        mod_logger.setLevel(logging.INFO)
+        try:
+            imported, _, _ = import_coco_json(str(json_path), {})
+        finally:
+            mod_logger.removeHandler(handler)
+            mod_logger.setLevel(old_level)
 
         ann = imported["img.png"]["person"][0]
         assert "keypoints" in ann
         assert "segmentation" not in ann
-        assert "dropped" in capsys.readouterr().out
+        assert any("dropped" in m for m in records)
 
     def test_keypoint_annotation_missing_bbox_gets_synthesized(self, tmp_path):
         json_path = self._coco_with_pose_category(

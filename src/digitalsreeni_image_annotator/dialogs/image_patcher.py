@@ -9,7 +9,11 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtCore import QTimer, QEventLoop
 from tifffile import TiffFile, imwrite
 from PIL import Image
-import traceback
+
+from ..core.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class DimensionDialog(QDialog):
     def __init__(self, shape, file_name, parent=None):
@@ -69,7 +73,7 @@ class PatchingThread(QThread):
             self.finished.emit()
         except Exception as e:
             self.error.emit(str(e))
-            traceback.print_exc()
+            logger.exception("Image patching failed")
 
     def patch_image(self, file_path):
         file_name = os.path.basename(file_path)

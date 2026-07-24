@@ -158,12 +158,65 @@ class ClassThresholdTable(QTableWidget):
         item = self.item(row, _COL_NAME)
         return item.text() if item else None
 
+    def select_class_by_name(self, name: str) -> bool:
+        """Select the row whose class name matches ``name``.
+
+        Keeps this table (and, via its ``itemSelectionChanged`` cascade to
+        the phrase panel) in sync when the *top* class list drives the
+        selection -- the top list is the single source of truth (#63).
+        Returns True when a matching row was found; a no-op returning False
+        for names not in the table (e.g. ``Temp-*`` review classes), leaving
+        the current selection intact.
+
+        ``selectRow`` is called unconditionally: Qt already suppresses the
+        redundant ``itemSelectionChanged`` when the row is genuinely selected,
+        and guarding on ``currentRow()`` would be wrong under the inherited
+        ``ExtendedSelection`` mode, where ``currentRow()`` can still point at a
+        row the user has Ctrl+click *de*selected -- skipping would then leave
+        the table with no highlighted row.
+        """
+        for r in range(self.rowCount()):
+            item = self.item(r, _COL_NAME)
+            if item and item.text() == name:
+                self.selectRow(r)
+                return True
+        return False
+
+    def rename_class(self, old_name: str, new_name: str) -> bool:
+        """Retarget the row for ``old_name`` to ``new_name``, keeping its
+        thresholds. Returns False when no such row exists, or when another row
+        already holds ``new_name``.
+
+        The collision guard mirrors ``add_class``: row names must stay unique,
+        because ``get_thresholds_dict`` keys by name (a duplicate silently
+        drops one row's thresholds) and ``_build_dino_class_configs`` iterates
+        rows (a duplicate makes DINO run the same class twice). Callers should
+        reject the rename outright -- see ``ClassController.rename_class`` --
+        so this is the backstop, not the error message.
+        """
+        target = None
+        for r in range(self.rowCount()):
+            item = self.item(r, _COL_NAME)
+            if item is None:
+                continue
+            if item.text() == new_name and item.text() != old_name:
+                return False
+            if item.text() == old_name:
+                target = item
+        if target is None:
+            return False
+        target.setText(new_name)
+        return True
+
 
 class PhraseEditorPanel(QWidget):
     """
-    Shows the phrase list for whichever class row is currently selected in
-    ClassThresholdTable.  The class name itself is always the first phrase
-    and is locked (cannot be removed).
+    Shows the phrase list for the currently active class. The active class is
+    whichever row is selected in ClassThresholdTable -- which in turn follows
+    the *top* class list, the single source of truth, via
+    ClassController.on_class_selected -> ClassThresholdTable.select_class_by_name
+    (#63). The class name itself is the first phrase and is locked (cannot be
+    removed, though it may be renamed).
 
     Phrases are stored in a dict keyed by class name:
         self._phrases = {"mitochondria": ["mitochondria", "elongated organelle"], ...}
@@ -333,6 +386,31 @@ class PhraseEditorPanel(QWidget):
         self._phrases.pop(class_name, None)
         if self._active_class == class_name:
             self.set_active_class(None)
+
+    def on_class_renamed(self, old_name: str, new_name: str):
+        """Follow a class rename so its phrases aren't orphaned.
+
+        This dict is keyed by class name, so without this a rename strands the
+        old key: DINO would keep detecting under the dead name, and the next
+        project load silently drops the phrases (they are filtered against the
+        live class list). The first phrase is the class name by convention, but
+        row 0 is independently renameable -- so it is retargeted only when it
+        still holds the old class name, leaving a user-customised prompt alone.
+        """
+        if old_name == new_name:
+            return
+        phrases = self._phrases.pop(old_name, None)
+        if phrases is not None:
+            if phrases and phrases[0] == old_name:
+                phrases[0] = new_name
+            self._phrases[new_name] = phrases
+        # Retarget the active class even when no phrase entry existed (a
+        # set_phrases() wholesale replace can strand _active_class), so the
+        # panel can't keep showing the old name after the table row renamed.
+        # Note set_active_class materialises _phrases[new_name] = [new_name]
+        # in that no-entry branch -- it creates state, it doesn't only display.
+        if self._active_class == old_name:
+            self.set_active_class(new_name)
 
     def get_phrases_for(self, class_name: str) -> list[str]:
         # Return the user-edited phrase list as-is. The class-name

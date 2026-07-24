@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "digitalsreeni-image-annotator"
+dynamic = ["version"]
+description = "A tool for annotating images using manual and automated tools, supporting multi-dimensional images and SAM2-assisted annotations"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Dr. Sreenivas Bhattiprolu", email = "digitalsreeni@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "PyQt6>=6.7.0",
+    "numpy>=2.0.0",           # pip resolves 2.4+ on Py3.14, 2.2.x on Py3.10
+    "Pillow>=10.0.0",
+    "tifffile>=2023.0.0",
+    "imagecodecs>=2023.1.23", # tifffile needs it for LZW/compressed TIFF (#56)
+    "czifile>=2019.7.2",
+    "opencv-python>=4.8.0",
+    "pyyaml>=6.0.0",
+    "scikit-image>=0.21.0",
+    "ultralytics>=8.3.237,<9", # SAM 2/3 integration; SAM 3 text prompt (SAM3SemanticPredictor) needs >=8.3.237 — issue #50 / ADR-038; trainer verified on 8.4.51
+    "plotly>=5.0.0",
+    "shapely>=2.0.0",
+    "pystackreg>=0.2.7",
+    "pydicom>=2.3.0",
+    "torch>=2.2.0",           # first release with NumPy 2.x compatibility
+    "torchvision>=0.17.0",
+    "transformers>=4.40.0",
+    "huggingface_hub>=0.20.0",
+    "mlflow>=2.0.0",          # experiment tracking (#74); always-on core dep
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-qt>=4.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "pytest-xvfb>=3.0.0; sys_platform == 'linux'",
+]
+
+[project.urls]
+Homepage = "https://github.com/bnsreenu/digitalsreeni-image-annotator"
+
+[project.scripts]
+digitalsreeni-image-annotator = "digitalsreeni_image_annotator.main:main"
+sreeni = "digitalsreeni_image_annotator.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "digitalsreeni_image_annotator.__version__" }
