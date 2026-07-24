@@ -18,32 +18,39 @@ If you find this project helpful, consider supporting it:
 
 [![Watch the demo video](https://img.youtube.com/vi/aArn1f1YIQk/maxresdefault.jpg)](https://youtu.be/aArn1f1YIQk)
 
+This video predates several major features (Grounding-DINO, SAM fine-tuning, keypoint/pose annotation, undo/redo, dark mode) — see Features below for the current feature set.
+
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
 
 ## Features
 
 - Semi-automated annotations with SAM-2 assistance (Segment Anything Model) — Because who doesn't love a helpful AI sidekick?
+- Grounding-DINO text-prompted object detection — describe what you want in plain English and review/accept detections one image or a whole batch at a time.
+- SAM 2 fine-tuning on your own annotations, with always-on MLflow experiment tracking, so you can adapt SAM to your specific dataset instead of relying on the generic pre-trained weights.
+- Keypoint / pose annotation with per-class named skeletons (COCO instance model, 3-state point visibility), including COCO-keypoints and YOLO-pose export/import.
 - Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge.
 - Paint brush and Eraser tools with adjustable pen sizes (use - and = on your keyboard)
 - Merge annotations - For when SAM-2's guesswork needs a little human touch.
+- Undo / redo for annotation edits (Ctrl+Z / Ctrl+Y).
+- Handle-based resize/move and vertex editing for any selected shape, with canvas selection unified with the annotations table.
 - Save and load projects for continued work.
 - Save As... and Autosave functionality.
 - A secret game, for when you are bored.
 - Import existing COCO JSON annotations with images.
-- Export annotations to various formats (COCO JSON, YOLO v8/v11, Labeled images, Semantic labels, Pascal VOC).
+- Export annotations to various formats (COCO JSON, YOLO v8/v11, YOLO-pose, Labeled images, Semantic labels, Pascal VOC).
 - Handle multi-dimensional images (TIFF stacks and CZI files).
 - Zoom and pan for detailed annotations.
 - Support for multiple classes with customizable colors.
-- User-friendly interface with intuitive controls.
+- User-friendly interface with intuitive controls, built on PyQt6.
 - Change the application font size on the fly — Make your annotations as big or small as your caffeine level requires.
 - Dark mode for those late-night annotation marathons — Who needs sleep when you have dark mode?
 - Pick appropriate pre-trained SAM2 model for flexible and improved semi-automated annotations.
 - Change the class of an annotation to a different class.
 - Turn visibility of a class ON and OFF.
-- YOLO (beta) training using current annotations and loading trained model to segment images.
-- Area measurements for annotations displayed next to the Annotation name.
-- Sort annotations by name/number or area.
+- YOLO training (detection, segmentation, and pose) using current annotations and loading trained models to predict on images.
+- Area measurements for annotations displayed next to the Annotation name, with per-mask detail/simplification control.
+- Sort and filter annotations and images by name/number or area.
 - Additional supporting tools:
   - Annotation statistics for current annotations
   - COCO JSON combiner
@@ -199,7 +206,8 @@ pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorc
 
 ## Known Issues and Bug Fixes
 
-- The application may not work correctly on Linux systems. Extensive testing has not been done yet.
+- YOLO training is not currently supported for multi-dimensional images (TIFF stacks / CZI slices) — single images only.
+- SAM 2 large may crash the application on systems with limited RAM; smaller SAM2 models are recommended.
 - When loading a YOLO model trained on different classes compared to the loaded YAML file, the application now gives a message to the user about the mismatch instead of crashing.
 - Various other bugs have been addressed to improve overall stability and performance.
 
