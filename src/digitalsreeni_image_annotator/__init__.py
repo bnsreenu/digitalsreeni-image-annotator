@@ -7,7 +7,7 @@ supporting polygon and rectangle annotations in a COCO-compatible format.
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
 """
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 __author__ = "Dr. Sreenivas Bhattiprolu"
 
 # Lazy loading — importing this package must NOT pull in PyQt6, because

@@ -1,6 +1,6 @@
 # DigitalSreeni Image Annotator — User Manual
 
-**Version 0.9.0**
+**Version 0.9.1**
 
 *A desktop tool for annotating images and videos with polygons, rectangles, keypoints, and AI-assisted masks — with built-in support for fine-tuning your own SAM 2 model and training YOLO models on your annotations.*
 
@@ -557,4 +557,4 @@ Each of these opens its own guided dialog:
 
 ---
 
-*This manual covers DigitalSreeni Image Annotator v0.9.0. For the latest source, issues, and releases, see the project's GitHub repository.*
+*This manual covers DigitalSreeni Image Annotator v0.9.0's feature set (packaged as v0.9.1). For the latest source, issues, and releases, see the project's GitHub repository.*

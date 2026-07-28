@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-27
+
+### Added
+- Comprehensive `USER_MANUAL.md` (+ print-ready HTML/PDF versions) covering
+  every v0.9.0 feature, including video annotation, SAM 3 text-prompted
+  detection and video object tracking, keypoint/pose annotation, SAM 2
+  fine-tuning, and undo/redo/shape editing.
+- pepy.tech downloads badge on the README.
+
+### Changed
+- Expanded the in-app Help window (F1) with matching sections and a pointer
+  to the full manual; corrected a stale keyboard shortcut.
+- README demo video/thumbnail now points to the v0.9.0 walkthrough.
+
+No functional/application code changed in this release.
+
 ## [0.9.0] - 2026-07-24
 
 ### Added

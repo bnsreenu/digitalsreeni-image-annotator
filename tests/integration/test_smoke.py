@@ -20,7 +20,7 @@ def test_public_api_exports():
     """The five names documented in __init__.py must remain importable."""
     import digitalsreeni_image_annotator as pkg
 
-    assert pkg.__version__ == "0.9.0"
+    assert pkg.__version__ == "0.9.1"
     assert hasattr(pkg, "ImageAnnotator")
     assert hasattr(pkg, "ImageLabel")
     assert hasattr(pkg, "SAMUtils")
