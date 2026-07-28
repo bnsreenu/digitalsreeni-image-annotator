@@ -1,0 +1,1481 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>DigitalSreeni Image Annotator — User Manual (v0.9.0)</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <style>
+    @page { margin: 2cm; }
+    body {
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: #1a1a1a;
+      line-height: 1.5;
+      max-width: 780px;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+    }
+    h1 { font-size: 1.9rem; border-bottom: 3px solid #2c5f7c; padding-bottom: 0.3rem; margin-top: 2.2rem; }
+    h2 { font-size: 1.35rem; color: #1f4a5f; border-bottom: 1px solid #ccc; padding-bottom: 0.2rem; margin-top: 2rem; page-break-after: avoid; }
+    h3 { font-size: 1.1rem; color: #2c5f7c; margin-top: 1.4rem; page-break-after: avoid; }
+    h1:first-of-type { margin-top: 0; text-align: center; border-bottom: none; font-size: 2.2rem; }
+    p, li { font-size: 0.97rem; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; page-break-inside: avoid; }
+    th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+    th { background: #eef3f6; }
+    code { background: #f0f0f0; padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.88em; }
+    pre { background: #f5f5f5; padding: 0.7rem; border-radius: 4px; overflow-x: auto; }
+    blockquote { border-left: 4px solid #2c5f7c; margin-left: 0; padding-left: 1rem; color: #444; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 2rem 0; }
+    a { color: #2c5f7c; }
+    ul, ol { padding-left: 1.4rem; }
+    nav#TOC { background: #f7f9fa; border: 1px solid #ddd; border-radius: 6px; padding: 1rem 1.5rem; margin: 1.5rem 0 2rem; }
+    nav#TOC ul { list-style: none; padding-left: 1rem; }
+    nav#TOC > ul { padding-left: 0; }
+    nav#TOC a { text-decoration: none; }
+    @media print {
+      body { margin: 0; max-width: 100%; }
+      h2, h1 { page-break-before: auto; }
+    }
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">DigitalSreeni Image Annotator — User Manual
+(v0.9.0)</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#digitalsreeni-image-annotator-user-manual"
+id="toc-digitalsreeni-image-annotator-user-manual">DigitalSreeni Image
+Annotator — User Manual</a>
+<ul>
+<li><a href="#introduction" id="toc-introduction">Introduction</a></li>
+<li><a href="#installation" id="toc-installation">Installation</a></li>
+<li><a href="#the-interface-at-a-glance"
+id="toc-the-interface-at-a-glance">The Interface at a Glance</a></li>
+<li><a href="#starting-a-project" id="toc-starting-a-project">Starting a
+Project</a></li>
+<li><a href="#loading-images-and-videos"
+id="toc-loading-images-and-videos">Loading Images and Videos</a></li>
+<li><a href="#classes" id="toc-classes">Classes</a></li>
+<li><a href="#manual-annotation-tools"
+id="toc-manual-annotation-tools">Manual Annotation Tools</a></li>
+<li><a href="#selecting-editing-and-deleting-annotations"
+id="toc-selecting-editing-and-deleting-annotations">Selecting, Editing,
+and Deleting Annotations</a></li>
+<li><a href="#undo-redo" id="toc-undo-redo">Undo / Redo</a></li>
+<li><a href="#sam-2-ai-assisted-segmentation"
+id="toc-sam-2-ai-assisted-segmentation">SAM 2 — AI-Assisted
+Segmentation</a></li>
+<li><a href="#grounding-dino-text-prompted-detection"
+id="toc-grounding-dino-text-prompted-detection">Grounding-DINO —
+Text-Prompted Detection</a></li>
+<li><a href="#sam-3-text-prompted-segmentation"
+id="toc-sam-3-text-prompted-segmentation">SAM 3 — Text-Prompted
+Segmentation</a></li>
+<li><a href="#video-annotation-and-object-tracking"
+id="toc-video-annotation-and-object-tracking">Video Annotation and
+Object Tracking</a></li>
+<li><a href="#keypoint-pose-annotation"
+id="toc-keypoint-pose-annotation">Keypoint / Pose Annotation</a></li>
+<li><a href="#multi-dimensional-images-tiff-stacks-czi"
+id="toc-multi-dimensional-images-tiff-stacks-czi">Multi-Dimensional
+Images (TIFF Stacks &amp; CZI)</a></li>
+<li><a href="#mask-complexity-detail"
+id="toc-mask-complexity-detail">Mask Complexity — Detail %</a></li>
+<li><a href="#saving-loading-and-managing-projects"
+id="toc-saving-loading-and-managing-projects">Saving, Loading, and
+Managing Projects</a></li>
+<li><a href="#importing-annotations"
+id="toc-importing-annotations">Importing Annotations</a></li>
+<li><a href="#exporting-annotations"
+id="toc-exporting-annotations">Exporting Annotations</a></li>
+<li><a href="#sam-2-fine-tuning-custom-model-training"
+id="toc-sam-2-fine-tuning-custom-model-training">SAM 2 Fine-Tuning
+(Custom Model Training)</a></li>
+<li><a href="#yolo-training-and-prediction"
+id="toc-yolo-training-and-prediction">YOLO Training and
+Prediction</a></li>
+<li><a href="#experiment-tracking-with-mlflow"
+id="toc-experiment-tracking-with-mlflow">Experiment Tracking with
+MLflow</a></li>
+<li><a href="#tools-menu-dataset-image-utilities"
+id="toc-tools-menu-dataset-image-utilities">Tools Menu — Dataset &amp;
+Image Utilities</a></li>
+<li><a href="#appearance-dark-mode-and-font-size"
+id="toc-appearance-dark-mode-and-font-size">Appearance: Dark Mode and
+Font Size</a></li>
+<li><a href="#keyboard-shortcuts-reference"
+id="toc-keyboard-shortcuts-reference">Keyboard Shortcuts
+Reference</a></li>
+<li><a href="#troubleshooting-known-limitations"
+id="toc-troubleshooting-known-limitations">Troubleshooting &amp; Known
+Limitations</a></li>
+<li><a href="#glossary" id="toc-glossary">Glossary</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="digitalsreeni-image-annotator-user-manual">DigitalSreeni Image
+Annotator — User Manual</h1>
+<p><strong>Version 0.9.0</strong></p>
+<p><em>A desktop tool for annotating images and videos with polygons,
+rectangles, keypoints, and AI-assisted masks — with built-in support for
+fine-tuning your own SAM 2 model and training YOLO models on your
+annotations.</em></p>
+<hr />
+<p><em>A table of contents is generated automatically when this file is
+viewed on GitHub (the outline icon) or converted to HTML/PDF (see the
+accompanying <code>USER_MANUAL.html</code>).</em></p>
+<hr />
+<h2 id="introduction">Introduction</h2>
+<p>DigitalSreeni Image Annotator is a PyQt6 desktop application for
+creating image and video annotations for computer-vision datasets —
+object detection, instance segmentation, semantic segmentation, and
+keypoint/pose estimation.</p>
+<p>It supports three complementary ways of creating annotations:</p>
+<ul>
+<li><strong>Manual</strong> — polygon, rectangle, paint-brush, and
+eraser tools.</li>
+<li><strong>AI-assisted, prompted by you</strong> — SAM 2 (click points
+or draw a box, get a mask), Grounding-DINO and SAM 3 (describe the
+object in plain English, get boxes/masks).</li>
+<li><strong>AI-assisted, from a model you trained</strong> — fine-tune
+SAM 2 or train a YOLO model on your own annotations, then use it to
+pre-label the rest of your dataset.</li>
+</ul>
+<p>It also natively handles the kinds of images a manual annotation tool
+usually struggles with: multi-page TIFF stacks, Zeiss CZI microscopy
+files, and video files (MP4/AVI/MOV) — each treated as a navigable stack
+of 2D slices/frames.</p>
+<p>Everything lives inside a <strong>project</strong> (an
+<code>.iap</code>/JSON file) that stores your images, classes, and
+annotations together, with autosave and a full undo/redo history for
+every edit.</p>
+<hr />
+<h2 id="installation">Installation</h2>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install digitalsreeni-image-annotator</span></code></pre></div>
+<p>This pulls in PyTorch, Ultralytics (SAM 2 / YOLO), Transformers
+(Grounding-DINO), OpenCV, Shapely, and MLflow — there is nothing extra
+to install to get AI-assisted annotation working.</p>
+<p>Run the app with any of:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">digitalsreeni-image-annotator</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">sreeni</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-m</span> digitalsreeni_image_annotator.main</span></code></pre></div>
+<h3 id="gpu-acceleration-nvidia">GPU acceleration (NVIDIA)</h3>
+<p>The default PyPI install on Windows ships a <strong>CPU-only</strong>
+PyTorch wheel. If you have an NVIDIA GPU, reinstall PyTorch from the
+CUDA index for a large speed-up in SAM, Grounding-DINO, SAM 3, and
+training:</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> uninstall <span class="at">-y</span> torch torchvision</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install torch torchvision <span class="at">--index-url</span> https://download.pytorch.org/whl/cu128</span></code></pre></div>
+<p>If <code>cu128</code> reports “no matching distribution,” try
+<code>cu124</code>. Verify with:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">python</span> <span class="at">-c</span> <span class="st">&quot;import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))&quot;</span></span></code></pre></div>
+<p><strong>Older NVIDIA GPUs</strong> (GTX 10-series / Pascal, or
+Maxwell): PyTorch ≥ 2.8 wheels drop kernels for compute capability &lt;
+7.0. The app detects this automatically, warns you once, and falls back
+to CPU instead of crashing. To keep using such a GPU, install an older
+PyTorch build instead:</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">pip</span> install torch==2.4.1 torchvision==0.19.1 <span class="at">--index-url</span> https://download.pytorch.org/whl/cu121</span></code></pre></div>
+<h3 id="linux-runtime-libraries">Linux runtime libraries</h3>
+<p>Qt 6 requires:
+<code>sudo apt install libxcb-cursor0 libegl1 libgl1 libxcb-xinerama0 libxkbcommon-x11-0</code>
+(Debian/Ubuntu).</p>
+<hr />
+<h2 id="the-interface-at-a-glance">The Interface at a Glance</h2>
+<table>
+<colgroup>
+<col style="width: 28%" />
+<col style="width: 71%" />
+</colgroup>
+<thead>
+<tr>
+<th>Area</th>
+<th>What’s there</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Menu bar</strong></td>
+<td>Project, Settings, Tools, Help</td>
+</tr>
+<tr>
+<td><strong>Left sidebar</strong></td>
+<td>Tool buttons (Polygon / Rectangle / Paint / Eraser / SAM-box /
+SAM-points / Keypoint), class list, SAM model picker, Grounding-DINO /
+SAM 3 panel</td>
+</tr>
+<tr>
+<td><strong>Center</strong></td>
+<td>The canvas — the current image or video frame, with zoom/pan, and
+(for videos) a scrub timeline below it</td>
+</tr>
+<tr>
+<td><strong>Right side</strong></td>
+<td>Image list (with an annotation-status filter and A–Z sort) and,
+below it, the slice list for stacks/videos</td>
+</tr>
+<tr>
+<td><strong>Bottom-left</strong></td>
+<td>Annotations table for the current image: ID, Class, Area, Detail
+%</td>
+</tr>
+</tbody>
+</table>
+<p>The canvas has two implicit modes:</p>
+<ul>
+<li><strong>A tool is active</strong> (a tool button is checked) —
+clicks draw with that tool.</li>
+<li><strong>No tool is active — Selection mode</strong> — clicking
+selects an existing annotation; this is where you delete, resize, move,
+and vertex-edit shapes.</li>
+</ul>
+<p>Pressing <strong>Esc</strong> always returns you to selection mode,
+cancelling anything in progress first.</p>
+<hr />
+<h2 id="starting-a-project">Starting a Project</h2>
+<ol type="1">
+<li><strong>Project → New Project</strong> (Ctrl+N).</li>
+<li><strong>Add Images/Videos</strong> to bring in images, TIFF stacks,
+CZI files, or video files.</li>
+<li><strong>Add Classes</strong> to define the categories you’ll
+annotate.</li>
+<li>Pick a class, pick a tool, start annotating.</li>
+<li><strong>Project → Save Project</strong> (Ctrl+S) — or just let
+autosave handle it.</li>
+</ol>
+<p>Opening an existing project (Ctrl+O) that references images which
+have moved will prompt you to relocate them; located files are copied
+back into the project. If you skip relocating a missing image, its
+annotations are dropped.</p>
+<hr />
+<h2 id="loading-images-and-videos">Loading Images and Videos</h2>
+<p><strong>Add Images / Videos</strong> opens a file picker accepting
+<code>.png .jpg .bmp .tif .tiff .czi .mp4 .avi .mov</code> in one
+dialog.</p>
+<ul>
+<li><strong>Regular images</strong> (PNG/JPG/BMP) load directly.</li>
+<li><strong>TIFF stacks and CZI files</strong> trigger the
+dimension-assignment dialog — see <a
+href="#15-multi-dimensional-images-tiff-stacks--czi">§15</a>.</li>
+<li><strong>Videos</strong> (MP4/AVI/MOV) load as a stack whose “slices”
+are individual frames, decoded on demand (nothing is bulk-extracted to
+disk) — see <a href="#13-video-annotation-and-object-tracking">§13</a>.
+The status bar reports total frame count, resolution, and fps once
+loaded.</li>
+</ul>
+<p>The image list on the right can be <strong>filtered</strong>
+(with/without annotations) and stays <strong>alphabetically
+sorted</strong>; filtering only hides rows, it never removes them, so
+keyboard navigation and your place in the list stay stable.</p>
+<p>Removing an entry from the list shows “Remove Video” instead of
+“Remove Image” for video entries. Loading a compressed TIFF that needs
+the optional <code>imagecodecs</code> codec package shows an actionable
+“pip install imagecodecs” message instead of crashing, if that package
+isn’t present (it is installed by default with the app).</p>
+<hr />
+<h2 id="classes">Classes</h2>
+<ul>
+<li><strong>Add Classes</strong> to create one or more categories, each
+with an auto-assigned color (colors are chosen so red is not the first
+class — it’s reserved further down the palette for visibility
+reasons).</li>
+<li>Right-click a class in the class list for <strong>Rename</strong>,
+<strong>Change Color</strong>, <strong>Delete</strong>, and — for pose
+annotation — <strong>Define Keypoint Schema</strong> (see <a
+href="#14-keypoint--pose-annotation">§14</a>).</li>
+<li>The checkbox next to each class <strong>toggles its
+visibility</strong> on the canvas without deleting anything.</li>
+<li><strong>Change the class of an annotation</strong>: select it
+(canvas or table) and use the Change Class control — handy for
+correcting SAM/DINO misclassifications quickly. This is blocked for
+keypoint/pose instances when the schemas differ.</li>
+</ul>
+<hr />
+<h2 id="manual-annotation-tools">Manual Annotation Tools</h2>
+<table>
+<colgroup>
+<col style="width: 27%" />
+<col style="width: 72%" />
+</colgroup>
+<thead>
+<tr>
+<th>Tool</th>
+<th>How to use it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Polygon</strong></td>
+<td>Click to place vertices around the object; press
+<strong>Enter</strong> to close and commit, <strong>Esc</strong> to
+cancel.</td>
+</tr>
+<tr>
+<td><strong>Rectangle</strong></td>
+<td>Click-drag a bounding box; release to commit.</td>
+</tr>
+<tr>
+<td><strong>Paint Brush</strong></td>
+<td>Paint a freeform mask; adjust brush size with <strong>-</strong> /
+<strong>=</strong>. Small stray specks (&lt;10 px) are filtered out
+automatically. Converts to a polygon on commit.</td>
+</tr>
+<tr>
+<td><strong>Eraser</strong></td>
+<td>Subtracts from an existing mask (e.g. to trim SAM
+over-segmentation). Same size controls as the brush.</td>
+</tr>
+</tbody>
+</table>
+<p>All drawn shapes are automatically clipped to the image boundary —
+you cannot commit an annotation that spills outside the frame.</p>
+<p><strong>Merge</strong>: select two or more annotations (canvas or
+table, see §8) and click Merge — their union becomes one annotation,
+replacing the originals. There’s no confirmation dialog; if it’s wrong,
+<strong>Ctrl+Z</strong> undoes it.</p>
+<hr />
+<h2 id="selecting-editing-and-deleting-annotations">Selecting, Editing,
+and Deleting Annotations</h2>
+<p>When no tool is active, the canvas behaves like a normal selection
+pointer, and it is <strong>unified with the annotations table</strong> —
+selecting on one side selects on the other.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Action</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Click a mask</td>
+<td>Select it (replaces any prior selection)</td>
+</tr>
+<tr>
+<td>Shift+Click</td>
+<td>Toggle that mask in/out of the selection</td>
+</tr>
+<tr>
+<td>Drag on empty canvas</td>
+<td>Rubber-band select everything the box touches</td>
+</tr>
+<tr>
+<td>Shift+Drag</td>
+<td>Add the rubber-band catch to the current selection</td>
+</tr>
+<tr>
+<td>Click empty space</td>
+<td>Clear the selection</td>
+</tr>
+<tr>
+<td><strong>Delete</strong></td>
+<td>Remove the selected annotation(s) — instant, no confirmation,
+undoable</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Resizing and moving</strong> — when exactly
+<strong>one</strong> shape is selected, eight square handles appear (4
+corners + 4 edge midpoints):</p>
+<ul>
+<li>Drag a <strong>handle</strong> → resize (a box edits its
+<code>[x,y,w,h]</code>; a polygon scales its vertices around the
+opposite anchor).</li>
+<li>Drag <strong>inside</strong> the shape → move it.</li>
+<li>Releasing clamps the result back inside the image if needed.</li>
+</ul>
+<p><strong>Vertex editing</strong> — double-click a polygon to enter
+vertex-edit mode and reshape it point-by-point; press Enter to commit
+(clamped to the image) or Esc to revert.</p>
+<p><strong>Ctrl is reserved for panning</strong> the canvas —
+multi-select always uses <strong>Shift</strong>.</p>
+<hr />
+<h2 id="undo-redo">Undo / Redo</h2>
+<p><strong>Ctrl+Z</strong> undoes the last annotation edit;
+<strong>Ctrl+Y</strong> (or <strong>Ctrl+Shift+Z</strong>) redoes it.
+This covers drawing, deleting, merging, resizing/moving, vertex edits,
+class changes, and every AI-assisted accept (SAM, DINO, SAM 3, YOLO
+prediction, tracking).</p>
+<p>Undo/redo is per-image/per-frame — each frame of a video, or each
+slice of a stack, keeps its own history. Because undo is always
+available, destructive actions (Delete, Merge) no longer show “Are you
+sure?” or “N deleted” dialogs — if something goes wrong, Ctrl+Z is the
+safety net.</p>
+<hr />
+<h2 id="sam-2-ai-assisted-segmentation">SAM 2 — AI-Assisted
+Segmentation</h2>
+<ol type="1">
+<li>Pick a model from the <strong>SAM model dropdown</strong>: SAM 2 or
+SAM 2.1, each in tiny/small/base/large. <strong>Tiny or small are
+recommended</strong> — large can crash the app on machines with limited
+RAM/VRAM.</li>
+<li>First use of any given model downloads its weights (cached afterward
+in the working directory) — a few seconds to a minute depending on your
+connection.</li>
+<li>Choose a prompt style:
+<ul>
+<li><strong>SAM-box</strong>: draw a rectangle around the object.</li>
+<li><strong>SAM-points</strong>: left-click positive points
+<em>inside</em> the object; right-click negative points to exclude
+regions.</li>
+</ul></li>
+<li>SAM 2 shows its top-scoring mask as an orange preview.
+<strong>Enter</strong> accepts it into your annotations;
+<strong>Esc</strong> discards it and lets you try again (redraw the box,
+or add/adjust points).</li>
+<li>If SAM 2 catches only part of an object, finish the rest with the
+Polygon or Paint tool and <strong>Merge</strong> the two into one
+annotation. If it over-segments, clean the edges with the
+<strong>Eraser</strong>.</li>
+</ol>
+<p>If your GPU’s compute capability is too old for the installed PyTorch
+build, the app detects it, shows a one-time warning, and runs inference
+on CPU automatically rather than crashing.</p>
+<p><strong>Tools → Unload AI Models (Free GPU Memory)</strong> drops the
+cached SAM/DINO/SAM 3 models from memory and resets both model selectors
+— useful before switching tasks on a memory-constrained GPU. A restart
+is still needed to fully reclaim the last few hundred MB PyTorch’s CUDA
+context holds onto.</p>
+<hr />
+<h2 id="grounding-dino-text-prompted-detection">Grounding-DINO —
+Text-Prompted Detection</h2>
+<p>Grounding-DINO finds objects from a <strong>text description</strong>
+instead of clicks; the resulting boxes are then automatically refined
+into masks by SAM 2.</p>
+<h3 id="setting-it-up">Setting it up</h3>
+<ol type="1">
+<li>In the DINO panel, pick a model:
+<strong>grounding-dino-base</strong>,
+<strong>grounding-dino-tiny</strong>, or <strong>Custom / fine-tuned
+(browse)</strong> for your own checkpoint. Preset models download from
+Hugging Face on first use if not already cached.</li>
+<li>For each class you want detected, add one or more
+<strong>phrases</strong> in the phrase editor (e.g. class “drone” →
+phrases “drone”, “quadcopter”, “octocopter”). The class name itself is
+always included and can’t be removed.</li>
+<li>Tune per-class thresholds in the table: <strong>Box thr</strong>,
+<strong>Txt thr</strong>, <strong>NMS thr</strong> (higher NMS = more
+aggressive duplicate removal).</li>
+</ol>
+<h3 id="detecting">Detecting</h3>
+<ul>
+<li><strong>Detect Current Image</strong> runs detection + SAM
+refinement on the frame you’re viewing. Results appear as an orange
+overlay.</li>
+<li><strong>Detect All Images</strong> runs the same pipeline across
+every image <em>and every slice of every loaded stack/video</em>.</li>
+<li>The <strong>auto-accept dropdown</strong> (“Review before accepting”
+vs. “Auto-accept all detections”) governs both buttons identically.</li>
+</ul>
+<h3 id="reviewing">Reviewing</h3>
+<ul>
+<li><strong>Enter</strong> accepts the visible detections into your
+annotations (new classes are created automatically if needed).</li>
+<li><strong>Esc</strong> discards them.</li>
+<li>These keys work even if focus is on a list or button elsewhere in
+the window — you don’t need to click the canvas first.</li>
+<li>In batch mode with “Review before accepting” selected, you’re walked
+through each image/frame’s detections one at a time.</li>
+</ul>
+<p><strong>Merge COCO for Training</strong> (Tools menu) merges the
+DINO+SAM annotations you’ve accumulated across images into a single
+training-ready COCO JSON — handy for bootstrapping a fine-tuning or
+YOLO-training dataset from AI-assisted labels.</p>
+<hr />
+<h2 id="sam-3-text-prompted-segmentation">SAM 3 — Text-Prompted
+Segmentation</h2>
+<p>SAM 3 sits in the <strong>same dropdown as Grounding-DINO</strong>,
+as the entry <strong>“SAM 3 (text prompt)”</strong> — it’s a drop-in
+alternative producer for the identical review workflow (same phrase
+panel, same Enter/Escape accept/reject, same batch mode), except it goes
+straight from text to mask without a separate SAM 2 refinement pass.</p>
+<h3 id="one-time-setup">One-time setup</h3>
+<p>SAM 3’s weights (<code>sam3.pt</code>, ~3.45 GB) are <strong>gated on
+Hugging Face</strong> and are <strong>never auto-downloaded</strong>. To
+use it:</p>
+<ol type="1">
+<li>Request access to SAM 3 on Hugging Face.</li>
+<li>Place the downloaded <code>sam3.pt</code> file in the app’s working
+directory or its <code>models/sam/</code> folder.</li>
+<li>Select <strong>“SAM 3 (text prompt)”</strong> in the model dropdown.
+If the file isn’t found yet, the status line reads <em>“SAM 3 weights
+(sam3.pt) not found. Request access on Hugging Face, then place sam3.pt
+in the working directory or the models/sam/ folder.”</em> and detection
+stays disabled until it is.</li>
+<li>Once found, selecting the entry loads the model (status shows
+<em>“Loading SAM 3 …”</em> then <em>“Ready: SAM 3 (text
+prompt)”</em>).</li>
+</ol>
+<p>The very first SAM 3 detection also needs network access once:
+Ultralytics auto-installs two extra packages (<code>clip</code>,
+<code>timm</code>) the model needs, then continues in the same run
+without a restart.</p>
+<p>Everything downstream — the phrase list, thresholds, Detect Current
+Image / Detect All Images, review, batch mode — works exactly as
+described for Grounding-DINO in §11.</p>
+<hr />
+<h2 id="video-annotation-and-object-tracking">Video Annotation and
+Object Tracking</h2>
+<h3 id="loading-and-navigating-a-video">Loading and navigating a
+video</h3>
+<p>Add an <code>.mp4</code>, <code>.avi</code>, or <code>.mov</code>
+file the same way as an image (§5). It’s treated as a stack whose frames
+are its slices, decoded one at a time — nothing is pre-extracted to
+disk, so even long videos load quickly.</p>
+<ul>
+<li>A <strong>scrub timeline</strong> appears below the canvas whenever
+a video is the active item. It shows a
+<code>F &lt;i&gt;/&lt;N&gt; • MM:SS / MM:SS</code> position readout and
+colors a thin marker strip under frames that are
+<strong>annotated</strong>, <strong>tracked</strong>, or <strong>need
+review</strong> (needs-review takes visual priority over tracked, which
+takes priority over plain annotated).</li>
+<li>Drag the timeline, or use <strong>Up/Down</strong> on the slice
+list, to move one frame at a time; <strong>Home/End</strong> (with the
+slice list or canvas focused) jump straight to the first/last
+frame.</li>
+<li>There is no play/autoplay — annotation is frame-by-frame, by
+design.</li>
+</ul>
+<h3 id="annotating">Annotating</h3>
+<p>Every manual tool and every AI-assisted tool (SAM 2, Grounding-DINO,
+SAM 3) works on a video frame exactly as it does on a still image.
+Annotate a frame, move to the next, repeat — or use tracking to do that
+for you (below).</p>
+<h3 id="tracking-a-segmented-object-across-frames">Tracking a segmented
+object across frames</h3>
+<p>Once you’ve drawn or accepted a mask on one frame, you can propagate
+it forward/backward through the rest of the video using SAM 3’s video
+predictor:</p>
+<ol type="1">
+<li>Load a video and load the <strong>SAM 3</strong> model (see §12) —
+tracking needs SAM 3, not SAM 2.</li>
+<li><strong>Select exactly one mask annotation</strong> on the current
+frame (a keypoint/pose instance can’t be tracked — it has no mask to
+propagate).</li>
+<li><strong>Tools → Track Selected Object…</strong> (enabled only when
+the three conditions above are met). A dialog asks for a
+<strong>confidence threshold</strong> (default 0.5).</li>
+<li>A progress dialog (“Tracking object across frames…”, indeterminate —
+no percentage/ETA) runs while SAM 3 propagates the mask <strong>both
+forward and backward</strong> from the seed frame through the whole
+clip; <strong>Cancel</strong> stops it early.</li>
+<li>Results are routed automatically:
+<ul>
+<li><strong>High-confidence frames</strong> (score ≥ threshold) are
+written straight into your project as regular annotations (tagged
+internally so they can be bulk-undone — see below). In practice SAM 3’s
+video predictor reports full confidence on nearly every frame where it
+finds the object at all (absence shows up as an empty mask, not a low
+score), so most tracked frames land here.</li>
+<li><strong>Low-confidence frames</strong> (0 &lt; score &lt; threshold)
+are queued for review through the same Enter/Escape overlay used for
+DINO batch review. If any exist, you’re asked <em>“Tracking finished. N
+frame(s) had low-confidence results. Review them now?”</em>.</li>
+<li>Frames where no object was found produce nothing.</li>
+</ul></li>
+<li>The timeline’s marker strip updates to show which frames were
+tracked.</li>
+</ol>
+<p>Very long videos are decoded entirely into memory for the duration of
+a tracking run (bounded by clip length) — fine for typical annotation
+clips, but worth keeping in mind for a very long source video.</p>
+<p><strong>Undo</strong>: every tracked frame is individually undoable
+with Ctrl+Z on that frame. For undoing the whole run at once, use
+<strong>Tools → Undo Last Track</strong>, which removes every annotation
+from the most recent tracking run in one action (pre-existing
+annotations on those frames are left alone).</p>
+<h3 id="exporting">Exporting</h3>
+<p><strong>Tools → Export Annotated Video Frames…</strong> saves every
+frame that has at least one annotation as a PNG
+(<code>&lt;video&gt;_F00003.png</code>, etc.) into a folder you choose —
+a quick way to pull a labeled image set out of an annotated video for
+use elsewhere (e.g. as input to the Tools listed in §23, or a COCO/YOLO
+export via the normal Export dialog, which treats video frames like any
+other slice).</p>
+<hr />
+<h2 id="keypoint-pose-annotation">Keypoint / Pose Annotation</h2>
+<p>Keypoint annotation lets you mark a <strong>named skeleton</strong>
+on instances of a class (people, animals, tools — anything with a
+consistent point layout), following the COCO pose model.</p>
+<h3 id="define-a-schema-once-per-class">1. Define a schema (once per
+class)</h3>
+<p>Right-click the class → <strong>Define Keypoint Schema</strong>:</p>
+<ul>
+<li><strong>Keypoints (ordered) table</strong> — add each point’s
+<strong>Name</strong> and, optionally, its horizontal-<strong>flip
+partner</strong> (used for training-time flip augmentation; leave blank
+for points on the symmetry axis, e.g. “nose”).</li>
+<li><strong>Skeleton</strong> — define the edges connecting points
+(drawn as lines between them).</li>
+</ul>
+<p>Once any instance of a class exists, its point <em>count</em> is
+locked, but names/skeleton/flip-partners stay editable.</p>
+<h3 id="place-an-instance">2. Place an instance</h3>
+<p>Activate the <strong>Keypoint</strong> tool (blocked with a warning
+if the current class has no schema yet). Place the class’s K points
+<strong>in schema order</strong>:</p>
+<table>
+<colgroup>
+<col style="width: 46%" />
+<col style="width: 53%" />
+</colgroup>
+<thead>
+<tr>
+<th>Input</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Left-click</td>
+<td>Place the next point, <strong>visible</strong></td>
+</tr>
+<tr>
+<td>Right-click (or Shift+left-click)</td>
+<td>Place the next point, <strong>occluded</strong></td>
+</tr>
+<tr>
+<td>Backspace</td>
+<td>Remove the last placed point</td>
+</tr>
+<tr>
+<td>Enter (before all K are placed)</td>
+<td>Finish early — remaining points are marked “not placed”</td>
+</tr>
+</tbody>
+</table>
+<p>The instance auto-finishes once all K points are placed. It renders
+as the skeleton lines plus markers colored by visibility, with a faint
+bounding box and label.</p>
+<h3 id="editing">3. Editing</h3>
+<p>With the instance selected:</p>
+<ul>
+<li><strong>Drag a point marker</strong> → move that single point.</li>
+<li><strong>Right-click a point marker</strong> → toggle visible ↔︎
+occluded.</li>
+<li><strong>Drag a box handle, or drag inside the instance box</strong>
+→ transform the <em>whole pose</em> (move/resize all points together),
+the same handle mechanism used for regular shapes.</li>
+</ul>
+<p>Merge and cross-schema class-change are both blocked for pose
+instances (merging keypoints has no sensible meaning).</p>
+<h3 id="export-import">4. Export / import</h3>
+<ul>
+<li><strong>COCO JSON</strong> — each pose class’s category gains
+<code>keypoints</code> (names), <code>skeleton</code>, and
+<code>flip_idx</code>; each instance exports as a COCO keypoint
+annotation (no <code>segmentation</code>).</li>
+<li><strong>YOLO-pose</strong> — label lines gain the extra
+<code>(x,y,v)</code> triplets and <code>data.yaml</code> gains
+<code>kpt_shape</code>/<code>flip_idx</code>. Because YOLO-pose has
+<strong>one schema for the whole dataset</strong>, exporting a mix of
+different keypoint counts, or mixing a pose class with a non-pose class,
+is rejected up front with a clear error — nothing partial is written to
+disk.</li>
+<li>Both formats import back with their schema recovered
+automatically.</li>
+</ul>
+<h3 id="training-and-predicting-pose-models">5. Training and predicting
+pose models</h3>
+<p>Loading a <code>*-pose.pt</code> checkpoint in the YOLO Training menu
+and training proceeds exactly like detection/segmentation (§21) — the
+app checks the model/dataset agree on being pose-shaped <em>before</em>
+training starts. Predictions come back as full keypoint instances
+(visibility is always reported as “visible” — Ultralytics doesn’t return
+true 3-state occlusion) and go through the same accept/reject review as
+any other prediction.</p>
+<hr />
+<h2 id="multi-dimensional-images-tiff-stacks-czi">Multi-Dimensional
+Images (TIFF Stacks &amp; CZI)</h2>
+<p>Adding a TIFF or CZI file with more than two dimensions opens the
+<strong>dimension-assignment dialog</strong>. For a well-formed
+ImageJ-style TIFF, the axis order is read from the file’s metadata and
+the dialog is pre-filled — usually you can just click OK.</p>
+<p>Assign each axis a meaning: <strong>T</strong> (time),
+<strong>Z</strong> (depth), <strong>C</strong> (channel),
+<strong>S</strong> (scene), <strong>H</strong>/<strong>W</strong> (the
+2D image plane). The app then extracts every combination as an
+individually-navigable 2D slice, named like:</p>
+<pre><code>stack.tif_T0_Z5_C0</code></pre>
+<ul>
+<li><strong>Up/Down</strong> arrows step through slices.</li>
+<li>Each slice keeps its <strong>own independent
+annotations</strong>.</li>
+<li>The slice list on the right shows every extracted slice for the
+currently selected stack.</li>
+</ul>
+<hr />
+<h2 id="mask-complexity-detail">Mask Complexity — Detail %</h2>
+<p>SAM/DINO masks are often dense (hundreds of vertices). In the
+Annotations table, each row has a <strong>Detail %</strong> spinbox
+(1–100, default 100 = raw):</p>
+<ul>
+<li>Lowering it thins the polygon (Douglas-Peucker simplification) —
+useful for smaller, cleaner label files.</li>
+<li>It’s fully <strong>reversible</strong>: the first time you simplify,
+the original dense polygon is preserved internally; setting it back to
+100 restores the exact original.</li>
+<li>Exports always use the <em>currently displayed</em> (possibly
+simplified) version.</li>
+</ul>
+<hr />
+<h2 id="saving-loading-and-managing-projects">Saving, Loading, and
+Managing Projects</h2>
+<ul>
+<li><strong>Ctrl+S</strong> saves; <strong>Save Project As…</strong>
+saves a copy under a new name; <strong>Ctrl+O</strong> opens.</li>
+<li><strong>Autosave</strong> runs continuously as you work (it is
+automatically suppressed while a project is loading, so an autosave can
+never race a load and corrupt the file).</li>
+<li><strong>Project Details</strong> (Ctrl+I): view creation/modified
+dates and per-image info, and write free-form project notes (saved
+automatically as you type).</li>
+<li><strong>Search Projects</strong> (Ctrl+F): search across every
+project you’ve worked on, by project name, class names, image names, and
+notes, using <code>AND</code>/<code>OR</code>/parentheses, e.g.:
+<ul>
+<li><code>cells AND dog</code></li>
+<li><code>cells OR bacteria</code></li>
+<li><code>cells AND (dog OR monkey)</code></li>
+<li><code>(project1 OR project2) AND (cells OR bacteria)</code></li>
+</ul>
+Double-click a result to open that project.</li>
+</ul>
+<p>Project files store <strong>absolute paths</strong> to your images —
+projects aren’t portable between machines/drives without relocating
+images on open.</p>
+<hr />
+<h2 id="importing-annotations">Importing Annotations</h2>
+<p><strong>Import Annotations with Images</strong> loads an existing
+<strong>COCO JSON</strong> file (images must sit alongside it) or a
+<strong>YOLO v5+/v8/v11</strong>-structured dataset directory into your
+current project, including any recoverable keypoint schema.</p>
+<hr />
+<h2 id="exporting-annotations">Exporting Annotations</h2>
+<p><strong>Export Annotations</strong> offers:</p>
+<table>
+<colgroup>
+<col style="width: 53%" />
+<col style="width: 46%" />
+</colgroup>
+<thead>
+<tr>
+<th>Format</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>COCO JSON</strong></td>
+<td>Copies images into an <code>images/</code> folder alongside the
+JSON. Keypoint-schema-aware.</td>
+</tr>
+<tr>
+<td><strong>YOLO v8/v11</strong> (v5+ structure)</td>
+<td><code>data.yaml</code> + <code>images/{train,val}</code> +
+<code>labels/{train,val}</code>. You’re prompted for a validation split
+% (0 = everything into train); the split is a deterministic hash of
+filenames so a requested split is never accidentally empty. Pose-aware
+(adds <code>kpt_shape</code>/<code>flip_idx</code> when applicable;
+rejects inconsistent pose exports before writing anything).</td>
+</tr>
+<tr>
+<td><strong>YOLO v4</strong> (legacy)</td>
+<td>Older flat YOLO <code>.txt</code> format.</td>
+</tr>
+<tr>
+<td><strong>Labeled images</strong></td>
+<td>Colored overlay visualizations (PNG).</td>
+</tr>
+<tr>
+<td><strong>Semantic labels</strong></td>
+<td>Single-channel PNGs where pixel value = class ID.</td>
+</tr>
+<tr>
+<td><strong>Pascal VOC</strong></td>
+<td>XML, bounding boxes.</td>
+</tr>
+</tbody>
+</table>
+<p>Exports look up each annotation’s source image by exact filename
+first, falling back to substring matching only for older projects — so a
+class named <code>bee</code> never accidentally grabs the file for
+<code>honeybee</code>.</p>
+<hr />
+<h2 id="sam-2-fine-tuning-custom-model-training">SAM 2 Fine-Tuning
+(Custom Model Training)</h2>
+<p>If the built-in SAM 2 weights aren’t segmenting your specific kind of
+imagery well, you can fine-tune SAM 2 on your own annotations instead of
+relying on the generic pre-trained model. This is separate from — and
+complementary to — YOLO training (§21).</p>
+<h3 id="starting-a-run">Starting a run</h3>
+<p><strong>SAM Fine-Tune (beta) → Train on Current Project…</strong> (or
+<strong>Prepare SAM Dataset…</strong> / <strong>Train from Dataset
+Folder…</strong> for an offline, inspectable dataset export-then-train
+flow — <code>export_sam_dataset</code> writes <code>images/</code> + a
+<code>manifest.json</code> you can review before training).</p>
+<p>A configuration dialog collects:</p>
+<ul>
+<li><strong>Base model</strong> to fine-tune from.</li>
+<li><strong>Epochs</strong>, <strong>peak learning rate</strong>,
+<strong>batch size</strong>.</li>
+<li><strong>Prompt type</strong>: bounding box or point.</li>
+<li><strong>Train/validation split %</strong> and <strong>early-stop
+patience</strong>.</li>
+<li><strong>Warmup → cosine LR schedule</strong> toggle.</li>
+<li>Whether to <strong>also fine-tune the image encoder</strong>
+(default is decoder-only — faster, lower VRAM, and usually enough;
+unfreezing the encoder too is for heavily domain-shifted imagery with
+more data).</li>
+</ul>
+<p>If no GPU is usable, you’re warned up front and can back out rather
+than starting a very slow CPU run.</p>
+<h3 id="while-it-trains">While it trains</h3>
+<ul>
+<li>SAM tools are locked during training (the trainer needs its own
+model instance on the GPU).</li>
+<li>A progress dialog reports <strong>train loss</strong>,
+<strong>validation loss</strong>, and <strong>learning rate</strong> per
+epoch, with a <strong>Stop</strong> button.</li>
+<li>Early stopping kicks in based on the patience you configured; the
+<strong>best validation checkpoint</strong> is what gets saved, not
+necessarily the last epoch.</li>
+<li>Every run is automatically logged to <strong>MLflow</strong> (§22) —
+no checkbox needed, tracking is always on.</li>
+</ul>
+<h3 id="using-the-result">Using the result</h3>
+<p>Once training finishes, the fine-tuned model is registered and
+appears in the <strong>SAM model dropdown</strong> as <strong>“★
+&lt;your model name&gt;”</strong>, ready to use with SAM-box/SAM-points
+exactly like a built-in model.</p>
+<hr />
+<h2 id="yolo-training-and-prediction">YOLO Training and Prediction</h2>
+<p>Train a YOLO model directly from your current annotations, covering
+<strong>detection, segmentation, and pose</strong> (previously
+segmentation-only).</p>
+<ol type="1">
+<li><strong>YOLO (beta) → Training → Train Model.</strong> The dialog
+collects epochs, image size, a warmup→cosine LR toggle, peak learning
+rate, and early-stop patience.</li>
+<li>Training runs on a background thread; a progress dialog shows
+per-epoch <strong>train loss</strong>, and after each validation pass,
+<strong>val loss + mAP50 + mAP50-95</strong> (plus pose-specific
+<code>val/pose_loss</code> / <code>val/kobj_loss</code> when training a
+pose model).</li>
+<li>Loading a pose checkpoint against a non-pose dataset (or vice versa)
+is caught and reported clearly <strong>before</strong> training starts,
+not partway through.</li>
+<li>On completion, the run is logged to MLflow automatically (§22), the
+result is pruned to just <code>best.pt</code> + <code>data.yaml</code>
+(the rest of the diagnostics live in the MLflow run instead of
+duplicated on disk), and it’s registered for prediction as <strong>“★
+&lt;project name&gt;”</strong>.</li>
+<li><strong>Prediction Settings → Load Model</strong> to pick a trained
+(or external) model + its <code>data.yaml</code>, then <strong>Predict
+with YOLO Model</strong> to run it on the current image.
+Detections/masks/poses appear as reviewable temp annotations (same
+Enter/Escape-style accept flow), and are added under a
+<code>"Temp-&lt;class&gt;"</code> label until accepted.</li>
+</ol>
+<p>Loading a model trained on classes that don’t match the loaded
+<code>data.yaml</code> shows a clear mismatch message instead of
+crashing.</p>
+<p><strong>Known limitation</strong>: YOLO training is not currently
+supported for multi-dimensional images (TIFF stacks / CZI slices) —
+single images only.</p>
+<hr />
+<h2 id="experiment-tracking-with-mlflow">Experiment Tracking with
+MLflow</h2>
+<p>Every SAM fine-tuning run and every YOLO training run is tracked in
+<strong>MLflow</strong> automatically — there’s no “enable tracking”
+checkbox; a broken MLflow install degrades gracefully to “this run
+wasn’t tracked” rather than blocking training.</p>
+<ul>
+<li><strong>Settings → Experiment Tracking → MLflow Settings…</strong>
+lets you point tracking at a different store location (default: an
+<code>mlruns</code> folder inside your open project, or the current
+working directory if no project is open).</li>
+<li><strong>Settings → Experiment Tracking → Open MLflow UI</strong>
+launches MLflow’s web dashboard in your browser so you can compare runs,
+loss curves, and hyperparameters across attempts.</li>
+<li>When a training run starts, a clickable link to that specific run’s
+page appears in the training progress dialog.</li>
+</ul>
+<hr />
+<h2 id="tools-menu-dataset-image-utilities">Tools Menu — Dataset &amp;
+Image Utilities</h2>
+<p>Each of these opens its own guided dialog:</p>
+<table>
+<colgroup>
+<col style="width: 40%" />
+<col style="width: 60%" />
+</colgroup>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Annotation Statistics</strong></td>
+<td>Per-class counts and area statistics for the current project, with
+charts.</td>
+</tr>
+<tr>
+<td><strong>COCO JSON Combiner</strong></td>
+<td>Merge multiple COCO JSON annotation files into one.</td>
+</tr>
+<tr>
+<td><strong>Dataset Splitter</strong></td>
+<td>Split a dataset into train/val/test sets with configurable
+ratios.</td>
+</tr>
+<tr>
+<td><strong>Merge COCO for Training</strong></td>
+<td>Merge accumulated Grounding-DINO/SAM annotations across images into
+one training-ready COCO JSON.</td>
+</tr>
+<tr>
+<td><strong>Stack to Slices</strong></td>
+<td>Convert a multi-dimensional stack into individual 2D image files on
+disk.</td>
+</tr>
+<tr>
+<td><strong>Image Patcher</strong></td>
+<td>Split large images into smaller overlapping/non-overlapping
+patches.</td>
+</tr>
+<tr>
+<td><strong>Image Augmenter</strong></td>
+<td>Apply rotation/flip/brightness/etc. transformations to expand a
+dataset, with a live preview. Augmented polygons that partially leave
+the frame are geometrically clipped to the boundary (and dropped if they
+end up entirely outside it).</td>
+</tr>
+<tr>
+<td><strong>Slice Registration</strong></td>
+<td>Align slices in a stack using multiple registration algorithms and
+reference-frame options.</td>
+</tr>
+<tr>
+<td><strong>Stack Interpolator</strong></td>
+<td>Adjust Z-spacing in an image stack — e.g. generate an isotropic
+volume from anisotropic microscopy data, with memory-efficient
+processing for large stacks.</td>
+</tr>
+<tr>
+<td><strong>DICOM Converter</strong></td>
+<td>Convert DICOM files to TIFF (single stack or individual slices),
+preserving metadata; can also export metadata to JSON.</td>
+</tr>
+<tr>
+<td><strong>Export Annotated Video Frames…</strong></td>
+<td>See §13.</td>
+</tr>
+<tr>
+<td><strong>Track Selected Object… / Undo Last Track</strong></td>
+<td>See §13.</td>
+</tr>
+<tr>
+<td><strong>Unload AI Models (Free GPU Memory)</strong></td>
+<td>See §10.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="appearance-dark-mode-and-font-size">Appearance: Dark Mode and
+Font Size</h2>
+<ul>
+<li><strong>Settings → Toggle Dark Mode</strong> (Ctrl+D) switches the
+whole UI, including annotation rendering colors chosen for visibility
+against the dark background.</li>
+<li><strong>Settings → Font Size</strong> offers fixed presets
+(Small…XXL), or fine control:
+<ul>
+<li><strong>Ctrl+Shift+=</strong> (or <strong>Ctrl++</strong>) —
+increase font size</li>
+<li><strong>Ctrl+Shift+-</strong> (or <strong>Ctrl+-</strong>) —
+decrease</li>
+<li><strong>Ctrl+Shift+0</strong> — reset to default</li>
+</ul></li>
+<li>Font size (8–24pt) and dark mode are saved as personal preferences
+(not part of the project file), so they persist across projects and
+sessions on the same machine.</li>
+<li>Canvas overlays (selection handles, point markers, label text) scale
+with the font size setting independently of image zoom, so they stay a
+consistent on-screen size as you zoom in/out of the image.</li>
+</ul>
+<hr />
+<h2 id="keyboard-shortcuts-reference">Keyboard Shortcuts Reference</h2>
+<h3 id="global">Global</h3>
+<table>
+<thead>
+<tr>
+<th>Shortcut</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ctrl+N</td>
+<td>New Project</td>
+</tr>
+<tr>
+<td>Ctrl+O</td>
+<td>Open Project</td>
+</tr>
+<tr>
+<td>Ctrl+S</td>
+<td>Save Project</td>
+</tr>
+<tr>
+<td>Ctrl+Shift+S</td>
+<td>Save Project As…</td>
+</tr>
+<tr>
+<td>Ctrl+W</td>
+<td>Close Project</td>
+</tr>
+<tr>
+<td>Ctrl+I</td>
+<td>Project Details</td>
+</tr>
+<tr>
+<td>Ctrl+F</td>
+<td>Search Projects</td>
+</tr>
+<tr>
+<td>Ctrl+Alt+S</td>
+<td>Annotation Statistics</td>
+</tr>
+<tr>
+<td>Ctrl+D</td>
+<td>Toggle Dark Mode</td>
+</tr>
+<tr>
+<td>Ctrl+Z</td>
+<td>Undo</td>
+</tr>
+<tr>
+<td>Ctrl+Y / Ctrl+Shift+Z</td>
+<td>Redo</td>
+</tr>
+<tr>
+<td>Ctrl+Shift+= / Ctrl++</td>
+<td>Increase UI font size</td>
+</tr>
+<tr>
+<td>Ctrl+Shift+- / Ctrl+-</td>
+<td>Decrease UI font size</td>
+</tr>
+<tr>
+<td>Ctrl+Shift+0</td>
+<td>Reset UI font size</td>
+</tr>
+<tr>
+<td>F1</td>
+<td>Help window</td>
+</tr>
+</tbody>
+</table>
+<h3 id="canvas">Canvas</h3>
+<table>
+<colgroup>
+<col style="width: 55%" />
+<col style="width: 44%" />
+</colgroup>
+<thead>
+<tr>
+<th>Shortcut</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ctrl+Wheel</td>
+<td>Zoom in/out</td>
+</tr>
+<tr>
+<td>Ctrl+Drag</td>
+<td>Pan</td>
+</tr>
+<tr>
+<td>Click (no tool)</td>
+<td>Select the mask under the cursor</td>
+</tr>
+<tr>
+<td>Shift+Click (no tool)</td>
+<td>Toggle that mask in the selection</td>
+</tr>
+<tr>
+<td>Drag (no tool)</td>
+<td>Rubber-band select; Shift+Drag adds</td>
+</tr>
+<tr>
+<td>Drag a handle (one shape selected)</td>
+<td>Resize</td>
+</tr>
+<tr>
+<td>Drag inside (one shape selected)</td>
+<td>Move</td>
+</tr>
+<tr>
+<td>Double-click</td>
+<td>Enter vertex-edit mode</td>
+</tr>
+<tr>
+<td>Delete</td>
+<td>Delete selected annotation(s)</td>
+</tr>
+<tr>
+<td>Enter</td>
+<td>Finish/accept current shape or AI prediction</td>
+</tr>
+<tr>
+<td>Esc</td>
+<td>Cancel current action and return to selection mode</td>
+</tr>
+<tr>
+<td>Up / Down</td>
+<td>Navigate slices / video frames</td>
+</tr>
+<tr>
+<td>Home / End</td>
+<td>Jump to first / last frame (video, slice list or canvas
+focused)</td>
+</tr>
+<tr>
+<td>- / =</td>
+<td>Adjust paint brush / eraser size</td>
+</tr>
+</tbody>
+</table>
+<h3 id="keypoint-tool">Keypoint tool</h3>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Left-click</td>
+<td>Place next point, visible</td>
+</tr>
+<tr>
+<td>Right-click / Shift+left-click</td>
+<td>Place next point, occluded</td>
+</tr>
+<tr>
+<td>Backspace</td>
+<td>Remove last placed point</td>
+</tr>
+<tr>
+<td>Enter</td>
+<td>Finish pose early (unplaced points marked “not placed”)</td>
+</tr>
+<tr>
+<td>Right-click a placed point (idle)</td>
+<td>Toggle visible ↔︎ occluded</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="troubleshooting-known-limitations">Troubleshooting &amp; Known
+Limitations</h2>
+<ul>
+<li><strong>SAM 2 large crashes / hangs</strong> on machines with
+limited RAM — use SAM 2/2.1 tiny or small instead.</li>
+<li><strong>YOLO training doesn’t support multi-dimensional
+images</strong> — export/flatten to single images first (Stack to
+Slices, §23) if you need to train on stack data.</li>
+<li><strong>SAM 3 requires manually placed weights</strong> — it will
+never auto-download <code>sam3.pt</code>; see §12.</li>
+<li><strong>Out-of-memory loading a SAM model</strong> now shows an
+actionable “pick a smaller model” message instead of a raw crash.</li>
+<li><strong>Projects aren’t portable across machines</strong> — they
+store absolute image paths; use the missing-image relocation prompt on
+open if you’ve moved files.</li>
+<li><strong>GPU not being used despite being detected</strong>: on very
+old NVIDIA GPUs, the installed PyTorch build may lack kernels for that
+GPU’s compute capability — the app falls back to CPU automatically and
+warns once; see the GPU section in §2 for the older-PyTorch
+workaround.</li>
+<li>If the app seems to be running out of GPU memory across a long
+session with both SAM and DINO/SAM 3 loaded, use <strong>Tools → Unload
+AI Models</strong> — and remember a full reclaim needs an app restart,
+not just the unload.</li>
+</ul>
+<hr />
+<h2 id="glossary">Glossary</h2>
+<ul>
+<li><strong>Annotation</strong> — one marked region (polygon, box, or
+keypoint instance) tied to a class.</li>
+<li><strong>Class</strong> — a category label with its own color; can
+carry a keypoint schema to become a “pose class.”</li>
+<li><strong>SAM 2 / SAM 3</strong> — Meta’s Segment Anything models; SAM
+2 is prompted with points/boxes, SAM 3 with text.</li>
+<li><strong>Grounding-DINO</strong> — a text-prompted object
+<em>detector</em> (boxes only); its boxes are refined into masks by SAM
+2 in this app.</li>
+<li><strong>Detail %</strong> — reversible polygon simplification
+control per annotation (§16).</li>
+<li><strong>Keypoint schema</strong> — the named point layout + skeleton
+that makes a class a “pose class” (§14).</li>
+<li><strong>Fine-tuning</strong> — continuing to train SAM 2 on your own
+annotations rather than relying on the generic pre-trained weights
+(§20).</li>
+<li><strong>MLflow run/experiment</strong> — a tracked training attempt
+with its parameters, metrics, and artifacts (§22).</li>
+<li><strong>Slice</strong> — one 2D plane extracted from a
+multi-dimensional TIFF/CZI stack or one frame of a video.</li>
+<li><strong>Track run</strong> — one invocation of “Track Selected
+Object,” which can be undone as a unit (§13).</li>
+</ul>
+<hr />
+<p><em>This manual covers DigitalSreeni Image Annotator v0.9.0. For the
+latest source, issues, and releases, see the project’s GitHub
+repository.</em></p>
+</body>
+</html>

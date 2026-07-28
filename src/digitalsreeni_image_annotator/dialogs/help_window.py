@@ -40,24 +40,27 @@ class HelpWindow(QDialog):
         <h1>Image Annotator Help Guide</h1>
 
         <h2>Overview</h2>
-        <p>Image Annotator is a user-friendly GUI tool designed for generating masks for image segmentation and object detection. It allows users to create, edit, and save annotations in various formats, including COCO-style JSON, YOLO v8, and Pascal VOC. Annotations can be defined using manual tools like the polygon tool or in a semi-automated way with the assistance of the Segment Anything Model (SAM-2) pre-trained model. The tool supports multi-dimensional images such as TIFF stacks and CZI files and provides dark mode and adjustable application font sizes for enhanced GUI experience.</p>
+        <p>Image Annotator is a user-friendly GUI tool designed for generating masks for image segmentation, object detection, and keypoint/pose annotation. It allows users to create, edit, and save annotations in various formats, including COCO-style JSON, YOLO v8/v11 (including YOLO-pose), and Pascal VOC. Annotations can be defined using manual tools like the polygon tool, or in a semi-automated way with the assistance of the Segment Anything Model (SAM-2 / SAM 3) or Grounding-DINO text-prompted detection. The tool supports multi-dimensional images (TIFF stacks, CZI files) and videos (MP4/AVI/MOV, with SAM 3 object tracking across frames), and provides dark mode, undo/redo, and adjustable application font sizes for enhanced GUI experience.</p>
 
         <h2>Key Features</h2>
         <ul>
-            <li>Semi-automated annotations with SAM-2 assistance (Segment Anything Model)</li>
-            <li>Manual annotations with polygons and rectangles</li>
-            <li>Save and load projects for continued work</li>
-            <li>Import existing COCO JSON annotations with images</li>
-            <li>Export annotations to various formats (COCO JSON, YOLO v8, Labeled images, Semantic labels, Pascal VOC)</li>
+            <li>Semi-automated annotations with SAM-2 assistance (points / box prompts)</li>
+            <li>Grounding-DINO and SAM 3 text-prompted detection — describe an object in plain English and review/accept the results for one image or a whole batch</li>
+            <li>Fine-tune SAM 2 on your own annotations (with automatic MLflow experiment tracking) instead of relying on the generic pre-trained weights</li>
+            <li>Video support (MP4/AVI/MOV): frame-by-frame annotation with a scrub timeline, plus SAM 3 object tracking to propagate a mask across frames</li>
+            <li>Keypoint / pose annotation with a per-class named skeleton (COCO instance model), including COCO-keypoints and YOLO-pose export/import and training</li>
+            <li>Manual annotations with polygons, rectangles, paint brush, and eraser tools</li>
+            <li>Undo / redo for every annotation edit (Ctrl+Z / Ctrl+Y)</li>
+            <li>Canvas selection unified with the annotations table, with handle-based resize/move and vertex editing for any selected shape</li>
+            <li>Save and load projects for continued work, with autosave</li>
+            <li>Import existing COCO JSON / YOLO annotations with images</li>
+            <li>Export annotations to various formats (COCO JSON, YOLO v8/v11, YOLO-pose, Labeled images, Semantic labels, Pascal VOC)</li>
             <li>Handle multi-dimensional images (TIFF stacks and CZI files)</li>
             <li>Zoom and pan for detailed annotations</li>
-            <li>Support for multiple classes with customizable colors</li>
-            <li>User-friendly interface with intuitive controls</li>
-            <li>Adjustable application font size</li>
-            <li>Dark mode for comfortable viewing</li>
-            <li>Support for common image formats (PNG, JPG, BMP) and multi-dimensional formats (TIFF, CZI)</li>
-            <li>Pick appropriate pre-trained SAM2 model for flexible and improved semi-automated annotations</li>
-            <li>Additional tools for dataset management and image processing</li>
+            <li>Support for multiple classes with customizable colors, and per-class visibility toggles</li>
+            <li>YOLO training (detection, segmentation, and pose) on your current annotations, with automatic MLflow tracking, and prediction with the trained model</li>
+            <li>Adjustable application font size and dark mode</li>
+            <li>Additional tools for dataset management and image processing (see the Tools Menu section below)</li>
         </ul>
 
         <h2>Getting Started</h2>
@@ -106,10 +109,52 @@ class HelpWindow(QDialog):
             </li>
         </ol>
 
+        <h2>Text-Prompted Detection (Grounding-DINO / SAM 3)</h2>
+        <p>Instead of clicking points or drawing a box, you can describe what you want in plain English. In the DINO panel, pick a model from the dropdown: <strong>grounding-dino-base</strong>, <strong>grounding-dino-tiny</strong>, <strong>SAM 3 (text prompt)</strong>, or a custom/fine-tuned checkpoint.</p>
+        <ul>
+            <li>Add one or more <strong>phrases</strong> per class (e.g. class "drone" &rarr; phrases "drone", "quadcopter") and tune the per-class Box/Text/NMS thresholds.</li>
+            <li><strong>Detect Current Image</strong> or <strong>Detect All Images</strong> runs detection (Grounding-DINO boxes are automatically refined into masks by SAM 2; SAM 3 produces masks directly).</li>
+            <li>Results show as an orange preview. Press <strong>Enter</strong> to accept them into your annotations, or <strong>Esc</strong> to discard them &mdash; this works even if focus is on a list or button, not just the canvas.</li>
+            <li>The "Review before accepting" / "Auto-accept all detections" dropdown controls both the single-image and batch buttons.</li>
+            <li><strong>SAM 3 setup note:</strong> its weights file (<code>sam3.pt</code>, ~3.45&nbsp;GB) is gated on Hugging Face and is never auto-downloaded. Request access, then place <code>sam3.pt</code> in the app's working directory or its <code>models/sam/</code> folder before selecting it in the dropdown.</li>
+        </ul>
+
+        <h2>Video Annotation and Object Tracking</h2>
+        <p>Load an <strong>.mp4 / .avi / .mov</strong> file the same way as an image &mdash; it's treated as a stack whose frames are its slices, decoded on demand. A scrub timeline appears below the canvas; drag it, or use Up/Down (Home/End for first/last frame) on the slice list, to move between frames. There is no autoplay &mdash; annotation is frame-by-frame.</p>
+        <ul>
+            <li>Every manual and AI-assisted tool works on a video frame exactly as it does on a still image.</li>
+            <li>With the <strong>SAM 3</strong> model loaded and exactly one mask annotation selected on the current frame, use <strong>Tools &rarr; Track Selected Object&hellip;</strong> to propagate that mask across the rest of the video. Confident frames are committed automatically; uncertain ones are queued for the same Enter/Escape review used for DINO detections.</li>
+            <li><strong>Tools &rarr; Undo Last Track</strong> removes an entire tracking run in one action; individual tracked frames are also undoable with Ctrl+Z.</li>
+            <li><strong>Tools &rarr; Export Annotated Video Frames&hellip;</strong> saves every annotated frame of the current video as a PNG.</li>
+        </ul>
+
+        <h2>Keypoint / Pose Annotation</h2>
+        <p>Mark a named skeleton on instances of a class (people, animals, tools&hellip;), following the COCO pose model.</p>
+        <ol>
+            <li>Right-click a class &rarr; <strong>Define Keypoint Schema</strong> &rarr; add each point's name, its optional horizontal-flip partner, and the skeleton edges between points.</li>
+            <li>Activate the <strong>Keypoint</strong> tool and place the class's points in schema order: left-click for a visible point, right-click (or Shift+left-click) for an occluded one, Backspace to remove the last point, Enter to finish early.</li>
+            <li>With an instance selected, drag a point to move it, right-click a point to toggle visible/occluded, or drag the instance's box handles to move/resize the whole pose.</li>
+            <li>Pose classes export to and import from COCO-keypoints and YOLO-pose formats, and can be trained/predicted with YOLO exactly like detection or segmentation classes.</li>
+        </ol>
+
+        <h2>Selecting, Editing, and Undo/Redo</h2>
+        <p>When no drawing tool is active, the canvas is a selection pointer &mdash; and it's unified with the Annotations table below it.</p>
+        <ul>
+            <li><strong>Click</strong> a mask to select it; <strong>Shift+Click</strong> toggles it in/out of the selection; <strong>drag</strong> on empty canvas rubber-band selects, <strong>Shift+drag</strong> adds to the selection.</li>
+            <li>With exactly <strong>one</strong> shape selected, eight square handles appear: drag a handle to resize, drag inside the shape to move it. Double-click a polygon to enter vertex-edit mode.</li>
+            <li><strong>Delete</strong> removes the selected annotation(s) instantly &mdash; there's no confirmation dialog, because&hellip;</li>
+            <li><strong>Ctrl+Z</strong> undoes the last edit and <strong>Ctrl+Y</strong> (or Ctrl+Shift+Z) redoes it. This covers drawing, deleting, merging, resizing/moving, vertex edits, and every AI-assisted accept.</li>
+        </ul>
+
+        <h2>SAM 2 Fine-Tuning and YOLO Training</h2>
+        <p>If the built-in SAM 2 weights don't segment your imagery well, fine-tune SAM 2 on your own annotations via <strong>SAM Fine-Tune (beta) &rarr; Train on Current Project&hellip;</strong> &mdash; configure epochs, learning rate, prompt type, and train/validation split, then use the resulting <strong>&#9733; &lt;model name&gt;</strong> entry in the SAM model dropdown like any built-in model.</p>
+        <p>Similarly, <strong>YOLO (beta) &rarr; Training &rarr; Train Model</strong> trains a detection, segmentation, or pose model on your current annotations, then <strong>Predict with YOLO Model</strong> runs it on new images for review/accept.</p>
+        <p>Every SAM fine-tuning and YOLO training run is automatically tracked in <strong>MLflow</strong> (no toggle needed) &mdash; see <strong>Settings &rarr; Experiment Tracking</strong> to change the tracking store location or open the MLflow dashboard.</p>
+
         <h2>Exporting Annotations</h2>
         <ol>
             <li>Click "Export Annotations" to open the export dialog.</li>
-            <li>Select the desired export format from the dropdown menu.</li>
+            <li>Select the desired export format from the dropdown menu (COCO JSON, YOLO v8/v11 including YOLO-pose, Labeled images, Semantic labels, Pascal VOC).</li>
             <li>Choose the export location and confirm to save the annotations in the selected format.</li>
         </ol>
 
@@ -127,12 +172,16 @@ class HelpWindow(QDialog):
             <li><strong>Annotation Statistics:</strong> Provides statistical information about your annotations.</li>
             <li><strong>COCO JSON Combiner:</strong> Allows you to combine multiple COCO JSON annotation files.</li>
             <li><strong>Dataset Splitter:</strong> Helps you split your dataset into train, validation, and test sets.</li>
+            <li><strong>Merge COCO for Training:</strong> Merges accumulated Grounding-DINO/SAM annotations across images into one training-ready COCO JSON.</li>
             <li><strong>Stack to Slices:</strong> Converts multi-dimensional image stacks into individual 2D slices.</li>
             <li><strong>Image Patcher:</strong> Splits large images into smaller patches with or without overlap.</li>
             <li><strong>Image Augmenter:</strong> Applies various transformations to augment your image dataset.</li>
             <li><strong>Slice Registration:</strong> Aligns images in a stack with advanced registration options. </li>
             <li><strong>Stack Interpolator:</strong> Adjusts Z-spacing in image stacks. Excellent tool to generate isotropic volumes from non-isotropic data.</li>
             <li><strong>DICOM Converter:</strong> Converts DICOM files to TIFF format. </li>
+            <li><strong>Export Annotated Video Frames&hellip;:</strong> Saves every annotated frame of the current video as a PNG.</li>
+            <li><strong>Track Selected Object&hellip; / Undo Last Track:</strong> SAM 3 video object tracking &mdash; see Video Annotation above.</li>
+            <li><strong>Unload AI Models (Free GPU Memory):</strong> Drops cached SAM/DINO/SAM 3 models from memory; re-select a model to use AI tools again.</li>
         </ul>
 
         <h2>Keyboard Shortcuts</h2>
@@ -140,19 +189,30 @@ class HelpWindow(QDialog):
             <li><strong>Ctrl + N:</strong> Create a new project</li>
             <li><strong>Ctrl + O:</strong> Open an existing project</li>
             <li><strong>Ctrl + S:</strong> Save the current project</li>
+            <li><strong>Ctrl + Shift + S:</strong> Save Project As&hellip;</li>
             <li><strong>Ctrl + W:</strong> Close the current project</li>
-            <li><strong>Ctrl + Shift + S:</strong> Open Annotation Statistics</li>
+            <li><strong>Ctrl + I:</strong> Project Details</li>
+            <li><strong>Ctrl + F:</strong> Search Projects</li>
+            <li><strong>Ctrl + Alt + S:</strong> Open Annotation Statistics</li>
+            <li><strong>Ctrl + D:</strong> Toggle dark mode</li>
+            <li><strong>Ctrl + Z:</strong> Undo the last annotation edit</li>
+            <li><strong>Ctrl + Y (or Ctrl + Shift + Z):</strong> Redo</li>
             <li><strong>F1:</strong> Open this help window</li>
             <li><strong>Ctrl + Wheel:</strong> Zoom in/out</li>
+            <li><strong>Ctrl + Drag:</strong> Pan the image</li>
             <li><strong>Ctrl + Shift + = (or Ctrl + +):</strong> Increase application font size</li>
             <li><strong>Ctrl + Shift + - (or Ctrl + -):</strong> Decrease application font size</li>
             <li><strong>Ctrl + Shift + 0:</strong> Reset application font size</li>
-            <li><strong>Esc:</strong> Cancel current annotation, exit edit mode, or exit SAM-assisted annotation</li>
-            <li><strong>Enter:</strong> Finish current annotation, exit edit mode, or accept SAM-generated mask</li>
-            <li><strong>Up/Down Arrow Keys:</strong> Navigate through slices in multi-dimensional images</li>
+            <li><strong>Esc:</strong> Cancel current annotation and return to selection mode</li>
+            <li><strong>Enter:</strong> Finish/accept current annotation, edit, or AI-generated prediction</li>
+            <li><strong>Delete:</strong> Delete the selected annotation(s) on the canvas (undoable)</li>
+            <li><strong>Up/Down Arrow Keys:</strong> Navigate through slices or video frames</li>
+            <li><strong>Home/End:</strong> Jump to the first/last frame of a video</li>
+            <li><strong>- and =:</strong> Adjust paint brush / eraser size</li>
         </ul>
 
         <h2>Getting Help</h2>
+        <p>This window covers the essentials. For a comprehensive, in-depth reference covering every feature in detail, see <strong>USER_MANUAL.md</strong> included with the application (in the project's source/installation folder, and on the project's GitHub repository).</p>
         <p>If you encounter any issues or have suggestions for improvement, please open an issue on our GitHub repository or contact the development team.</p>
         """
         self.text_browser.setHtml(help_text)

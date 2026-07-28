@@ -3,6 +3,7 @@
 ![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![PyPI version](https://img.shields.io/pypi/v/digitalsreeni-image-annotator.svg?style=flat-square)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/digitalsreeni-image-annotator?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/digitalsreeni-image-annotator)
 
 A powerful and user-friendly tool for annotating images with polygons and rectangles, built with PyQt6. Now with additional supporting tools for comprehensive image processing and dataset management.
 
@@ -14,11 +15,9 @@ If you find this project helpful, consider supporting it:
 
 ![DigitalSreeni Image Annotator Demo](screenshots/digitalsreeni-image-annotator-demo.gif)
 
-## Watch the demo (of v0.8.0):
+## Watch the demo (of v0.9.0):
 
-[![Watch the demo video](https://img.youtube.com/vi/aArn1f1YIQk/maxresdefault.jpg)](https://youtu.be/aArn1f1YIQk)
-
-This video predates several major features (Grounding-DINO, SAM fine-tuning, keypoint/pose annotation, undo/redo, dark mode) — see Features below for the current feature set.
+[![Watch the demo video](https://img.youtube.com/vi/dHW6xh41l2A/maxresdefault.jpg)](https://youtu.be/dHW6xh41l2A?si=jmk8qV-Td_cBD52f)
 
 @DigitalSreeni
 Dr. Sreenivas Bhattiprolu
@@ -26,7 +25,8 @@ Dr. Sreenivas Bhattiprolu
 ## Features
 
 - Semi-automated annotations with SAM-2 assistance (Segment Anything Model) — Because who doesn't love a helpful AI sidekick?
-- Grounding-DINO text-prompted object detection — describe what you want in plain English and review/accept detections one image or a whole batch at a time.
+- Grounding-DINO and SAM 3 text-prompted object detection — describe what you want in plain English and review/accept detections one image or a whole batch at a time.
+- Video annotation (MP4/AVI/MOV) — frame-by-frame annotation with a scrub timeline, plus SAM 3 object tracking to propagate a selected mask forward and backward across a video's frames, with per-frame or whole-run undo and one-click export of annotated frames.
 - SAM 2 fine-tuning on your own annotations, with always-on MLflow experiment tracking, so you can adapt SAM to your specific dataset instead of relying on the generic pre-trained weights.
 - Keypoint / pose annotation with per-class named skeletons (COCO instance model, 3-state point visibility), including COCO-keypoints and YOLO-pose export/import.
 - Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge.
@@ -58,6 +58,7 @@ Dr. Sreenivas Bhattiprolu
   - Stack to slices converter
   - Image patcher
   - Image augmenter
+  - Merge COCO for Training (combine accumulated DINO/SAM annotations into one training-ready COCO JSON)
 - Project Details: View and edit project metadata, including creation date, last modified date, image information, and custom notes.
 - Advanced Project Search: Search through multiple projects using complex queries with logical operators (AND, OR) and parentheses.
 - Slice Registration
@@ -187,7 +188,7 @@ pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorc
      - Image Patcher
      - Image Augmenter
    - Each tool opens a separate UI to guide you through the respective task.
-   - Access the help documentation by clicking the "Help" button or pressing F1.
+   - Access the in-app help documentation via the Help menu or by pressing F1. For a more comprehensive reference covering every feature in depth, see [USER_MANUAL.md](USER_MANUAL.md).
    - Explore the interface – you might stumble upon some hidden gems and secret features!
 
 3. Keyboard shortcuts:
