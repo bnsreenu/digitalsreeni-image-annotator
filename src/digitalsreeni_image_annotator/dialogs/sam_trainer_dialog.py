@@ -70,8 +70,10 @@ class SAMTrainConfigDialog(QDialog):
         self.train_pct.setSuffix("% train")
         self.train_pct.setToolTip(
             "Fraction of annotated images used for training; the rest are a "
-            "held-out validation set (deterministic, per image). At 100% there "
-            "is no val set, so val_loss and early stopping are off."
+            "held-out validation set. Whole sources are held out together, so "
+            "a video's frames or a stack's slices never end up on both sides. "
+            "At 100% there is no val set, so val_loss and early stopping are "
+            "off."
         )
         self.train_pct.valueChanged.connect(self._update_ok_enabled)
         form.addRow("Train split:", self.train_pct)

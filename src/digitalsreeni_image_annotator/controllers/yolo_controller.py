@@ -23,6 +23,9 @@ import os
 import cv2
 import numpy as np
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
+
+from ..core.image_size import image_dimensions
+from ..core.slice_index import resolve_slice_image, slice_index
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -97,39 +100,71 @@ class YOLOController(QObject):
         self._mlflow_ui_started = False
 
     def setup_yolo_menu(self):
-        yolo_menu = self.mw.menuBar().addMenu("&YOLO (beta)")
+        """Build the **Model** menu (issue #73).
 
-        training_submenu = yolo_menu.addMenu("Training")
+        This replaces the old two-submenu, seven-action "YOLO (beta)" menu and
+        the four-action "SAM Fine-Tune" menu with one primary action plus an
+        Advanced submenu. Eleven menu actions for what is conceptually one
+        operation was the problem; collapsing them is the fix.
 
-        load_pretrained_action = QAction("Load Pre-trained Model", self.mw)
+        The advanced entries are **demoted, not deleted**: preparing a dataset
+        for external use and training from an externally-prepared folder are
+        real workflows for someone who already has one, and loading a
+        prediction model matters for the review scoring in issue #71.
+        """
+        model_menu = self.mw.menuBar().addMenu("&Model")
+        self._menu = model_menu
+
+        train_action = QAction("Train Model…", self.mw)
+        train_action.setToolTip(
+            "Train a YOLO model or fine-tune SAM 2. Dataset preparation, YAML "
+            "handling and saving happen automatically."
+        )
+        train_action.triggered.connect(self.mw.open_train_dialog)
+        model_menu.addAction(train_action)
+
+        model_menu.addSeparator()
+        advanced = model_menu.addMenu("Advanced")
+        # Exposed so SAMTrainController can add its own advanced entries to the
+        # same submenu rather than opening a second top-level menu.
+        self.advanced_menu = advanced
+
+        load_pretrained_action = QAction("Load Pre-trained YOLO Model", self.mw)
         load_pretrained_action.triggered.connect(self.load_yolo_model)
-        training_submenu.addAction(load_pretrained_action)
+        advanced.addAction(load_pretrained_action)
 
         prepare_data_action = QAction("Prepare YOLO Dataset", self.mw)
+        prepare_data_action.setToolTip(
+            "Write a YOLO dataset for use outside this app. The Train Model "
+            "dialog does this for you."
+        )
         prepare_data_action.triggered.connect(self.prepare_yolo_dataset)
-        training_submenu.addAction(prepare_data_action)
+        advanced.addAction(prepare_data_action)
 
         load_yaml_action = QAction("Load Dataset YAML", self.mw)
         load_yaml_action.triggered.connect(self.load_yolo_yaml)
-        training_submenu.addAction(load_yaml_action)
+        advanced.addAction(load_yaml_action)
 
-        train_action = QAction("Train Model", self.mw)
-        train_action.triggered.connect(self.show_train_dialog)
-        training_submenu.addAction(train_action)
+        train_action_legacy = QAction("Train on a Loaded YAML…", self.mw)
+        train_action_legacy.setToolTip(
+            "Train against an externally prepared dataset YAML."
+        )
+        train_action_legacy.triggered.connect(self.show_train_dialog)
+        advanced.addAction(train_action_legacy)
 
-        save_model_action = QAction("Save Model", self.mw)
+        save_model_action = QAction("Save Model As…", self.mw)
         save_model_action.triggered.connect(self.save_yolo_model)
-        training_submenu.addAction(save_model_action)
+        advanced.addAction(save_model_action)
 
-        prediction_submenu = yolo_menu.addMenu("Prediction Settings")
+        advanced.addSeparator()
 
-        load_model_action = QAction("Load Model", self.mw)
+        load_model_action = QAction("Load Prediction Model", self.mw)
         load_model_action.triggered.connect(self.load_prediction_model)
-        prediction_submenu.addAction(load_model_action)
+        advanced.addAction(load_model_action)
 
         set_threshold_action = QAction("Set Confidence Threshold", self.mw)
         set_threshold_action.triggered.connect(self.set_confidence_threshold)
-        prediction_submenu.addAction(set_threshold_action)
+        advanced.addAction(set_threshold_action)
 
     def initialize_yolo_trainer(self):
         if hasattr(self.mw, "current_project_dir"):
@@ -170,9 +205,11 @@ class YOLOController(QObject):
 
         # YOLO training needs a non-empty validation set; hold some images out
         # by default (0 keeps everything in train, but val/ will then be empty).
-        from .io_controller import prompt_validation_split
+        from .io_controller import annotated_image_names, prompt_validation_split
 
-        val_split, ok = prompt_validation_split(self.mw)
+        val_split, ok = prompt_validation_split(
+            self.mw, annotated_image_names(self.mw), self.mw.image_slices
+        )
         if not ok:
             return
 
@@ -453,12 +490,24 @@ class YOLOController(QObject):
         self.mw.training_thread.finished.connect(self.training_finished)
         self.mw.training_thread.start()
 
+    def _remember_mlflow_url(self, url):
+        """Latch the run URL so the results panel can link to it (issue #74).
+
+        It arrives asynchronously (ADR-027), so the panel may open before or
+        after this fires; both paths handle a missing URL.
+        """
+        self._last_mlflow_url = url
+        dialog = getattr(self.mw, "training_results_dialog", None)
+        if dialog is not None:
+            dialog.set_mlflow_url(url)
+
     def _on_mlflow_run_url(self, url):
         """The YOLO run has opened in MLflow (signalled from the worker thread;
         this runs on the GUI thread). Show a clickable link in the progress
         dialog, start the MLflow UI server once, and open the run in the
         browser. Mirrors SAMTrainController._on_mlflow_run_url; tracking display
         must never disturb the run, so it is best-effort and self-contained."""
+        self._remember_mlflow_url(url)
         import webbrowser
 
         from PyQt6.QtCore import QTimer
@@ -512,19 +561,80 @@ class YOLOController(QObject):
                 "Training Error",
                 f"An error occurred during training: {results}",
             )
-        else:
-            saved = getattr(self.mw.yolo_trainer, "last_saved_model_path", None)
-            where = (
-                f"\n\nSaved to:\n{saved}\n\nIt's now selectable under "
-                "Prediction Settings → Load Model."
-                if saved
-                else ""
-            )
+            return
+
+        # Post-training lifecycle (issue #74): register, save, report, try.
+        # Both trainers converge on the same routine so YOLO and SAM behave
+        # identically at the end of a run.
+        self._finish_post_training(results)
+
+    def _finish_post_training(self, results):
+        weights = getattr(self.mw.yolo_trainer, "last_saved_model_path", None)
+        summary = self.mw.model_registry_controller.finish_run(
+            model_type="yolo",
+            result=results,
+            weights_path=weights,
+            metrics=self._collect_metrics(results),
+            config=getattr(self.mw.yolo_trainer, "last_train_config", None),
+            mlflow_url=getattr(self, "_last_mlflow_url", None),
+        )
+        if summary is None:
+            # Nothing was registered (no weights, or a project load in
+            # progress). Say so rather than showing a results panel for a run
+            # that produced nothing usable.
             QMessageBox.information(
                 self.mw,
                 "Training Complete",
-                f"YOLO model training completed successfully.{where}",
+                "Training finished, but no weights were available to register.",
             )
+            return
+
+        from ..dialogs.training_results_dialog import TrainingResultsDialog
+
+        self.mw.training_results_dialog = TrainingResultsDialog(
+            self.mw, summary, self.mw.model_registry_controller
+        )
+        self.mw.training_results_dialog.exec()
+
+    def _collect_metrics(self, results):
+        """Best-effort metrics from an Ultralytics results object.
+
+        Every read is defensive: keys vary by task and Ultralytics version, and
+        a missing one must produce a shorter panel, never an exception on a run
+        that actually succeeded.
+        """
+        metrics = {}
+        box = getattr(getattr(results, "box", None), "map50", None)
+        if box is not None:
+            metrics["mAP50"] = float(box)
+        map_all = getattr(getattr(results, "box", None), "map", None)
+        if map_all is not None:
+            metrics["mAP50-95"] = float(map_all)
+        results_dict = getattr(results, "results_dict", None)
+        if isinstance(results_dict, dict):
+            for key, value in results_dict.items():
+                if "mAP50-95" in key:
+                    name = "mAP50-95"
+                elif "mAP50" in key:
+                    name = "mAP50"
+                elif "precision" in key.lower():
+                    name = "precision"
+                elif "recall" in key.lower():
+                    name = "recall"
+                else:
+                    continue
+                try:
+                    metrics.setdefault(name, float(value))
+                except (TypeError, ValueError):
+                    # "every read is defensive" has to include the conversion:
+                    # a non-numeric value here must shorten the panel, never
+                    # raise on a run that actually succeeded.
+                    continue
+        # No epoch count here: train_model returns Ultralytics' metrics object,
+        # which carries no `.trainer`, so the old getattr chain silently never
+        # populated. Omitting a metric is the documented behaviour anyway; a
+        # row that never appears is better than one that pretends to try.
+        return metrics
 
     def set_confidence_threshold(self):
         if not hasattr(self.mw, "current_project_file"):
@@ -564,8 +674,12 @@ class YOLOController(QObject):
         layout = QVBoxLayout()
 
         image_list = QListWidget()
-        for image_name in self.mw.image_paths.keys():
-            image_list.addItem(image_name)
+        # Only names that resolve to pixels. image_paths holds an entry for
+        # every file including stacks and videos, whose parent entry has no
+        # single frame to predict on -- offering them was offering a no-op.
+        for image_name in self.mw.image_paths:
+            if self._prediction_source(image_name) is not None:
+                image_list.addItem(image_name)
         layout.addWidget(QLabel("Select images for prediction:"))
         layout.addWidget(image_list)
 
@@ -592,20 +706,77 @@ class YOLOController(QObject):
             self.mw.yolo_trainer.set_conf_threshold(conf)
             self.run_predictions(selected_images)
 
-    def run_predictions(self, selected_images):
-        for image_name in selected_images:
-            image_path = self.mw.image_paths[image_name]
-            results = self.mw.yolo_trainer.predict(image_path)
-            self.process_yolo_results(results, image_name)
+    def _prediction_source(self, file_name):
+        """Resolve a name to something the trainer can predict on.
 
-    def predict_single_image(self, file_name):
+        Returns ``(source, width, height)``, or ``None`` when the name has no
+        pixels behind it.
+
+        A plain image resolves to its **path**; a stack slice or a video frame
+        has no path -- its pixels live in the lazy slice collections (#45/#47)
+        -- and resolves to an **array**, which ``YOLOTrainer.predict`` accepts
+        equally. Reading ``image_paths[file_name]`` unconditionally is what
+        crashed "Try it on the current image" straight after training on a
+        video: the current image was a FRAME, and a frame is not a key in
+        ``image_paths``. The KeyError escaped a Qt slot and took the app down.
+
+        Every refusal lives here rather than at the call sites, so the single
+        and batch paths cannot disagree about what is predictable -- they did,
+        and the batch one had no guard at all.
+
+        Note the path branch measures with Pillow while Ultralytics reads with
+        cv2. They agree except on EXIF-rotated JPEGs, where cv2 applies the
+        rotation and Pillow does not; such images were already mis-annotated
+        (predictions land in rotated space, the canvas is not), and Pillow at
+        least matches the QImage space the canvas uses.
+        """
         from ..core.video_handler import is_video
 
-        # Plain 2D images only: stacks have no single frame, and a video would
-        # run Ultralytics over the whole clip on the GUI thread then fail in
-        # cv2.imread (#47). The context menu already hides this for both.
+        # A stack or video PARENT entry: no single frame to predict on, and
+        # handing Ultralytics a video path runs it over the whole clip on the
+        # GUI thread (#47). Extension checks, so a slice/frame name -- which
+        # has no extension -- passes through to the array branch below.
         if self.mw.is_multi_dimensional(file_name) or is_video(file_name):
-            return
+            return None
+
+        path = self.mw.image_paths.get(file_name)
+        if path:
+            width, height = image_dimensions(path)
+            # image_dimensions reports (0, 0) for anything it cannot read, and
+            # zero would silently multiply every predicted coordinate to the
+            # origin. This replaces the `cv2.imread(...) is None` bail that
+            # used to sit in process_yolo_results.
+            if not width or not height:
+                return None
+            return path, width, height
+
+        qimage = resolve_slice_image(
+            slice_index(self.mw.slices, self.mw.image_slices), file_name
+        )
+        if qimage is None:
+            return None
+
+        from ..inference.sam_utils import qimage_to_numpy
+
+        # Ultralytics treats a numpy source as HWC **BGR** and flips it to RGB
+        # in its own preprocess; qimage_to_numpy yields RGB. Without the
+        # reversal every prediction runs on colour-swapped pixels -- plausible,
+        # quietly worse results, no error. ascontiguousarray because the
+        # reversal leaves a negative stride that torch refuses.
+        array = np.ascontiguousarray(qimage_to_numpy(qimage)[:, :, ::-1])
+        return array, qimage.width(), qimage.height()
+
+    def run_predictions(self, selected_images):
+        for image_name in selected_images:
+            resolved = self._prediction_source(image_name)
+            if resolved is None:
+                logger.warning("skipping %r: nothing to predict on", image_name)
+                continue
+            source, width, height = resolved
+            results = self.mw.yolo_trainer.predict(source)
+            self.process_yolo_results(results, image_name, (width, height))
+
+    def predict_single_image(self, file_name):
 
         if not self.mw.yolo_trainer or not self.mw.yolo_trainer.model:
             QMessageBox.warning(
@@ -617,26 +788,46 @@ class YOLOController(QObject):
 
         self.mw.deactivate_sam_tools()
 
-        image_path = self.mw.image_paths[file_name]
+        resolved = self._prediction_source(file_name)
+        if resolved is None:
+            QMessageBox.warning(
+                self.mw,
+                "Nothing to Predict On",
+                f"'{file_name}' has no image data to predict on.\n\n"
+                "A stack or a video has to be predicted on a slice or frame "
+                "rather than as a whole; if this IS one, open its stack or "
+                "video once so the slices are loaded, then try again.",
+            )
+            return
+        source, width, height = resolved
         try:
-            results = self.mw.yolo_trainer.predict(image_path)
-            self.process_yolo_results(results, file_name)
+            results = self.mw.yolo_trainer.predict(source)
+            self.process_yolo_results(results, file_name, (width, height))
         except Exception as e:
+            # Deliberately no guess at the cause. This used to append "this
+            # might be a mismatch between the model and the YAML file classes",
+            # which since #74 is often impossible -- a model trained in-app is
+            # active with no YAML in the flow at all -- and it sent a user
+            # hunting for a nonexistent file while the real fault was elsewhere.
+            # A genuine class mismatch raises IndexError and is reported
+            # specifically, by name, further in.
             QMessageBox.warning(
                 self.mw,
                 "Prediction Error",
-                f"An error occurred during prediction: {str(e)}\n\n"
-                "This might be due to a mismatch between the model and the YAML file classes. "
-                "Please check that the YAML file corresponds to the loaded model.",
+                f"Prediction failed: {type(e).__name__}: {e}",
             )
 
-    def process_yolo_results(self, results, image_name):
-        image_path = self.mw.image_paths[image_name]
-        image = cv2.imread(image_path)
-        if image is None:
-            QMessageBox.warning(self.mw, "Error", f"Failed to load image: {image_name}")
-            return
-        original_height, original_width = image.shape[:2]
+    def process_yolo_results(self, results, image_name, image_size):
+        """Turn raw YOLO results into review-overlay temp annotations.
+
+        ``image_size`` is the ``(width, height)`` of the source that was
+        predicted on, and is **required**: a slice or a frame has no file to
+        re-read, and re-reading a plain image decodes something
+        :meth:`_prediction_source` has already measured. Resolving it there
+        also means the "unreadable image" refusal happens before inference
+        rather than after.
+        """
+        original_width, original_height = image_size
 
         temp_annotations = {}
 
@@ -662,7 +853,7 @@ class YOLOController(QObject):
                     for kpts, box in zip(keypoints, result.boxes):
                         try:
                             class_id = int(box.cls)
-                            class_name = self.mw.yolo_trainer.class_names[class_id]
+                            class_name = self.mw.yolo_trainer.class_name_for(class_id)
                             score = float(box.conf)
 
                             xy = kpts.xy.cpu().numpy()[0]  # (K, 2) pixel coords, Ultralytics orig_img space
@@ -718,7 +909,7 @@ class YOLOController(QObject):
                 for mask, box in zip(masks, boxes):
                     try:
                         class_id = int(box.cls)
-                        class_name = self.mw.yolo_trainer.class_names[class_id]
+                        class_name = self.mw.yolo_trainer.class_name_for(class_id)
                         score = float(box.conf)
 
                         mask_array = mask.data.cpu().numpy()[0]
@@ -761,12 +952,17 @@ class YOLOController(QObject):
                         return
 
         except Exception as e:
+            # Deliberately no guess at the cause. This used to append "this
+            # might be a mismatch between the model and the YAML file classes",
+            # which since #74 is often impossible -- a model trained in-app is
+            # active with no YAML in the flow at all -- and it sent a user
+            # hunting for a nonexistent file while the real fault was elsewhere.
+            # A genuine class mismatch raises IndexError and is reported
+            # specifically, by name, further in.
             QMessageBox.warning(
                 self.mw,
                 "Prediction Error",
-                f"An error occurred during prediction: {str(e)}\n\n"
-                "This might be due to a mismatch between the model and the YAML file classes. "
-                "Please check that the YAML file corresponds to the loaded model.",
+                f"Prediction failed: {type(e).__name__}: {e}",
             )
             return
 

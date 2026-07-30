@@ -165,8 +165,10 @@ class SampleGroup:
         self._image_loader = image_loader
         self.specs = specs
         self.n_instances = len(specs)
-        # Source image/slice name — used only to key the deterministic train/val
-        # split (see sam_dataset.split_groups); loading never touches it.
+        # Source image/slice name — used only to derive the train/val split's
+        # group key (see sam_dataset.split_groups); loading never touches it.
+        # Producers must keep it ext-stripped, or the grouping silently
+        # degrades to one group per image (ADR-044).
         self.name = name
 
     def load(self):
@@ -290,8 +292,10 @@ class SAMFineTuner(QObject):
         are backpropagated together (one backward per image), so the optimizer
         steps every ``batch_size`` images.
 
-        ``train_pct`` holds the rest out as a deterministic per-image validation
-        set (issue bnsreenu#85): each epoch logs ``val_loss`` alongside
+        ``train_pct`` holds the rest out as a deterministic validation set,
+        keyed by source group rather than by image so a recording's frames do
+        not straddle it (issue bnsreenu#85, ADR-044): each epoch logs
+        ``val_loss`` alongside
         ``train_loss``, ``patience`` enables early stopping on ``val_loss`` (0
         disables), and the **best-val** checkpoint is saved rather than the last
         epoch's. At 100% train (or a single image) there is no val set, so the
@@ -324,8 +328,9 @@ class SAMFineTuner(QObject):
         if prompt_type not in ("bbox", "point"):
             raise ValueError(f"Unknown prompt_type: {prompt_type}")
 
-        # Deterministic per-image hold-out (issue bnsreenu#85). At 100% train (or
-        # a single image) val is empty and the val pass / early stopping are off.
+        # Deterministic hold-out, keyed by source group rather than by image
+        # (issue bnsreenu#85, then ADR-044). At 100% train (or a single image)
+        # val is empty and the val pass / early stopping are off.
         from .sam_dataset import split_groups
         train_groups, val_groups = split_groups(groups, train_pct)
 

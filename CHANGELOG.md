@@ -6,6 +6,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Class and tool hotkeys** — `1`…`9` select the first nine classes, `P`/`R`/`B`/`E`/`K`
+  pick the polygon, rectangle, paint, eraser and keypoint tools, `V` returns to
+  selection mode. Bare keys go through a gated event filter rather than global
+  shortcuts, so they stay inert while typing in any text field.
+- **Copy and paste annotations** (`Ctrl+C` / `Ctrl+V`) across images, slices and
+  video frames, clamped into the target's bounds.
+- **Onion-skinning** for stacks, videos and slice navigation — show neighbouring
+  slices' annotations, image, or both, with configurable depth and opacity.
+- **Insert and delete polygon vertices**: double-click an edge in vertex-edit
+  mode to add one, Alt+click a vertex to remove it (refused at three).
+- **Segment Everything** — unprompted SAM mask proposals routed into the existing
+  review overlay, with noise filtering, rather than a second review mechanic.
+- **Annotation QC audit** — rule-based geometry, redundancy, statistics, hygiene
+  and pose checks with unambiguous one-click repairs, applied as a single undo
+  entry.
+- **Model-vs-ground-truth review ranking** — score every image by how much a
+  trained model disagrees with its labels (or how unsure it is where there are
+  none), then sort the image list by it. Closes the active-learning loop.
+- **Embedding-based dataset curation** — CLIP/DINOv2 image embeddings, cosine
+  near-duplicate clusters and a diversity report, with a persistent
+  content-hash-keyed cache. Recommends only; it has no delete path by design.
+- **One Train Model dialog** for both YOLO and SAM 2, inferring the task from the
+  annotations and performing dataset preparation, YAML handling, loading and
+  saving implicitly.
+- **Post-training lifecycle** — trained models are registered automatically,
+  weights copied into the project with a JSON sidecar, results reported, and
+  offered for immediate trial.
+- **Pascal VOC annotation import** (bbox and bbox+segmentation).
+- **Headless CLI** (`sreeni-cli`): `export`, `convert`, `validate` and `predict`,
+  behind a Qt-free module boundary enforced by a subprocess test so headless
+  operation never comes to require a display.
+- Type hints across the Qt-free core, with `ruff` and `mypy` as separate CI
+  steps, and coverage for the canvas interaction paths.
+
+### Fixed
+- **The train/val split scattered a video across both sides.** The split was
+  keyed on the image name, but a multi-dimensional stack contributes one name
+  per slice and a video one per frame — so near-identical frames of one
+  recording landed in both train and validation by construction. Nothing failed;
+  the reported validation metrics simply came back better the more redundant the
+  data was. The split key is now the *group*, so a stack's slices and a video's
+  frames move together, across YOLO v4/v5+ export, in-app YOLO training and SAM
+  fine-tuning alike (where validation loss also drives early stopping). Where no
+  leak-free split exists — a project that is a single recording — the app says
+  so plainly and offers to back out instead of silently reporting optimistic
+  numbers.
+- The DINO phrase panel now follows the class list, and class rename/delete
+  reaches every name-keyed structure including the undo history, which could
+  previously restore annotations under a dead class name.
+
 ## [0.9.1] - 2026-07-27
 
 ### Added

@@ -12,7 +12,7 @@ Architecture documentation for the DigitalSreeni Image Annotator project, follow
 | 4 | Solution Strategy | *(Not yet documented)* |
 | 5 | [Building Block View](05_building_block_view.md) | System structure, components, data model |
 | 6 | [Runtime View](06_runtime_view.md) | Key scenarios and workflows |
-| 7 | Deployment View | *(Not yet documented - desktop app)* |
+| 7 | [Deployment View](07_deployment_view.md) | Entry points, the Qt-free boundary, CLI usage |
 | 8 | [Cross-cutting Concepts](08_crosscutting_concepts.md) | Coordinate systems, conversions, common patterns |
 | 9 | [Architecture Decisions](09_architecture_decisions.md) | Key ADRs and rationale |
 | 10 | Quality Requirements | *(Covered in section 1)* |

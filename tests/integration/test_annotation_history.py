@@ -9,7 +9,7 @@ import copy
 import math
 
 import pytest
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QPixmap
 
 from digitalsreeni_image_annotator.core.constants import ANNOT_COL_DETAIL
 

@@ -1,10 +1,23 @@
 name: Tests
 
 on:
+  # Feature-branch prefixes are included so the stacked review PR chain gets
+  # full-matrix CI on every push (a pull_request event only fires when the PR
+  # base is master/main/develop, which stacked PRs are not). For push events
+  # GitHub uses the workflow file at the pushed commit, so this triggers
+  # reliably on the branch that introduces it.
   push:
-    branches: [ master, main, develop ]
+    branches:
+      - master
+      - main
+      - develop
+      - 'feature/**'
+      - 'refactor/**'
+      - 'perf/**'
+      - 'spike/**'
   pull_request:
     branches: [ master, main, develop ]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -40,15 +53,23 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
         restore-keys: |
           ${{ runner.os }}-pip-
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e .
-        pip install pytest pytest-qt pytest-cov pytest-mock pytest-xvfb
+        pip install -e ".[dev]"
+
+    # Lint and type check run BEFORE the tests and as separate steps, so a
+    # style or type failure is immediately distinguishable from a test failure
+    # (issue #78). Both are fast.
+    - name: Lint (ruff)
+      run: python -m ruff check .
+
+    - name: Type check (mypy)
+      run: python -m mypy
 
     - name: Run unit tests
       run: |
@@ -70,9 +91,12 @@ jobs:
         name: codecov-${{ matrix.os }}-py${{ matrix.python-version }}
         fail_ci_if_error: false
 
-    - name: Generate coverage report
+    # The coverage floor (issue #77) applies to the FULL suite only. Enforcing
+    # it on the partial runs above would fail the build at ~30% with every test
+    # passing, which is how a coverage gate gets deleted.
+    - name: Generate coverage report and enforce the floor
       run: |
-        pytest tests/ --cov=src/digitalsreeni_image_annotator --cov-report=html
+        pytest tests/ --cov=src/digitalsreeni_image_annotator --cov-report=html --cov-fail-under=58
       env:
         QT_QPA_PLATFORM: offscreen
 

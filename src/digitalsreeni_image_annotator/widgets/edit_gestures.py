@@ -131,6 +131,103 @@ def sync_bbox_key(ann):
         ann["bbox"] = calculate_bbox(ann["segmentation"])
 
 
+# --- vertex count changes (issue #68) --------------------------------------
+#
+# Below three vertices a "polygon" has no area and calculate_area happily
+# reports 0 for it, so the guard has to be here rather than downstream.
+MIN_POLYGON_VERTICES = 3
+
+
+def project_onto_segment(point, start, end):
+    """Closest point on segment ``start``-``end`` to ``point``, and the distance.
+
+    Returns ``((px, py), distance)``. Projecting rather than snapping to the
+    nearer endpoint is what makes an inserted vertex land *on* the outline, so
+    the shape does not visibly jump the moment it is added.
+    """
+    (x0, y0), (x1, y1) = start, end
+    dx, dy = x1 - x0, y1 - y0
+    length_sq = dx * dx + dy * dy
+    if length_sq == 0:
+        # Degenerate edge (duplicate vertices) -- the segment is the point.
+        t = 0.0
+    else:
+        t = ((point[0] - x0) * dx + (point[1] - y0) * dy) / length_sq
+        t = max(0.0, min(1.0, t))
+    px, py = x0 + t * dx, y0 + t * dy
+    distance = ((point[0] - px) ** 2 + (point[1] - py) ** 2) ** 0.5
+    return (px, py), distance
+
+
+def closest_edge(segmentation, point, tolerance):
+    """``(insert_index, (px, py))`` for the closest edge within ``tolerance``.
+
+    ``insert_index`` is the vertex index the new point goes *at* — i.e. edge
+    ``i → i+1`` yields ``i + 1``, so the new vertex sits between its two
+    endpoints and the ring order is preserved. The closing edge (last → first)
+    yields the vertex count, appending.
+
+    Returns ``None`` when no edge is close enough. The predecessor of this,
+    ``point_on_line``, used a fixed 0.1-unit "is the click collinear" test that
+    was so strict it made edge insertion effectively unreachable; a
+    zoom-scaled perpendicular distance is both correct and hittable.
+    """
+    points = list(zip(segmentation[0::2], segmentation[1::2]))
+    if len(points) < 2:
+        return None
+    best = None
+    for i, start in enumerate(points):
+        end = points[(i + 1) % len(points)]
+        projected, distance = project_onto_segment(point, start, end)
+        if distance <= tolerance and (best is None or distance < best[0]):
+            best = (distance, i + 1, projected)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def insert_vertex(segmentation, index, point):
+    """Flat ring with ``point`` inserted at vertex position ``index``."""
+    out = list(segmentation)
+    out[index * 2 : index * 2] = [point[0], point[1]]
+    return out
+
+
+def remove_vertex(segmentation, index):
+    """Flat ring with vertex ``index`` removed."""
+    out = list(segmentation)
+    del out[index * 2 : index * 2 + 2]
+    return out
+
+
+def can_remove_vertex(segmentation) -> bool:
+    """False once removing one more vertex would leave a degenerate shape."""
+    return len(segmentation) // 2 > MIN_POLYGON_VERTICES
+
+
+def invalidate_raw_polygon(ann):
+    """Drop the Detail-% simplification baseline after a vertex-count change.
+
+    **This is the interaction that would otherwise silently eat the edit.**
+    ``segmentation_raw`` (ADR-025) is lazily captured the first time a mask is
+    thinned and is the source the Detail-% spinbox re-simplifies from. Once the
+    live polygon gains or loses a vertex, that raw copy no longer describes the
+    same shape — so the next Detail-% drag would re-derive the outline from the
+    *pre-edit* geometry and quietly revert the user's work.
+
+    Two fixes were possible: mirror every insertion/removal into the raw copy,
+    or invalidate it. Invalidation is chosen deliberately. Mirroring is only
+    meaningful if the raw and the live polygon share a vertex correspondence,
+    and after simplification they do not — the raw is denser, so "the vertex
+    the user just deleted" has no single counterpart there. Invalidating makes
+    the edited shape the new baseline, which is both correct and explainable:
+    Detail-% simply restarts from what you now see.
+    """
+    if ann.get("segmentation_raw") is not None:
+        ann.pop("segmentation_raw", None)
+    ann["detail_pct"] = 100
+
+
 class EditGestures:
     """Stateful driver for direct-manipulation shape editing on the canvas.
 

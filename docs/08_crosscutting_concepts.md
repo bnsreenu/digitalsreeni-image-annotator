@@ -146,6 +146,22 @@ for contour in contours:
         # Accept annotation
 ```
 
+## Project Portability & Unsaved-Project Recovery (#41 / #42)
+
+**Relative image paths (ADR-033).** `build_project_data()` writes `image_paths_rel`
+(POSIX separators, project-relative) alongside the absolute `image_paths`, but only when
+a project dir exists. `resolve_image_path()` resolves in order relative → absolute →
+`<project_dir>/images/` → missing, so a moved project folder opens cleanly and v1 files
+still resolve. `core/project_schema.validate_project_data` (pure) runs after `json.load`
+and raises `ValueError` on a structurally broken `.iap`.
+
+**Unsaved-project recovery (ADR-032).** With no `current_project_file`, `auto_save()`
+never prompts — it writes a silent snapshot (`build_project_data()` → atomic temp +
+`os.replace`) to `AppDataLocation/recovery/`, path stored under QSettings
+`recovery/pending_path`. `main()` calls `ProjectController.offer_recovery()` after
+`window.show()` (never the constructor, so tests don't trigger it); a real save clears it.
+The snapshot is exactly the `.iap` shape, so restore reuses `load_project_data`.
+
 ## Autosave and Project Corruption Prevention
 
 ### Critical: Disable Autosave During Load
@@ -278,6 +294,30 @@ which on Windows means barely-visible radio-button indicators and
 white-on-white headers (the dataset splitter radio buttons hit this
 before they were styled).
 
+## Left Sidebar — Scrollable Layout (issue #88)
+
+The left sidebar (`ui/sidebar.py::build_sidebar`) stacks Import, Classes,
+the Annotation tools, the DINO panel, the Annotations table and Export in
+one `QVBoxLayout`. On short screens or at large UI font sizes an expanded
+DINO panel used to squeeze the Annotations table down to just its header
+row. The fix is structural, not per-widget:
+
+- The whole sidebar content widget lives inside a `QScrollArea`
+  (`window.sidebar_scroll`, `setWidgetResizable(True)`) that is what gets
+  added to the main layout — `window.sidebar` itself is the scroll area's
+  inner widget. Horizontal scrolling is `ScrollBarAlwaysOff`; because the
+  area is width-resizable the content is resized to the viewport width. A
+  `setMinimumWidth` on the scroll area preserves the window-width floor the
+  sidebar's own `minimumSizeHint` used to impose.
+- Each vertically-competing section (`class_list`, `dino_class_table`,
+  `dino_phrase_panel`, `annotation_list`) carries a `setMinimumHeight(...)`
+  so it keeps a usable size. The sum of those minimums is what makes the
+  scroll area scroll when the window is too short — otherwise a section
+  could still collapse *inside* the scroll area.
+- The scroll area uses `QFrame.Shape.NoFrame` and sets no
+  `background:`/`color:` — the active stylesheet still paints the sidebar
+  (No Hardcoded Colors Rule above).
+
 ## UI Font Zoom (Low-Vision Mode)
 
 ### Single Source of Truth: `ui_font_pt`
@@ -390,6 +430,43 @@ on every run.
 
 ## Error Handling
 
+### Error-Handling Convention (issue #34)
+
+Where an exception is caught and what happens to it is a decision, not an
+accident. The rules, enforced in review:
+
+1. **Core / inference / io / training modules raise.** They never show dialogs
+   and never return `None` to signal failure of a user-initiated action.
+2. **Controllers / dialogs (the UI boundary) catch**, `logger.exception(...)`,
+   and surface via `QMessageBox` when a user action failed.
+3. **Catch the narrowest exception type** that models the expected failure.
+   `except Exception` is allowed only at a UI boundary or a documented
+   crash-safety barrier (e.g. `mlflow_tracker` "never let tracking abort
+   training").
+4. **Never `pass` silently.** Every swallowed exception must either log
+   (`logger.exception(...)` / `logger.warning(..., exc_info=True)`) or carry a
+   narrow type plus a `# reason` comment.
+5. **Bare `except:` is banned** (it also traps `KeyboardInterrupt` / `SystemExit`).
+
+```python
+# Good — narrow, documented no-op
+except TypeError:
+    pass  # signal already disconnected
+
+# Good — swallow but stay visible
+except Exception:
+    logger.warning("CUDA cache cleanup failed during unload", exc_info=True)
+
+# Bad — silent, untyped
+except Exception:
+    pass
+```
+
+The OOM-on-model-load path is a worked example: `core/torch_utils._is_oom`
+(torch-free) lets `SAMController.change_sam_model` show a tailored "pick a
+smaller model" dialog for out-of-memory failures while keeping the generic
+download/torch message for everything else. See ADR-031.
+
 ### YOLO Model/Data Mismatch
 
 **Problem**: Loading YOLO model trained on different classes
@@ -457,22 +534,164 @@ Each slice: 512×512 pixels
 
 ### Slice Naming Convention
 
+The authority is `SliceProvider._build_index` in `core/slice_cache.py`. Two details are
+load-bearing and were documented backwards until #81 — the base is **ext-stripped** and the
+indices are **1-based**:
+
 ```python
-def generate_slice_name(filename, t, z, c, s):
-    parts = []
-    if t is not None:
-        parts.append(f"T{t}")
-    if z is not None:
-        parts.append(f"Z{z}")
-    if c is not None:
-        parts.append(f"C{c}")
-    if s is not None:
-        parts.append(f"S{s}")
+# core/slice_cache.py, paraphrased
+slice_name = f"{base}_" + "_".join(f"{dims[i]}{val + 1}" for ...)
 
-    return f"{filename}_{'_'.join(parts)}"
-
-# Example: "stack.tif_T0_Z5_C0"
+# base = os.path.splitext(os.path.basename(path))[0]   -> "stack", not "stack.tif"
+# val + 1                                              -> Z1, not Z0
+#
+# Example: "stack_T1_Z5_C1"
+# Video frames: "clip_F00042"  (core/video_handler.frame_key, ADR-037)
 ```
+
+**The absence of a dot is the discriminator.** A slice name has no extension; a regular image
+name keeps one. Three places rely on that to tell them apart: both YOLO exporters
+(`'_' in name and '.' not in name`), `io/export_formats._is_exportable`, and
+`core/dataset_split._slice_base`, which derives the group a slice belongs to for the train/val
+split (ADR-044). `add_images_to_list` enforces the ext-stripping so `video.mp4` and `video.tif`
+cannot clobber each other's slices.
+
+Writing `stack.tif_T0_Z5_C0` into a fixture therefore produces a name the grouping treats as an
+ordinary image — which is not a bug in the grouping.
+
+## The Shortcut Registry and Its Gates (issue #65, ADR-043)
+
+The app has **two** keyboard mechanisms, and which one a binding belongs to is a real decision:
+
+| Mechanism | For | Why |
+|---|---|---|
+| `QShortcut` with `ApplicationShortcut` | **unconditional** bindings — Ctrl+Z, Ctrl+Y, F2 | `QTableWidget` and other focusable children consume keys before they bubble to the main window, so `keyPressEvent` never sees them. No text field wants a modified key. |
+| `ShortcutEventFilter` (`ui/shortcuts.py`) | **conditional** bindings — bare digits and letters, plus Ctrl+C/Ctrl+V | An `ApplicationShortcut` on `3` swallows that keystroke in *every* `QLineEdit`: renaming a class to "Layer 3" or typing a DINO phrase would silently drop characters. An event filter is the only mechanism that can be conditional on where focus is. |
+
+The filter is a **registry**, not another bespoke filter: `{(key, modifiers): callable}` plus a
+list of gate predicates that must all pass. Adding a global-key feature means registering a
+binding. This is what ADR-015's follow-up asked for.
+
+### The gates
+
+Both live in `ui/input_gates.py` and are **shared with `DINOReviewEventFilter`**, which used to
+duplicate them inline. Two filters drifting apart on a *safety* predicate is exactly the failure
+that note warned about.
+
+- `no_modal_open()` — a modal owns the keyboard; firing a canvas binding underneath it would act
+  on state the user cannot see.
+- `focus_is_text_entry()` — covers `QLineEdit`, `QTextEdit`, `QPlainTextEdit`, `QAbstractSpinBox`
+  and **editable** combo boxes. A non-editable combo takes no typed text, so gating on it would
+  needlessly disable the bindings whenever a dropdown has focus.
+
+`widget_is_text_entry(widget)` is split out from `focus_is_text_entry()` deliberately: which
+widget holds focus is a property of the windowing system and unreliable under the offscreen
+platform used in CI, whereas "is a `QSpinBox` a text entry" is a decision this module owns and
+must get right. The split is what makes the classification testable.
+
+### Rules for new bindings
+
+- A binding returning `False` does **not** consume the event — that is what makes an out-of-range
+  digit a silent no-op rather than an error.
+- Tool bindings must call `ImageAnnotator.activate_tool` and nothing else. Writing `current_tool`
+  or the SAM flags directly reintroduces the drift the choke-point exists to prevent.
+- Digits address the **first nine** classes only. Classes 10+ stay mouse-reachable; a
+  modifier-based second bank was rejected because two-key class selection is slower than clicking.
+
+### Discoverability without breaking the item text
+
+`ClassShortcutDelegate` *paints* the 1-9 badge. It cannot go into the item text, because **the
+item text IS the class name** across the app — `findItems(MatchExactly)` re-selects on it, the
+`Temp-` prefix checks drive the whole review workflow, `text()[5:]` derives the permanent name on
+accept, and rename reads it back. The same rule applies to the review-score badge on the image
+list (`ImageScoreDelegate`, issue #71), where the text additionally backs the
+`all_images[i]` ↔ `image_list.item(i)` positional invariant (ADR-035).
+
+## The Annotation Clipboard (issue #66)
+
+App-level, not per-image: it survives switching image, slice, frame and project, because "copy
+here, paste 40 slices later" is the entire point. Deliberately **not** the system clipboard —
+annotations are rich dicts with class bindings and schema constraints, and round-tripping them
+through text would lose the class-mapping decision.
+
+Three rules, each present because of a specific way the naive version breaks:
+
+1. **Deep copy in and out.** `image_label.annotations` is itself a deep copy and PyQt round-trips
+   `UserRole` dicts as copies, so value-equality is the only stable identity (ADR-022). A
+   reference would make the pasted shape an alias of the source.
+2. **Clamp, don't clip.** The target may be smaller. Per-coordinate clamping preserves vertex
+   count and ordering (ADR-024); a shapely clip is geometrically prettier but changes the vertex
+   count out from under a shape the user is about to nudge. `segmentation_raw` is clamped the
+   same way, or restoring Detail-% to 100 would push coordinates back out of bounds.
+3. **A pose travels only to a class with the same K.** K is locked once instances exist
+   (ADR-029); a 17-point pose on a 5-point class is not slightly wrong, it is corrupt. Mismatches
+   are reported and skipped — and a skipped pose does not cost the user the polygons pasted
+   alongside it.
+
+One `record_history()` before any mutation, so a five-annotation paste is one Ctrl+Z. A cancel at
+the class-mapping dialog pastes **nothing at all**: a partial paste after a cancel is worse than
+none.
+
+## Onion-Skinning and the Slice LRU (issue #67)
+
+### Ghost the annotations, not the pixels
+
+There are **two** ghosts, chosen by the `content` setting, and which one is the default matters
+more than any other decision here.
+
+The raster ghost — the animator's onion skin, the neighbouring slice blended over the current one
+— shipped first and was the first thing the feature got complained about. On an opaque
+photographic slice it does not read as "here is where that object was"; it reads as *this image is
+out of focus*. Two cels differ only where the drawing moved, so a blend is legible; two adjacent
+microscopy slices or video frames differ **everywhere**, so the blend is just noise.
+
+The question actually worth answering while stepping through a stack is *what did I label on the
+neighbouring slice, and does this one line up with it?* So `CONTENT_ANNOTATIONS` is the default:
+the neighbour's committed shapes, dashed and unfilled in their class colour. The current slice's
+own masks are filled, so an unfilled ghost stays distinguishable from exactly the thing it exists
+to be compared against. Hidden classes are skipped — a ghost that ignores the visibility checkbox
+is a ghost you cannot turn off.
+
+The annotation ghost is also the **cheap** one: a dict lookup per neighbour in `all_annotations`,
+no decode and no LRU traffic. `onion.wants_image()` gates the expensive half, so the default
+costs nothing beyond the lookup.
+
+### Layering and resolution
+
+The ghost is drawn **after** the current image and **before** every annotation layer. The issue
+asked for "underneath the current image", which cannot work: unlike an animation cel, an image
+slice is a fully opaque raster, so anything painted beneath it is invisible. The chosen order
+delivers what the requirement actually wanted — a visible ghost with the current slice's
+annotations legible on top.
+
+Neighbours are resolved in `display_image`, the single funnel where the canvas image changes,
+**never in `paintEvent`**: a cache lookup (and on a miss, a full decode) per repaint would put
+decoding in the pan and zoom path. Pixels go through `LazySliceList.get` like every other consumer,
+so the shared bounded LRU (ADR-036) stays the only owner of decoded pixels. The default
+single-neighbour mode costs one extra live decode; "both" costs two, which is why the capacity of
+8 was left alone rather than quietly raised.
+
+The ghost is **decorative and stays that way**: it never becomes `original_pixmap` (what SAM,
+export and every measurement read), contributes nothing to hit-testing, and is dropped on
+`clear()`. Opacity is restored to 1.0 after the pass so it cannot wash out later layers.
+
+## Vertex Count Changes and the Detail-% Baseline (issue #68)
+
+`segmentation_raw` (ADR-025) is captured lazily the first time a mask is thinned and is the source
+the Detail-% spinbox re-simplifies **from**. Once the live polygon gains or loses a vertex, that
+copy describes a different shape — so the next Detail-% drag would re-derive the outline from
+pre-edit geometry and **silently revert the user's work**.
+
+Resolved by **invalidating** rather than mirroring. Mirroring only means something if the raw and
+the live polygon share a vertex correspondence, and after simplification they do not: the raw is
+denser, so "the vertex the user just deleted" has no single counterpart there. Invalidation makes
+the edited shape the new baseline — correct, and explainable as "Detail-% restarts from what you
+now see". Esc restores the raw/detail pair too, so cancelling costs nothing either.
+
+The undo model stays session-scoped: the baseline is captured at edit-mode entry, insert/remove
+save and refresh the table via `polygonGeometryChanged` **without** pushing history, and Enter
+commits the session as one undo step. Esc reverts everything including insertions, leaving no
+entry (ADR-026).
 
 ## Keyboard Shortcuts
 
@@ -511,18 +730,159 @@ def generate_slice_name(filename, t, z, c, s):
 
 ## Logging and Debug Output
 
-### Print Statements
+The application logs through the stdlib `logging` module, rooted at the
+package logger `digitalsreeni_image_annotator`. `print()` is **banned in
+`src/`** (see ADR-030). Configuration lives in
+[`core/logging_config.py`](../src/digitalsreeni_image_annotator/core/logging_config.py):
 
-Current implementation uses `print()` for debugging:
-```python
-print(f"Changed SAM model to: {model_name}")
-print(f"SAM input points: {all_points}, labels: {all_labels}")
-print(f"Loading project from: {project_path}")
-```
+- `configure(level=None)` — called once from `main.py:main()` **before**
+  `QApplication` is created. It installs a single stderr `StreamHandler` on
+  the package logger, sets the level, and is **idempotent** (a second call
+  adds no second handler — important for tests and re-entry).
+- `get_logger(__name__)` — every module's logger. `configure()` derives the
+  package root from its own `__name__`, so all loggers share that root and
+  inherit its handler/level automatically — this holds whether the app is
+  imported as `digitalsreeni_image_annotator` (installed / `sreeni`) or
+  `src.digitalsreeni_image_annotator` (the `python -m src...` launcher).
 
-**Note**: No formal logging framework is used. Output goes to console.
+### Level policy
+
+| Level | Use for | Examples |
+|-------|---------|----------|
+| `debug` | Diagnostic chatter: array shapes/dtypes, metadata dumps, coordinate/point dumps, per-slice / per-file loop progress | "input points: …", "slice 5/12 written" |
+| `info` | State changes a user might care about | "SAM model loaded: …", "Project auto-saved.", "Created N slices for …" |
+| `warning` | Soft failures / ignored conditions **not** in an `except` ("Skipped …", "… not found", failed user action that returns) | "No SAM model selected." |
+| `exception` / `error(exc_info=True)` | Inside an `except` block — appends the traceback | "Error applying SAM points" |
+
+When in doubt between debug and info, choose **debug**: the default INFO level
+must stay quiet enough for daily use, and a per-slice INFO line on a 2560-slice
+stack is unusable. `logger.exception(...)` may only be called inside an
+`except` block; outside one use `logger.error(..., exc_info=True)`.
+
+### The debug switch
+
+The default level is INFO. DEBUG is enabled by either:
+- `--debug` on the command line (`python -m src.digitalsreeni_image_annotator.main --debug`), or
+- `IMAGE_ANNOTATOR_DEBUG=1` in the environment.
+
+### Rule for new code
+
+New code uses `logger = get_logger(__name__)`, never `print()`. User-facing
+messaging still goes through `QMessageBox` / dialogs — logging is the
+diagnostic channel, dialogs are the user channel; the two are independent
+(see the Error-Handling Convention above).
+
+## Class Name Is a Primary Key — Sync Every Registry on Rename (#63)
+
+There is no class-id object. A class is identified by its **name string**, and
+that name is the key into several independent registries:
+
+| Registry | Owner | Notes |
+|----------|-------|-------|
+| `class_mapping` | main window | name → numeric id (export) |
+| `image_label.class_colors` | canvas | name → `QColor` |
+| `image_label.class_visibility` | canvas | read via `.get(name, True)` |
+| `keypoint_schemas` | main window | pose classes only (ADR-029) |
+| `all_annotations[img]` / `image_label.annotations` | per-image buckets | plus each annotation's `category_name` |
+| `dino_class_table` rows | DINO widget | keyed by row text |
+| `dino_phrase_panel._phrases` | DINO widget | name → phrase list |
+| `dino_batch_results` | main window | pending review results, `category_name` captured at **detection** time |
+| `image_label.temp_annotations` | canvas | the on-screen half of the same review state |
+| `AnnotationHistory` snapshots | annotation controller | each undo entry is a whole `{class_name: [...]}` dict (ADR-026) |
+
+**Every roster mutation must touch all of them.** `add_class` and
+`delete_class` do; `rename_class` silently skipped the DINO pair and
+`class_visibility` until #63 — so a renamed class kept detecting under its dead
+name, lost its phrases *and* thresholds on the next project load (both are
+filtered against the live class list), and quietly became visible again.
+
+The last three rows were added after #63, and each failed *later* and quietly.
+A rename mid-review left pending proposals tagged with a name the project no
+longer had — drawn in the fallback colour, then discarded on accept. And the
+history snapshots made **Ctrl+Z after a rename restore the annotations under
+the old name**: unmapped, uncoloured, absent from the class list, so invisible
+on the canvas and still written into the `.iap`. A rename re-keys both; a
+delete drops them (a prompted proposal for a deleted class can only ever be
+discarded, and an undo that resurrects the class brings it back unusable).
+
+The onion-skin ghosts (#67) are a **cache**, not a registry: they hold
+`(class_name, annotations)` pairs resolved at navigation time, so rename and
+delete call `refresh_onion_skin()` rather than re-keying them.
+
+**Renaming onto an existing name is rejected, not merged.** `rename_class`
+runs a **pre-flight** block that validates every precondition *before* the
+first mutation, then commits. The collision check is against
+`image_label.class_colors`, **not** `class_mapping` — `Temp-*` review classes
+live in `class_colors` + `class_list` only (`add_temp_classes` never writes
+`class_mapping`), so a `class_mapping` check would let a rename onto a pending
+temp class through: the real class's annotation bucket merges into the temp
+one, and the next Reject sweeps `Temp-*` and deletes it.
+Without that guard the rename half-clobbered every registry — the old class's
+id and colour overwrote the target's, annotation buckets merged, and the DINO
+table ended up with two identically-named rows, which makes
+`get_thresholds_dict()` (a name-keyed dict comprehension) drop one row's
+thresholds and `_build_dino_class_configs()` emit the class twice.
+`ClassThresholdTable.rename_class` carries the same uniqueness guard as a
+backstop, mirroring `add_class`.
+
+**`Temp-` is a reserved prefix, not just a naming convention.** It is a
+stringly-typed discriminator with *destructive* semantics:
+`accept_visible_temp_classes` / `reject_visible_temp_classes` sweep `Temp-*`
+wholesale, and reject **deletes** the matching annotations. `rename_class`
+therefore refuses to rename *into* the namespace, and refuses to rename a
+pending `Temp-*` class *out* of it (accept or reject it first).
+
+Known debt: the prefix is spelled as an inline `startswith("Temp-")` /
+`"Temp-*"` literal in ~18 places across five modules rather than one
+`is_temp_class()` helper. Note **why the guard lives on the rename path and
+not on creation**: `load_project_data` calls `add_class` for every saved
+class, so a naive rejection in `add_class` would make any legacy project
+containing a hand-made `Temp-foo` class fail to load. A follow-up needs to
+handle that case (migrate on load, or gate the guard on
+`not is_loading_project`) before guarding creation.
+
+**Rename must not re-derive visibility.** `item.setText()` on a `class_list`
+row emits `itemChanged`, which is wired to `toggle_class_visibility` — that
+would re-derive `class_visibility` from the checkbox and become a hidden
+co-author of the rename. `rename_class` wraps the `setText` in
+`blockSignals(True/False)` so the explicit re-key is the sole writer.
+
+When adding a new name-keyed registry, add it to the table above **and** to
+every mutation site. The registries are hand-synced at each call site rather
+than projected from one roster — that coupling is known debt, and the reason
+this table keeps growing one production bug at a time.
 
 ## DINO Temp Annotations — Single Field, Many Images
+
+> **Four producers** now feed the temp-annotation / `dino_batch_results`
+> pipeline. Adding one means widening `REVIEW_SOURCES` in `dino_controller.py`
+> and parking results under the image key — never installing a parallel review
+> mechanic (ADR-015).
+>
+> | Producer | `source` tag | Notes |
+> |---|---|---|
+> | Grounding-DINO two-stage | `"dino"` | the original |
+> | SAM 3 text prompt | `"sam3"` | ADR-039, one-stage `SAM3Utils.detect_text` |
+> | SAM 3 video tracking | `"sam3"` | ADR-040, **uncertain** frames only; confident frames bypass review and commit directly as `source: "sam3-track"` |
+> | Segment Everything | `"sam-everything"` | issue #69, unprompted; additionally carries `assigned_class`, which is `None` until the user clicks the proposal |
+>
+> The **review gate** (`DINOReviewEventFilter`) reads the shared
+> `REVIEW_SOURCES` tuple, so a producer cannot be half-registered *there*. Note
+> that `source` carries other meanings elsewhere with their own literals —
+> slice-list colouring in `image_controller` and the scoring exclusion in
+> `core/disagreement` both test `"sam3-track"` directly — so a new producer
+> still has to be checked against those by hand. All four share
+> the SAME `dino_batch_results` dict, so the single-field re-sync rule below
+> applies to all of them unchanged — which is precisely why Segment Everything
+> parks its proposals there rather than living only in `temp_annotations`:
+> without that, one click in the image list would silently discard a batch of
+> class assignments.
+>
+> **Known limit**: one image key holds one producer's entries. Two producers
+> parking for the same image means the last writer wins, silently. In practice
+> the runs are sequential and `SegmentEverythingController.run()` refuses to
+> start while a review is pending — but `stage_proposals`, the entry point the
+> tests use, has no such guard, and neither does anything structural.
 
 `ImageLabel.temp_annotations` is a **single list on the image_label**,
 not a per-image cache. It holds the pending DINO+SAM masks shown as
@@ -702,6 +1062,123 @@ emitters follow up with `annotationsBatchSaved`
 New mutation paths must keep one of those two routes — don't add
 bespoke `apply_image_filter()` call sites.
 
+## Lazy Slice Materialisation — Name-Only vs Pixel Consumers (issue #45, ADR-036)
+
+Multi-dim `image_slices[base]` is a `LazySliceList` (`core/slice_cache.py`), not a
+list of `(name, qimage)` tuples — QImages decode on demand through a shared bounded
+LRU (`LRU_CAPACITY = 8`). It stays interface-compatible (`__iter__`, `__getitem__`,
+`__len__`, `__bool__`, `.names`, `.get(name)`, `prefetch_around`), but there is a
+critical distinction for anyone touching slice code:
+
+- **Name-only consumers must never iterate for pixels.** Saving a project, computing
+  annotation status, rebuilding the slice list, and navigation membership checks need
+  only slice *names*. Use `slice_cache.slice_names(slices)` (or `.names`) — iterating
+  `for name, _ in slices` would materialise every QImage. `save_project` is
+  regression-tested to call `SliceProvider.extract` **zero** times.
+- **Pixel consumers materialise one at a time.** `switch_slice`/`activate_slice` use
+  `slices.get(name)` + `prefetch_around(name)`; exporters, the SAM-dataset build and
+  DINO batch iterate via `__iter__` (which feeds/evicts the LRU). A batch export still
+  transiently collects a stack's QImages into its own `slice_map` — that is an accepted
+  per-operation cost; the SESSION memory is what the LRU bounds.
+- **Every "drop a stack" path must release.** `remove_image`/`delete_selected_image`/
+  `redefine_dimensions` call `slice_cache.release_slices(...)` before dropping the stack;
+  `open_images` (which replaces the whole dataset) and `clear_all` clear the entire shared
+  LRU **and** `image_slices` — because a `LazySliceList` pins its whole decoded source
+  array under Strategy A, merely rebinding `mw.slices = []` would leak the outgoing stack
+  for the session.
+- `mw.slices` and `image_slices[base]` are the **same** `LazySliceList` object, and
+  slice naming is byte-identical to the old eager path (it is the annotation key +
+  export filename). Extraction returns a fresh QImage each call — never mutate a cached
+  one (the SAM worker may be reading it, ADR-013).
+
+## Video Frames as Lazy Slices (issue #47, ADR-037)
+
+A video is a stack whose slices are frames, and it **reuses** the #45 lazy machinery
+rather than a parallel cache: `image_slices[base]` is a `LazySliceList` backed by a
+`core/video_handler.py::VideoSliceProvider` (duck-compatible with `SliceProvider`), so
+every slice consumer above works for video unchanged. Practical rules:
+
+- **Never read a frame's pixels directly.** Go through the `LazySliceList`
+  (`slices.get(frame_key)` / `__iter__`), which decodes via `VideoHandler.get_frame`
+  and caches in the shared `SliceLRU`. Frame keys are `f"{base}_F{idx:05d}"`
+  (`video_handler.frame_key` / `parse_frame_index`, regex anchored at end so a
+  `stack_T1_Z5` key never parses as a frame).
+- **Handlers are a separate resource that must be released.** `mw.video_handlers[base]`
+  holds the open `cv2.VideoCapture`; release it on every drop path
+  (`remove_image`/`delete_selected_image`/`redefine_dimensions`/`open_images`/
+  `clear_all`) alongside `release_slices`.
+- **GUI-thread only.** `cv2.VideoCapture` is not thread-safe; `get_frame` seeks +
+  decodes synchronously on the main thread (same discipline as `SliceProvider.extract`),
+  and always returns a fresh `.copy()` QImage (the numpy buffer dies at return; the SAM
+  worker may read a cached one, ADR-013).
+- **Base-name collision** (`video.mp4` vs `video.tif` → same `image_slices` key) is
+  refused in `add_images_to_list`.
+
+## Video Timeline — A Pure View (issue #48)
+
+`widgets/video_timeline.py::VideoTimeline` is a scrub slider + annotated-frame
+marker strip + `F i/N • MM:SS / MM:SS` label shown under the canvas for videos
+only. It is a **view**, never a second source of truth for the current frame:
+
+- **All frame changes route through `switch_slice`.** User scrubbing emits
+  `frameSelected(idx)`; the orchestrator's `on_timeline_frame_selected` maps
+  idx→slice-list row and calls `switch_slice` (keeping unsaved-changes checks,
+  annotation save, and the DINO temp re-sync intact). The timeline never writes
+  `current_image`.
+- **No signal feedback loop.** `set_current_frame` (called from `switch_slice`
+  via `update_video_timeline`) wraps `slider.setValue` in an `_updating` guard
+  so the programmatic sync can't re-emit `frameSelected` and re-enter
+  `switch_slice`. `set_video` is guarded the same way, so reconfiguring the
+  timeline on every annotation mutation never spuriously jumps to frame 0.
+- **Marks derive from `all_annotations` keys**, computed by
+  `ImageController.annotated_frame_indices(base)` (prefix `base + "_F"` +
+  `parse_frame_index`, exact) and refreshed at the `update_slice_list_colors`
+  choke point — the same hook the slice list uses — so they stay correct after
+  every save/accept/undo/delete without a frame switch.
+- **Palette-derived colours** (`highlight`/`mid`/`text`), no literals. The app
+  themes via QSS (no `setPalette`), so `highlight`/`mid` are effectively the
+  static default palette — chosen because a saturated accent + mid-grey both
+  read on the light and soft-dark backgrounds — while the `text` role (the
+  high-contrast current-frame tick) does follow the stylesheet. The slider has
+  `NoFocus` so it never swallows arrow-key slice nav.
+
+## Image List Groups & Status Badges (issue #43)
+
+The image list gained two at-a-glance affordances, both layered on the
+existing filter/sort wiring — **no tree widget, no thumbnails, no header
+rows**:
+
+- **Status badges**: `ImageController.refresh_image_status_icons()` sets a
+  small painted-pixmap `QIcon` per row — a filled green dot when
+  `image_has_annotations(info)` (any slice of a stack counts), a hollow gray
+  outline otherwise. Nothing is stored; both states are derived. Icons are
+  painted once per `(annotated, dark_mode)` into a cache; because they are
+  **painted pixmaps, not stylesheet colours**, the No Hardcoded Colors Rule
+  isn't violated — but the cache is cleared and rebuilt when the theme flips
+  (`on_theme_changed`, called from `ui/theme.py::toggle_dark_mode`). The
+  refresh runs at the end of `apply_image_filter()` (so every annotation
+  mutation repaints badges via the `update_slice_list_colors →
+  apply_image_filter` contract) and at the end of `sort_image_list()`. The
+  dot colours are theme-tuned (a brighter green / lighter gray on the dark
+  sidebar), which is what makes the `(annotated, dark_mode)` cache dimension
+  and the `on_theme_changed` rebuild do real work.
+- **Named groups**: an optional `"group"` string key on each `all_images`
+  entry (no registry; the group set is derived). `set_image_group` sets/clears
+  it, re-sorts, and auto-saves (guarded by `is_loading_project`). The
+  context menu ("Move to group…" / "Remove from group") drives it. Grouped
+  images cluster via the `sort_image_list` key
+  `(group.casefold(), name.casefold(), name)`; the group shows only in the
+  row **tooltip** — the item TEXT stays the bare file name, because
+  `item(i).text()` is read as a filename by DINO batch navigation and COCO
+  import reconciliation. A second combo (`image_group_combo`) filters by
+  group; `apply_image_filter` hides a row when **either** the status filter
+  or the group filter excludes it (OR of the two hide flags), keeping index 0
+  of both combos as the cheap "hide nothing" default. Groups persist in the
+  `.iap`; on load no restoration step is needed — `load_project_data` aliases
+  `all_images` to the parsed `project_data["images"]` and the load loop does
+  not rebuild it (`add_images_to_list` no-ops because `image_paths` is set
+  first), so the `"group"` keys survive as-is.
+
 ## Image List Sorting — Rebuild, Don't `setSortingEnabled`
 
 The image list is kept alphabetical (upstream issue #60,
@@ -849,6 +1326,12 @@ to keep the image legible — see the No Hardcoded Colors Rule for the broader
 "don't fight the theme/colours" theme.
 
 ## Tool Activation — One Choke-Point, Mutually Exclusive
+
+**Pose classes admit only the keypoint tool (#44).** Activating a shape tool
+(`toggle_tool`) or a SAM tool (`SAMController.toggle_sam_*`) while a pose class is
+selected is refused (button unchecked); selecting a pose class while a shape/SAM tool is
+active deactivates it (`ClassController.on_class_selected`). Editing a schema is still
+allowed on a legacy-mixed class. See ADR-029 Guards.
 
 All six canvas tools (Polygon, Rectangle, Paint, Eraser, SAM-box, SAM-points)
 go through a **single** activation method, `ImageAnnotator.activate_tool(name)`

@@ -1,7 +1,6 @@
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QTextEdit, QPushButton, QLabel, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QTextEdit, QLabel, 
                              QDialogButtonBox, QScrollArea, QWidget)
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 import os
 from datetime import datetime
 

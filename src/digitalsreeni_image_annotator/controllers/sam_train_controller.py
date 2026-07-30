@@ -67,26 +67,37 @@ class SAMTrainController(QObject):
 
     # -- menu ----------------------------------------------------------------
 
-    def setup_sam_train_menu(self):
-        menu = self.mw.menuBar().addMenu("SAM &Fine-Tune (beta)")
+    def setup_sam_train_menu(self, parent_menu=None):
+        """Add the SAM fine-tuning entries to the shared Model menu (issue #73).
+
+        No longer a top-level menu of its own: "Train on Current Project" is now
+        reachable as the SAM option in the one Train Model dialog, and the two
+        genuinely advanced entries are demoted alongside YOLO's.
+
+        **"Refresh Fine-Tuned Model List" is gone.** Registration happens
+        automatically after a run (issue #74); a manual refresh action existing
+        at all was the symptom this workflow set out to remove.
+        """
+        menu = parent_menu
+        if menu is None:
+            # Defensive: if the Model menu has not been built yet, fall back to
+            # a top-level menu rather than dropping the actions entirely.
+            menu = self.mw.menuBar().addMenu("SAM &Fine-Tune")
         self._menu = menu
 
-        train_project = QAction("Train on Current Project…", self.mw)
-        train_project.triggered.connect(self.train_on_project)
-        menu.addAction(train_project)
-
         prepare = QAction("Prepare SAM Dataset…", self.mw)
+        prepare.setToolTip(
+            "Write a SAM training dataset for use outside this app."
+        )
         prepare.triggered.connect(self.prepare_dataset)
         menu.addAction(prepare)
 
-        train_folder = QAction("Train from Dataset Folder…", self.mw)
+        train_folder = QAction("Fine-Tune SAM from Dataset Folder…", self.mw)
+        train_folder.setToolTip(
+            "Fine-tune against an externally prepared SAM dataset folder."
+        )
         train_folder.triggered.connect(self.train_from_folder)
         menu.addAction(train_folder)
-
-        menu.addSeparator()
-        refresh = QAction("Refresh Fine-Tuned Model List", self.mw)
-        refresh.triggered.connect(self.refresh_model_selector)
-        menu.addAction(refresh)
 
     # -- entry points --------------------------------------------------------
 
@@ -162,6 +173,30 @@ class SAMTrainController(QObject):
         if dialog.exec() != SAMTrainConfigDialog.DialogCode.Accepted:
             return
         cfg = dialog.get_config()
+
+        # Same grouping caveat as the YOLO path (ADR-044), and it bites harder
+        # here: the SAM val loss drives early stopping, so a val set sharing a
+        # recording with train does not merely report an optimistic number, it
+        # changes when the run stops. Worth being able to back out of.
+        from ..training.sam_dataset import split_keys
+        from .io_controller import confirm_split_warning
+
+        # The exact keys and grouping `split_groups` will use, not a rebuilt
+        # approximation of them: two groups can share a name, and a bare name
+        # list collapses those before the split sees them.
+        keyed, keyed_groups = split_keys(groups)
+        if not confirm_split_warning(
+            self.mw,
+            list(keyed),
+            None,
+            # Hard key, like `run_yolo`'s `config["val_split"]`: a soft default
+            # would silently set 0% and switch the warning off for good if the
+            # dialog's key were ever renamed.
+            100 - cfg["train_pct"],
+            groups=keyed_groups,
+        ):
+            return
+
         base_model = cfg.pop("base_model")
         out_name = cfg.pop("out_name")
         cfg["out_path"] = make_custom_filename(base_model, out_name)
@@ -221,12 +256,24 @@ class SAMTrainController(QObject):
             self._set_sam_ui_locked(False)
             QMessageBox.critical(self.mw, "Could Not Start Training", str(e))
 
+    def _remember_mlflow_url(self, url):
+        """Latch the run URL so the results panel can link to it.
+
+        It arrives asynchronously (ADR-027), so the panel may open before or
+        after this fires; both paths handle a missing URL.
+        """
+        self._last_mlflow_url = url
+        dialog = getattr(self.mw, "training_results_dialog", None)
+        if dialog is not None:
+            dialog.set_mlflow_url(url)
+
     def _on_mlflow_run_url(self, url):
         """The fine-tuning run has opened in MLflow (signalled from the worker
         thread; this runs on the GUI thread). Show a clickable link in the
         progress dialog, start the MLflow UI server once, and open the run in
         the browser. Tracking display must never disturb the run, so this is
         best-effort and swallows its own errors."""
+        self._remember_mlflow_url(url)
         import webbrowser
 
         from PyQt6.QtCore import QTimer
@@ -302,6 +349,8 @@ class SAMTrainController(QObject):
             QMessageBox.critical(self.mw, "Fine-Tuning Error", f"An error occurred:\n{result}")
             return
 
+        # Registration is automatic (issue #74) -- the manual "Refresh
+        # Fine-Tuned Model List" action it used to require is gone.
         self.refresh_model_selector()
         out_path = result.get("out_path")
         display = f"★ {os.path.splitext(os.path.basename(out_path))[0]}" if out_path else None
@@ -309,11 +358,32 @@ class SAMTrainController(QObject):
             idx = self.mw.sam_model_selector.findText(display)
             if idx >= 0:
                 self.mw.sam_model_selector.setCurrentIndex(idx)
-        QMessageBox.information(
-            self.mw, "Fine-Tuning Complete",
-            f"Saved and verified:\n{out_path}\n\nSelected it in the SAM model "
-            f"dropdown — use SAM-box / SAM-points to try it.",
+
+        # Same post-training routine as the YOLO path, so both behave
+        # identically here: copy into <project>/models with a sidecar and show
+        # the results panel instead of a bare message box.
+        summary = self.mw.model_registry_controller.finish_run(
+            model_type="sam",
+            result=result,
+            weights_path=out_path,
+            metrics=result.get("metrics"),
+            config=result.get("config"),
+            mlflow_url=getattr(self, "_last_mlflow_url", None),
         )
+        if summary is None:
+            QMessageBox.information(
+                self.mw, "Fine-Tuning Complete",
+                f"Saved and verified:\n{out_path}\n\nSelected it in the SAM "
+                "model dropdown — use SAM-box / SAM-points to try it.",
+            )
+            return
+
+        from ..dialogs.training_results_dialog import TrainingResultsDialog
+
+        self.mw.training_results_dialog = TrainingResultsDialog(
+            self.mw, summary, self.mw.model_registry_controller
+        )
+        self.mw.training_results_dialog.exec()
 
     # -- selector ------------------------------------------------------------
 

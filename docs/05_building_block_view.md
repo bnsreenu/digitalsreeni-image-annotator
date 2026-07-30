@@ -34,10 +34,15 @@ src/digitalsreeni_image_annotator/
 	├── core/                          # Constants, annotation utils, image utils
 	│   ├── constants.py
 	│   ├── annotation_utils.py
+	│   ├── slice_cache.py             # Lazy multi-dim slice materialisation + bounded LRU (ADR-036, #45)
+	│   ├── video_handler.py           # cv2 video decode; frames as lazy slices (ADR-037, #47)
 	│   └── torch_utils.py             # Shared torch device resolution + CPU fallback (#57)
 	├── widgets/
 	│   ├── image_label.py             # ImageLabel - canvas widget; dispatcher
+	│   ├── canvas_renderer.py         # CanvasRenderer - painting/overlays (ADR-034)
+	│   ├── edit_gestures.py           # EditGestures + pure fns - #40/#35 handles (ADR-034)
 	│   ├── canvas_context.py          # CanvasContext - narrow read view (ADR-018)
+	│   ├── video_timeline.py          # VideoTimeline scrub bar + frame markers (#48)
 	│   └── tools/                     # Per-tool handlers (ADR-019)
 	│       ├── base.py                # ToolHandler base
 	│       ├── rectangle_tool.py
@@ -46,9 +51,10 @@ src/digitalsreeni_image_annotator/
 	│       ├── eraser_tool.py
 	│       └── keypoint_tool.py       # KeypointTool - pose placement (ADR-029, #35)
 	├── controllers/                   # Project/Image/SAM/DINO/YOLO/Annotation/Class
-	├── inference/                     # sam_utils.py, dino_utils.py
+	├── inference/                     # sam_utils.py, dino_utils.py, sam3_utils.py
 	│   ├── sam_utils.py
-	│   └── dino_utils.py
+	│   ├── dino_utils.py
+	│   └── sam3_utils.py              # SAM3Utils - text-prompt segmentation (ADR-038/039, #50)
 	├── io/                            # export_formats.py, import_formats.py
 	│   ├── export_formats.py
 	│   └── import_formats.py
@@ -84,10 +90,16 @@ current_slice: str                  # Currently displayed slice
 ### ImageLabel (widgets/image_label.py)
 
 **Responsibility**: Canvas widget — image display, navigation
-(zoom/pan), committed-annotation rendering, SAM bbox/points overlays,
-DINO temp-annotation rendering, polygon edit mode (modal). Per-tool
-mouse/key handling lives in `widgets/tools/*` (see ADR-019); ImageLabel
-dispatches events to the active handler.
+(zoom/pan), event dispatch, and state ownership. Committed-annotation
+rendering, SAM/DINO overlays and the selection overlay are delegated to
+`CanvasRenderer` (`widgets/canvas_renderer.py`); the direct-manipulation
+edit-gesture state machine (#40 bbox/segmentation handles, #35 keypoint
+edits) is delegated to `EditGestures` + pure functions
+(`widgets/edit_gestures.py`) — both via thin one-line delegates that keep
+every existing `ImageLabel` name working (ADR-034). Per-tool mouse/key
+handling lives in `widgets/tools/*` (see ADR-019); ImageLabel dispatches
+events to the active handler. `paintEvent` orchestration and polygon
+edit mode (modal) stay on ImageLabel.
 
 **Key Attributes**:
 ```python
@@ -167,7 +179,7 @@ because it is *training*, not inference.
 | Module | Responsibility |
 |--------|----------------|
 | `training/sam_trainer.py` | `SAMFineTuner` — custom decoder (optionally encoder) fine-tuning loop reusing `SAM2Predictor.get_im_features` / `prompt_inference` under autograd, focal+dice loss, AdamW. Per-epoch train/val loss + LR logging, `LambdaLR` warmup→cosine schedule, best-val checkpoint save+reload-verify (ADR-028). Also geometry helpers (`polygon_to_mask`, `mask_to_xyxy`, `mask_to_point`), `make_custom_filename`, `list_custom_models`, and the `SampleGroup` lazy-rasterising dataset item (carries a `name` for the split). |
-| `training/sam_dataset.py` | `build_groups_from_project` (live `all_annotations`) and `build_groups_from_folder` (prepared dataset) → `list[SampleGroup]`, mirroring `export_yolo_v5plus` image resolution. `split_groups(train_pct, seed)` deterministically holds out a per-image validation set (reusing `assign_train_val`). |
+| `training/sam_dataset.py` | `build_groups_from_project` (live `all_annotations`) and `build_groups_from_folder` (prepared dataset) → `list[SampleGroup]`, mirroring `export_yolo_v5plus` image resolution. `split_groups(groups, train_pct)` deterministically holds out a validation set keyed by **source, not by image** (ADR-044): `SampleGroup.name` is run through `core/dataset_split.derive_groups`, so a stack's slices and a video's frames go to one side together — which matters more here than for YOLO, because val loss drives early stopping. `build_groups_from_folder` ext-strips the manifest path into `name` so the folder path groups like the project path. |
 | `training/lr_schedule.py` | Pure `warmup_cosine_lambda(total_steps, warmup_frac, floor)` → `step→multiplier` for SAM's `LambdaLR` (ADR-028); unit-tested without torch. |
 | `training/early_stop.py` | Pure `EarlyStopper(patience)` — tracks best/best-epoch and patience-based stop for the SAM loop (ADR-028); unit-tested without torch. |
 | `training/mlflow_tracker.py` | Always-on MLflow experiment tracking (ADR-027). `MLflowTracker` (no enable/disable; tracking errors never abort training; on start fires `set_run_url_callback` with the run's UI deep link), `_NullTracker` no-op for trainer calls with no tracker, `resolve_tracking_uri()` (override → `<project>/mlruns` → `<cwd>/mlruns`), `to_mlflow_uri()` (Windows-safe `file://`), `run_ui_url()`, `start_mlflow_ui_server()` / `launch_mlflow_ui()`. SAM logs through it explicitly; YOLO uses Ultralytics' native MLflow callback. |
@@ -187,7 +199,7 @@ segmentation masks.
 | Module | Responsibility |
 |--------|----------------|
 | `dino_utils.py` | `DINOUtils` — in-process Grounding DINO wrapper. Resolves model paths via `models_base_dir()`, loads `transformers.AutoModelForZeroShotObjectDetection` lazily on first use, caches it across calls, runs inference on a worker `QThread` (same `_run_sync` pattern as `SAMUtils`). |
-| `dino_phrase_editor.py` | Two widgets: `ClassThresholdTable` (per-class box/text/NMS thresholds) and `PhraseEditorPanel` (per-class phrase list). These widgets are the **single source of truth** for phrases and thresholds; project save/load reads/writes them via `get_all_phrases()` / `set_phrases()` and `get_thresholds_dict()` / `set_thresholds()`. |
+| `dino_phrase_editor.py` | Two widgets: `ClassThresholdTable` (per-class box/text/NMS thresholds) and `PhraseEditorPanel` (per-class phrase list). These widgets are the **single source of truth** for phrases and thresholds; project save/load reads/writes them via `get_all_phrases()` / `set_phrases()` and `get_thresholds_dict()` / `set_thresholds()`. Selection follows the **top class list** (single source of truth): `ClassController.on_class_selected` calls `ClassThresholdTable.select_class_by_name(...)`, whose `itemSelectionChanged` cascades to the phrase panel — so picking a class up top retargets Add Phrase, not only clicking the threshold-grid row (#63). Both widgets are **keyed by class name**, so every class-roster mutation must sync them — see [Class Name Is a Primary Key](08_crosscutting_concepts.md#class-name-is-a-primary-key--sync-every-registry-on-rename-63) for the full registry list and the rename-collision rule. |
 | `dino_merge_dialog.py` | Standalone dialog: merges accumulated DINO+SAM annotations across images into a training-ready COCO JSON. |
 
 **Detection call signature** (in-process):
@@ -231,18 +243,55 @@ the controller graph.
 | Controller | Responsibility |
 |------------|----------------|
 | `ProjectController` | `.iap` save/load, auto-save, backup/restore, missing-image prompts, window-title sync. Owns the `is_loading_project` autosave guard (load/save round-trip safety, v0.8.12). |
-| `ImageController` | Open / load / switch images and slices. TIFF + CZI loaders (with `imagecodecs` codec-error handling — #56), the multi-dim `DimensionDialog`, the `[-ndim:]` axis-slice bug fix from the v0.9.0 era. Image-list annotation-status filter (`image_has_annotations`, `apply_image_filter` — #27) and alphabetical sort (`sort_image_list` — #60). |
+| `ImageController` | Open / load / switch images and slices. TIFF + CZI loaders (with `imagecodecs` codec-error handling — #56), the multi-dim `DimensionDialog`, the `[-ndim:]` axis-slice bug fix from the v0.9.0 era. Multi-dim slices are now materialised **lazily** via `core/slice_cache.py` (`create_slices` builds names + a `SliceProvider`, QImages decode on demand through a shared bounded LRU — ADR-036 / #45). Videos (`load_video`, `mw.video_handlers`) reuse the same lazy contract: frames are `LazySliceList` slices backed by a `VideoSliceProvider` over `core/video_handler.py::VideoHandler` (ADR-037 / #47). Image-list annotation-status filter (`image_has_annotations`, `apply_image_filter` — #27), alphabetical/grouped sort (`sort_image_list` — #60/#43), per-image named groups (`set_image_group`, `_populate_group_combo` — #43) and derived status badges (`refresh_image_status_icons`, painted-pixmap `QIcon` cache rebuilt on theme flip via `on_theme_changed` — #43). |
 | `AnnotationController` | Annotation CRUD, list sorting, highlight, edit-mode entry/exit, `finish_polygon`, `finish_rectangle`, `replace_annotations` (eraser path). Validates writes before mutating `all_annotations`. |
 | `ClassController` | Class add / delete / rename / colour / visibility. `update_slice_list_colors`, `is_class_visible`. |
 | `SAMController` | SAM box/points tool lifecycle, debounce timer, `_sam_inference_in_flight` re-entrancy guard (ADR-013), model picker. |
-| `DINOController` | Single + batch detection, batch review navigation, temp-annotation accept/reject, custom-model browse, `DINOReviewEventFilter` ownership (ADR-015). |
+| `DINOController` | Single + batch detection, batch review navigation, temp-annotation accept/reject, custom-model browse, `DINOReviewEventFilter` ownership (ADR-015). **Dual-backend (ADR-039):** `_run_text_detection` routes to either the Grounding-DINO two-stage path OR SAM 3's one-stage `SAM3Utils.detect_text` (the "SAM 3 (text prompt)" picker entry); both feed the same review/batch/accept pipeline. |
+| `SAM3Utils` | inference/sam3_utils.py — in-process Ultralytics `SAM3SemanticPredictor` wrapper (text→masks) + `track()` video propagation via `SAM3VideoPredictor` (ADR-040). Reuses `SAMUtils`'s `_run_sync`/`_qimage_to_numpy`/`_mask_to_polygon` + shared in-flight flag; gated `sam3.pt` (never auto-downloaded). ADR-038/039/040, #50/#51. |
+| `TrackingController` | controllers/tracking_controller.py — SAM 3 video object tracking (#51, ADR-040). `can_track`/`run_tracking`/`_commit_tracked_result` (mirrors `_commit_dino_results`)/`undo_last_track`. Confident frames commit as `source:"sam3-track"` with a `track_run` id; uncertain frames route to `dino_batch_results` for the existing review pipeline. |
 | `YOLOController` | Training menu, `TrainingThread`, prediction dialog, result processing. Surfaces the run's MLflow deep link (`_on_mlflow_run_url`, mirrors SAM) and reports the saved `best.pt` path on completion. |
+| `ClipboardController` | controllers/clipboard_controller.py — in-app annotation clipboard (#66). App-level, so it survives image / slice / frame / project switches. Deep-copies in and out (value-equality is the only stable identity, ADR-022), clamps into the target's bounds (ADR-024), resolves missing classes once per distinct name, and refuses a pose whose K does not match the target class's schema (ADR-029). One `record_history` per paste. |
+| `QCController` | controllers/qc_controller.py — GUI adapter for the annotation audit (#70). Gathers annotations, image sizes and class names, shows `AnnotationQCDialog`, and applies repairs through `record_history` as **one** undo entry. The rules themselves live Qt-free in `core/annotation_qc.py` so the CLI reuses them. |
+| `ReviewController` | controllers/review_controller.py — model-vs-ground-truth review scoring (#71). Runs the prediction model across the project and scores each image by disagreement (annotated) or uncertainty (unannotated). Never mutates an annotation: predictions are extracted for scoring **without** going through `process_yolo_results`, which writes into the review overlay as a side effect. |
+| `CurationController` | controllers/curation_controller.py — embedding-based near-duplicate detection (#72). Embeds every image *including slices and video frames*, clusters, and selects a cluster in the image list. **Has no delete path at all**, by design. |
+| `SegmentEverythingController` | controllers/segment_everything_controller.py — unprompted SAM proposals into the **existing** review overlay (#69). A third producer alongside DINO and SAM 3, not a second review mechanic (ADR-015). Applies the `core/mask_filters` noise limits before anything reaches the canvas. |
+| `TrainingController` | controllers/training_controller.py — one entry point for all training (#73, ADR-042). Dispatches the unified `TrainDialog` to the existing trainers and performs the mechanics implicitly (prepare, YAML, load, save, refresh). Orchestration only; the trainers are untouched. |
+| `ModelRegistryController` | controllers/model_registry_controller.py — post-training lifecycle (#74). Registers, copies weights into `<project>/models/` with a JSON sidecar, feeds the results panel, and offers "try it now" **for YOLO runs only** (`predict_single_image` routes to the YOLO trainer regardless of what was trained; a fine-tuned SAM checkpoint is used interactively via SAM-box/SAM-points instead). Registers nothing on a failed or stopped run, and nothing at all while `is_loading_project` is set. Drops the review scores (#71), which were computed with the previous model. |
 | `SAMTrainController` | SAM fine-tuning menu, GPU gate, `SAMTrainingThread`, config dialog, registers fine-tuned checkpoints into the SAM selector (ADR-021). |
 | `io_controller` *(module-level functions, not a class)* | Thin UI wrappers around the pure `io/export_formats.py` and `io/import_formats.py` modules. |
 
 Communication: `ImageLabel` does not import controllers directly —
 it emits Qt signals (ADR-018) that the orchestrator connects to
 controller slots in `_connect_image_label_signals()`.
+
+## Level 3: The Qt-Free Core (shared with the CLI)
+
+These modules are imported by both the GUI and `sreeni-cli`, and **must not import Qt** at module
+level. A subprocess test enforces it (ADR-041); see
+[Deployment View](07_deployment_view.md#72-the-qt-free-boundary) for why the guard has to run
+out-of-process.
+
+| Module | Responsibility |
+|---|---|
+| `core/annotation_types.py` | `TypedDict`s for the annotation shapes plus `is_pose` / `is_polygon` / `is_bbox_only` (#78). `PoseAnnotation` declares **no** `segmentation` key — the type expresses the ADR-029 discriminator. |
+| `core/annotation_qc.py` | The QC rule engine (#70): geometry, redundancy, statistics, hygiene and pose rules, plus the unambiguous repairs. Powers both the dialog and `sreeni-cli validate`. |
+| `core/disagreement.py` | Model-vs-ground-truth scoring (#71). Greedy matching with a swap-improvement pass — no scipy; see the module docstring for why. |
+| `core/similarity.py` | Cosine similarity, threshold-based connected-component clustering, medoid representative, outliers (#72). Model-free: it takes plain vectors, so the embedding backend can be swapped without touching it. |
+| `core/task_inference.py` | Derives the training task from the annotations and produces the pre-flight blockers (#73). One source of truth shared with `train_model`'s YAML-based inference. |
+| `core/model_sidecar.py` | Build / read / locate the trained-model JSON sidecar, and the non-colliding weights filename (#74). |
+| `core/project_io.py` | Read an `.iap` without the GUI (#76). **No write path at all** — the CLI must never autosave into a project it was asked to read. |
+| `core/mask_filters.py` | Polygon IoU and the noise limits for unprompted mask proposals (#69). |
+| `core/onion.py` | Onion-skin neighbour selection, the content choice (annotations / image / both) and the settings clamps (#67). Ends never wrap. |
+| `core/image_size.py` | Image dimensions via a Pillow header read (#76) — what replaced `QImage` in the export layer. |
+| `core/dataset_split.py` | Group-aware train/val splitting (#81, ADR-044): `derive_groups` (exact from `image_slices`, name-prefix fallback), `plan_split` (whole groups, locally-optimal size, plus the `fell_back` flag), `split_warning` (the text the GUI shows — here rather than on the controller so it stays Qt-free) and `assign_train_val`, which moved here from `io/export_formats.py` and stays re-exported there. Deliberately imports nothing from `core/slice_cache`, which reaches `QImage`. |
+
+## Level 3: CLI
+
+| Module | Responsibility |
+|---|---|
+| `cli/main.py` | `argparse` subcommands, exit-code constants, and the CLI-slug ↔ internal-format-label map. |
+| `cli/commands.py` | `export`, `convert`, `validate`, `predict`. Only `predict` imports torch, lazily. |
 
 ## Level 3: Export/Import Subsystem
 
@@ -283,7 +332,7 @@ Each tool is a standalone dialog/window:
 |--------|---------|--------------|
 | `annotation_statistics.py` | Statistics display | Count, area per class, plotly charts |
 | `coco_json_combiner.py` | Merge datasets | Combine multiple COCO JSON files |
-| `dataset_splitter.py` | Train/val/test split | Stratified splitting, configurable ratios |
+| `dataset_splitter.py` | Train/val/test split | Configurable ratios, **unseeded** `random.shuffle` — neither reproducible nor group-aware (ADR-044) |
 | `image_patcher.py` | Create patches | Sliding window with overlap |
 | `image_augmenter.py` | Data augmentation | Rotation, flip, brightness, preview |
 | `slice_registration.py` | Align slices | Multiple registration algorithms (pystackreg) |
@@ -370,9 +419,14 @@ segmentation-only output (issue #35 PR-3).
 
 **Slice Naming Convention**:
 ```
-{filename}_T{t}_Z{z}_C{c}_S{s}
-Example: stack.tif_T0_Z5_C0_S0
+{ext-stripped base}_T{t+1}_Z{z+1}_C{c+1}_S{s+1}
+Example: stack_T1_Z5_C1_S1     (from stack.tif — no extension, 1-based)
+Video:   clip_F00042           (core/video_handler.frame_key)
 ```
+
+The missing extension is what distinguishes a slice name from an image name across the
+exporters and `core/dataset_split` (ADR-044) — see
+[Slice Naming Convention](08_crosscutting_concepts.md#slice-naming-convention).
 
 **Dimension Labels**: T (Time), Z (Depth), C (Channel), S (Scene), H (Height), W (Width)
 

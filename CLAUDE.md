@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DigitalSreeni Image Annotator - PyQt6 desktop app for image annotation with SAM 2 integration and multi-dimensional image support.
 
-**Fork of**: https://github.com/bnsreenu/digitalsreeni-image-annotator
-
 ## Quick Reference
 
 ```bash
-# Install
+# Install (runtime only)
 pip install -e .
+# Install with dev/test extras (pytest, pytest-qt, ...)
+pip install -e ".[dev]"
 
 # Run
 python -m src.digitalsreeni_image_annotator.main
@@ -20,9 +20,18 @@ python -m src.digitalsreeni_image_annotator.main
 
 ## Tech Stack
 
-Python 3.10+ | PyQt6 6.7+ | Ultralytics 8.3.27 (SAM 2) | NumPy | OpenCV | Shapely
+Python 3.10+ | PyQt6 6.7+ | Ultralytics >=8.3.237,<9 (SAM 2 / SAM 3) | NumPy | OpenCV | Shapely
 
-**Test suite**: `tests/` (pytest + pytest-qt). 94 tests pass on PyQt6.
+**Test suite**: `tests/` (pytest + pytest-qt). 1251 tests pass on PyQt6 (3 skipped), ~60 % line
+coverage with a `--cov-fail-under` floor in `pytest.ini` (#77).
+
+**Lint + types** (#78) — run as steps separate from the tests, so a type error is
+distinguishable from a test failure:
+
+```bash
+python -m ruff check src tests   # narrow rule set: E4, E7, E9, F
+python -m mypy                   # per-module opt-in; core/ is checked
+```
 
 ## Documentation
 
@@ -30,6 +39,7 @@ For detailed architecture and design information, see **[docs/](docs/)**:
 
 - **[Building Block View](docs/05_building_block_view.md)** - Components, data model, class responsibilities
 - **[Runtime View](docs/06_runtime_view.md)** - Workflows and key scenarios
+- **[Deployment View](docs/07_deployment_view.md)** - Entry points, the Qt-free boundary, CLI usage
 - **[Cross-cutting Concepts](docs/08_crosscutting_concepts.md)** - Coordinate systems, conversions, patterns
 - **[Architecture Decisions](docs/09_architecture_decisions.md)** - Why we made key choices
 - **[Glossary](docs/12_glossary.md)** - Terms, acronyms, data structures
@@ -46,16 +56,28 @@ src/digitalsreeni_image_annotator/
 ├── utils.py                      # Utility functions (calculate_area, …)
 ├── __init__.py                   # Public API re-exports
 │
+├── cli/                          # headless entry point (ADR-041): main.py,
+│                                 #   commands.py. NO Qt, torch only in predict
 ├── core/                         # constants, annotation_utils, image_utils
-├── controllers/                  # 8 controllers (project, image, sam,
+│                                 # Qt-free core shared with the CLI:
+│                                 #   annotation_types, annotation_qc,
+│                                 #   disagreement, similarity, task_inference,
+│                                 #   model_sidecar, project_io, mask_filters,
+│                                 #   onion, image_size, dataset_split
+├── controllers/                  # 16 controllers (project, image, sam,
 │                                 #   sam_train, dino, yolo, annotation,
-│                                 #   class) + io_controller
+│                                 #   class, tracking, clipboard, qc, review,
+│                                 #   curation, segment_everything, training,
+│                                 #   model_registry) + io_controller
 ├── widgets/
 │   ├── image_label.py            # ImageLabel canvas widget (dispatcher)
+│   ├── canvas_renderer.py        # CanvasRenderer painting/overlays (ADR-034)
+│   ├── edit_gestures.py          # EditGestures + pure fns: #40/#35 handles (ADR-034)
 │   ├── canvas_context.py         # CanvasContext read accessor (ADR-018)
+│   ├── video_timeline.py         # VideoTimeline scrub bar + frame markers (#48)
 │   └── tools/                    # Per-tool handlers (ADR-019): rectangle,
 │                                 #   polygon, paint, eraser
-├── inference/                    # sam_utils.py, dino_utils.py
+├── inference/                    # sam_utils.py, dino_utils.py, sam3_utils.py (ADR-039)
 ├── training/                     # SAM fine-tuning (ADR-021): sam_trainer.py
 │                                 #   (SAMFineTuner), sam_dataset.py;
 │                                 #   lr_schedule.py + early_stop.py (ADR-028)
@@ -70,7 +92,9 @@ src/digitalsreeni_image_annotator/
 | Class | File | Responsibility |
 |-------|------|----------------|
 | `ImageAnnotator` | annotator_window.py | Thin orchestrator — holds controllers, wires signals, delegates almost everything |
-| `ImageLabel` | widgets/image_label.py | Canvas display, zoom/pan, event dispatch to tool handlers |
+| `ImageLabel` | widgets/image_label.py | Canvas display, zoom/pan, event dispatch to tool handlers; state owner (ADR-034) |
+| `CanvasRenderer` | widgets/canvas_renderer.py | All canvas painting/overlays, delegated from ImageLabel.paintEvent (ADR-034) |
+| `EditGestures` (+ pure fns) | widgets/edit_gestures.py | #40/#35 direct-manipulation edit-gesture state machine; bbox_edit/editing_keypoint stay on the label (ADR-034) |
 | `CanvasContext` | widgets/canvas_context.py | Narrow read view of main-window state for ImageLabel (ADR-018) |
 | `ToolHandler` (+ 4 subclasses) | widgets/tools/ | Per-tool mouse/key handling (rectangle, polygon, paint, eraser) (ADR-019) |
 | `ProjectController` | controllers/project_controller.py | `.iap` save/load, auto-save, `is_loading_project` guard |
@@ -81,6 +105,8 @@ src/digitalsreeni_image_annotator/
 | `DINOController` | controllers/dino_controller.py | DINO single/batch detection, batch review, temp-class workflow |
 | `YOLOController` | controllers/yolo_controller.py | YOLO training menu + prediction wiring |
 | `SAMUtils` | inference/sam_utils.py | Load SAM models (built-in + fine-tuned), run inference |
+| `SAM3Utils` | inference/sam3_utils.py | SAM 3 text-prompt segmentation (`SAM3SemanticPredictor`) + `track()` video propagation (`SAM3VideoPredictor`); a second producer into the DINO review pipeline, gated `sam3.pt` (ADR-038/039/040, #50/#51). First SAM 3 use pip-installs `clip`+`timm` via ultralytics AutoUpdate (needs network; completes in-process, no restart needed); overrides force `save=False`/`verbose=False` to avoid `runs/` clutter. Real-model check verified 2026-07-22 on an RTX 4070 |
+| `TrackingController` | controllers/tracking_controller.py | SAM 3 video object tracking (#51, ADR-040): seed one mask → propagate across frames; confident→commit (`source:"sam3-track"`, `track_run` id), uncertain→`dino_batch_results` review; per-frame undo + `undo_last_track`. **Real-model verified 2026-07-23 (RTX 4070)**: arbitrary-frame seed + bidirectional via temp-video slices (`_track_blocking`); TorchDynamo disabled (SAM 3 video needs Triton, no Windows build); per-frame conf is constant 1.0 so the review threshold is mostly decorative |
 | `DINOUtils` | inference/dino_utils.py | Grounding-DINO model load + inference |
 | `SAMFineTuner` | training/sam_trainer.py | Fine-tune SAM 2 decoder/encoder via custom loop over Ultralytics SAM2Model (ADR-021) |
 | `SAMTrainController` | controllers/sam_train_controller.py | SAM fine-tune menu, GPU gate, training thread, selector registration |
@@ -155,7 +181,13 @@ See [Cross-cutting Concepts](docs/08_crosscutting_concepts.md#coordinate-systems
 
 ### Multi-dimensional Images
 - User assigns dimensions (T, Z, C, H, W) via dialog
-- Slices extracted with names like `stack.tif_T0_Z5_C0`
+- Slices extracted with names like `stack_T1_Z5_C1` — the base is **ext-stripped**
+  (`os.path.splitext(...)[0]`, enforced in `add_images_to_list` so `video.mp4` and
+  `video.tif` can't clobber each other) and the stack-dimension indices are **1-based**
+  (`SliceProvider._build_index`). Video frames are `clip_F00042` and are **0-based**
+  (`video_handler.frame_key`) — the two conventions differ, deliberately or otherwise.
+  The absence of a dot is what distinguishes a slice name from an image name across the
+  exporters and `core/dataset_split`
 - Each slice annotated independently
 - Stored in `image_slices` dict
 - TIFF axis hint: `load_tiff` reads `tifffile.series[0].axes` and pre-fills the dimension dialog; ndim≥5 had a `[-ndim:]` slice bug that produced 2560 wrong slices on a 5D `TZCYX` file — see arc42 if you touch this
@@ -174,7 +206,17 @@ See [Runtime View](docs/06_runtime_view.md#multi-dimensional-image-loading) for 
 | Auto-accept dropdown | Honored by **both** `run_dino_detection_single` and `run_dino_detection_batch` | Easy to forget in the single path because the combo is labeled "batch". |
 | GPU model unload | `model.cpu()` → `gc.collect()` → `torch.cuda.empty_cache()` + `ipc_collect()` + `synchronize()` — full reclaim requires app restart due to per-process CUDA context | Setting refs to None alone leaves circular refs pinned and shows zero Task Manager drop. See [Releasing Model GPU Memory](docs/08_crosscutting_concepts.md#releasing-model-gpu-memory). |
 | Export image-path lookup | Exact-key match first, substring fallback only | `"bee.jpg" in "honeybee.jpg"` is True — substring-only matching writes the wrong file. See [Export Format Filename Matching](docs/08_crosscutting_concepts.md#export-format-filename-matching). |
-| F2 / global shortcuts | Use `QShortcut` with `Qt.ShortcutContext.ApplicationShortcut`, not `keyPressEvent` | `QTableWidget` consumes F2 for in-cell edit before it bubbles up. |
+| F2 / global shortcuts | **Modified** keys (Ctrl+Z, F2): `QShortcut` with `ApplicationShortcut`. **Bare** keys (digits, letters): register a binding on `ShortcutEventFilter` (`ui/shortcuts.py`) instead — never a `QShortcut` | `QTableWidget` consumes F2 before it bubbles up, so `keyPressEvent` is out. But an `ApplicationShortcut` on `3` swallows that key in *every* `QLineEdit` in the app, so only a gated event filter works for bare keys. Gates live in `ui/input_gates.py`, shared with `DINOReviewEventFilter`. See [ADR-043](docs/09_architecture_decisions.md). |
+| Badges in list widgets | Paint them in an item delegate; **never** append to the item text | The item text IS the class name / file name across the app (`findItems(MatchExactly)`, `Temp-` prefix checks, `text()[5:]` on accept, and the `all_images[i]` ↔ `item(i)` invariant). Decorating it breaks all of those at runtime only. See `ClassShortcutDelegate` (#65) and `ImageScoreDelegate` (#71). |
+| Slice/frame list navigation | The slice list drives the canvas from **`currentRowChanged`**, not just `itemClicked`; `switch_slice` no-ops when the item is already `current_slice` | A focused `QListWidget` consumes the arrow keys itself and never propagates them, so a `keyPressEvent` branch in the main window is unreachable — the row moved and the canvas stayed put. The already-current guard is what lets `currentRowChanged` drive navigation without `blockSignals` at a dozen programmatic-selection sites. |
+| Trainer prediction state | `class_names` and `prediction_keypoint_schema` are populated by **`load_prediction_model` AND `_register_trained_model`**, and cleared by `load_model`. `self.model` has three producers; every one must set or clear both | Since #74 a trained model is the active prediction model with no load step, so a field only the *load* path filled was `None` on the very next predict: `class_names` crashed with `'NoneType' object is not subscriptable`, and a `None` schema makes `finish_keypoint` **silently discard** every pose placed on that class. Read `class_names` through `class_name_for()`, never by index. |
+| Stacks/videos are their slices | A stack or video entry in `all_images` is **not an image**: it contributes its slice/frame names. Count them (`task_inference.trainable_image_names`), export them (`core.slice_index`), and predict on them (`_prediction_source`) — a slice/frame has **no `image_paths` entry**, so any `image_paths[name]` is a crash waiting for a video | Three instances so far: counting the parent reported a video with 27 annotated frames as "0 of 1 image(s)"; a blanket "videos cannot be trained" pre-flight refused datasets the exporter handles fine; and "Try it on the current image" after training on a video raised `KeyError` out of a Qt slot and killed the app. |
+| `QProgressDialog` + cancel | Read `wasCanceled()` **before** `close()`, or dismiss with `reset()`/`hide()` instead | Qt's `closeEvent` emits `canceled()`, which is wired to the `cancel()` slot — so `close()` sets the flag itself. A `finally: progress.close()` followed by `if progress.wasCanceled()` reports **every** run as cancelled and silently discards its results. Verified on Qt 6.11; cost #69 an entire feature. |
+| Class rename/delete fan-out | The class name keys **eleven** structures, and `rename_class`/`delete_class` must reach all of them: `class_mapping`, `class_colors`, `class_visibility`, `keypoint_schemas`, `all_annotations`, `image_label.annotations`, `dino_class_table`, `dino_phrase_panel`, `dino_batch_results`, `image_label.temp_annotations`, and the **`AnnotationHistory` snapshots**. Validate preconditions first, then mutate — a guard sitting after its own mutation leaves the project half-renamed | Every miss fails *later* and quietly. The table drove detections to a dead class (dropped, while the dialog reported success); the history stacks made Ctrl+Z restore annotations under the old name — unmapped, uncoloured, invisible on canvas, still written to the `.iap`. When you add a name-keyed structure, add it here. |
+| Train/val split key | The split key is the **group**, not the image name (`core/dataset_split.py`). A stack's slices and a video's frames are one group and never straddle the split. The grouping is derived **inside** the exporters, so it is on by default everywhere including the CLI. The exporters also filter the split input to names they will actually **write** (`_is_exportable`) — otherwise a video's unwritable frames take the whole train side and `images/train` lands empty. Since a group is indivisible the requested percentage is a target: the guarantee is only that no single group added, dropped or swapped would land closer. The preview behind the warning and the export must use the **same** name set (`exportable_annotated_names`) or the warning describes a different split than the one that runs. The warning text is `core/dataset_split.split_warning` — Qt-free, so the CLI emits the same words — and it offers **Cancel**, which every call site honours. When everything is one group, `plan_split` sets `fell_back` and the UI says the metrics will be optimistic — it does **not** return an empty val set, which would silently disable validation and early stopping (ADR-028) | A name-keyed split scatters near-identical frames across train and val and *nothing fails* — the validation numbers just come back better the more redundant the data is. `assign_train_val` is the single choke point for YOLO v4/v5+ export, in-app YOLO training and SAM fine-tuning (where val loss also drives early stopping). The warning has **three** call sites, all in the GUI (the CLI needs none — it cannot export slices, so it has no group larger than one image); the unified Train dialog has its own split slider and never passes through `prompt_validation_split`. See [ADR-044](docs/09_architecture_decisions.md). |
+| Qt-free core | `core/annotation_qc`, `core/disagreement`, `core/similarity`, `core/task_inference`, `core/model_sidecar`, `core/project_io`, `core/annotation_types`, `core/image_size`, `core/mask_filters`, `core/onion`, `core/dataset_split` and **both `io/` modules** must not import Qt at module level | The CLI (#76) imports them. A stray `from PyQt6 ...` makes headless validation require a display, and works fine on the machine of whoever added it. Enforced by a **subprocess** test in `tests/integration/test_cli.py` — in-process would pass regardless, since the suite already imported PyQt6. See [ADR-041](docs/09_architecture_decisions.md). |
+| Vertex count changes | Invalidate `segmentation_raw` and reset `detail_pct` (`edit_gestures.invalidate_raw_polygon`) whenever a polygon gains or loses a vertex | The Detail-% spinbox re-simplifies *from* the raw copy (ADR-025). Leave it stale and the next Detail-% drag silently reverts the user's edit — a bug near-impossible to diagnose from a report. See #68. |
+| Training entry points | One `Model → Train Model…` dialog. The base model must load **before** `prepare_dataset` | `train_model` compares the model's `.task` against the prepared YAML; reordering silently disables the check that turns an opaque Ultralytics failure into an actionable message. See [ADR-042](docs/09_architecture_decisions.md). |
 | Canvas ↔ list selection sync | Canvas selection (idle-mode click/Shift/rubber-band) drives the annotation list via `apply_canvas_selection`; mirror the list with `blockSignals(True/False)` and match annotations by **value-equality**, never identity | PyQt round-trips `UserRole` dicts as copies and `image_label.annotations` is a deepcopy, so identity is never stable; un-blocked `setSelected` recurses through `update_highlighted_annotations`. Multi-select uses **Shift** (Ctrl stays pan). See [ADR-022](docs/09_architecture_decisions.md#adr-022-canvas-mask-selection-unified-with-the-annotation-list). |
 | Selection rendering | Don't recolour a selected mask. Keep its class colour; draw a class-colour-independent overlay (dashed `_SELECTION_COLOR` blue bounding box + bright handle squares at corners/edge-midpoints, OGP-style) in a final pass — `_draw_selection_overlay`. For a single selected shape those handles are draggable (resize/move, any shape). Default class colours come from `core/constants.py::default_class_color` (red last, muted) | Red selection was invisible on a red-class mask; a thin dashed outline alone was too faint; the handles carry the visibility. See ADR-022 amendment. |
 | Shape editing (#40) | Direct manipulation on the selection handles for **any** single selected shape (`_single_selected_shape()` — most shapes are `"segmentation"`, not `"bbox"`; gating on a bbox key made it unreachable). `_begin_shape_edit` records `kind`: a `"seg"` polygon **scales** its vertices (`_scale_segmentation`) / translates them; a `"bbox"` edits `[x,y,w,h]`. `_draw_selection_overlay` + `_bbox_handle_at` share `_bbox_handle_points` (visual == grab); resize anchors the opposite side (`_resize_bbox`); interior drag moves, **drag-gated**. `_sync_bbox_key` keeps an imported bbox consistent. Clamp + `bboxEditCommitted` → `commit_bbox_edit` on release; Esc reverts | Handles drawn since #75 were visual-only; dispatch sits before the rubber-band branch but stays gated on `_is_select_mode()`. Names keep the `bbox_edit` prefix = "edit via the bounding-box handles". See [ADR-023](docs/09_architecture_decisions.md). |
@@ -196,7 +238,7 @@ See [Runtime View](docs/06_runtime_view.md#multi-dimensional-image-loading) for 
 | 4 | Update arc42 docs if behavior changed | `docs/` — see Documentation section |
 | 5 | **Run senior reviewer agent** | `.claude/agents/senior-reviewer.md` — mandatory quality gate before every PR |
 | 6 | Commit: `feat: Description` or `fix: Description` | Clear, descriptive messages |
-| 7 | Push & create PR | `git push origin feature/branch` |
+| 7 | Push & create PR | `git push origin feature/branch`, then `gh pr create`. **The PR body MUST include `Closes #NN` for every issue it resolves** — GitHub only auto-closes issues on merge when the body references them. |
 
 ### Testing Checklist
 
@@ -238,11 +280,17 @@ Address all P0s before merging. Address P1s unless there's explicit justificatio
 
 ## Known Constraints
 
-- No type hints (gradual addition encouraged)
+- Type hints cover the **Qt-free core only** (#78); `io/`, `utils.py`, controllers and widgets
+  are annotated only where they already were. mypy uses a per-module opt-in, so extending
+  coverage means adding a module to the list in `pyproject.toml` — the boundary is explicit, not
+  a silent gap. Widget internals stay out of scope: the PyQt6 stubs are incomplete, so annotating
+  them produces noise, not safety.
 - Print statements instead of logging (acceptable)
 - Absolute paths in projects (not portable)
 - SAM 2 large crashes on limited RAM
-- YOLO training not supported for multi-dimensional images
+- YOLO training needs a stack's/video's slices to have been **loaded** in this
+  session (opening the image once is enough). The slices themselves train fine
+  — the exporters resolve their pixels through `image_slices` (#45/#47)
 
 See [Risks and Technical Debt](docs/11_risks_and_technical_debt.md) for full list.
 
@@ -252,6 +300,10 @@ See [Risks and Technical Debt](docs/11_risks_and_technical_debt.md) for full lis
 |--------|--------|
 | Ctrl+N/O/S | New/Open/Save Project |
 | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | Undo / redo annotation edit (ADR-026) |
+| 1 … 9 | Select the 1st…9th class (#65, ADR-043) |
+| P / R / B / E / K | Polygon / Rectangle / Paint / Eraser / Keypoint tool; pressing the active one toggles it off |
+| V | Return to selection mode |
+| Ctrl+C / Ctrl+V | Copy / paste the selected annotations (#66) |
 | Ctrl+Shift+= / Ctrl+Shift+- | UI font bigger/smaller (8-24pt, persisted via QSettings) |
 | Ctrl+Shift+0 | Reset UI font size |
 | F1 | Help |
@@ -264,6 +316,8 @@ See [Risks and Technical Debt](docs/11_risks_and_technical_debt.md) for full lis
 | Drag / Shift+Drag (no tool) | Rubber-band select / add |
 | Drag handle / inside (one shape selected) | Resize (scale) / move the shape |
 | Double-click | Vertex-edit mode |
+| Double-click an edge (in vertex-edit mode) | Insert a vertex there (#68) |
+| Alt+click a vertex (in vertex-edit mode) | Remove it — refused at 3 vertices (#68; Shift also works, the pre-#68 binding) |
 | Delete | Delete selected mask(s) — instant, undoable (no confirm dialog) |
 | Enter | Finish/Accept (keypoint tool: finish pose early, padding unplaced points v=0) |
 | Esc | Cancel in-progress shape **and** return to selection mode (deactivates the tool) |
@@ -271,6 +325,7 @@ See [Risks and Technical Debt](docs/11_risks_and_technical_debt.md) for full lis
 | Backspace (keypoint tool) | Remove the last placed keypoint |
 | Right-click a selected pose's point | Toggle its visibility (visible ↔ occluded) |
 | Up/Down | Navigate slices |
+| Home/End (video) | Jump to first/last frame (#48) |
 | -/= | Brush size |
 
 ## Quick Tips
@@ -280,4 +335,5 @@ See [Risks and Technical Debt](docs/11_risks_and_technical_debt.md) for full lis
 - Polygon area uses shoelace formula (utils.py)
 - Export formats copy images to output directory
 - Dark mode changes annotation colors for visibility
+- Headless launch + smoke check: see the `run-app` skill (`.claude/skills/run-app/`)
 - Snake game is hidden Easter egg 🐍

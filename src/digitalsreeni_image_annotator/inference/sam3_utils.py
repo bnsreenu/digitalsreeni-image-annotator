@@ -135,6 +135,17 @@ class SAM3Utils(QObject):
                 return p
         return None
 
+    def searched_weight_paths(self) -> list[str]:
+        """The locations :meth:`weights_available` looks in, for diagnostics.
+
+        Surfaced in the model picker's tooltip. "Not found" is unactionable
+        when the user cannot see *where* it was not found -- especially since
+        one of the candidates is the current working directory, which changes
+        with how the app was launched, so the same checkpoint can be visible
+        one day and missing the next without anything having moved.
+        """
+        return [path for path in self._candidate_weight_paths() if path]
+
     def weights_available(self) -> bool:
         """True if ``sam3.pt`` is already on disk somewhere resolvable.
 

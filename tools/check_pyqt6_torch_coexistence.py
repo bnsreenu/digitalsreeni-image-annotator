@@ -29,7 +29,6 @@ Exit code 1 means torch-first also fails → return to subprocess.
 
 from __future__ import annotations
 
-import multiprocessing
 import platform
 import sys
 import traceback

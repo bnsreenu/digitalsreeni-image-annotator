@@ -6,7 +6,7 @@
 
 **Original decision (historical)**: Use PyQt5 5.15.11. Chosen because the upstream project used PyQt5, PyQt5's ecosystem was more mature at the time, and migration carried risk.
 
-**Superseding decision**: The project migrated to PyQt6 6.7+ in the same PR that introduced in-process AI inference. See [ADR-014](#adr-014-migrate-from-pyqt5-to-pyqt6) for the rationale (mainly: PyQt6 eliminated the WinError 1114 DLL load-order conflict that motivated ADR-011, unblocking the subprocess removal in ADR-013).
+**Superseding decision**: The project migrated to PyQt6 6.7+ in the same PR that introduced in-process AI inference. See [ADR-014](#adr-014-migrate-from-pyqt5-to-pyqt6) for the rationale. The migration unblocked the subprocess removal in [ADR-013](#adr-013-in-process-inference-with-qthread-wrapping); note, however, that PyQt6 did **not** by itself eliminate the WinError 1114 DLL load-order conflict — that conflict persists and is handled by importing torch before Qt in `main.py` (see [ADR-017](#adr-017-eager-torch-import-in-mainpy-before-qapplication-creation)).
 
 ---
 
@@ -17,6 +17,11 @@
 **Context**: Need to integrate Segment Anything Model 2 for semi-automated annotation
 
 **Decision**: Use Ultralytics library instead of direct SAM2 installation
+
+**Version bound** (reconciled in the pyproject migration, #38): pinned as
+`ultralytics>=8.3.27,<9` in `pyproject.toml` — the lowest version the code is
+documented against, capped below the next major. The SAM fine-tuning loop
+(ADR-021) was verified on 8.4.51, which remains satisfiable.
 
 **Rationale**:
 - Simplifies SAM model loading (single line)
@@ -35,7 +40,7 @@
 
 ## ADR-003: Store Absolute Paths in Project Files
 
-**Status**: Accepted
+**Status**: Superseded by ADR-033 (dual absolute + relative paths for portability, #42)
 
 **Context**: Project files need to reference image locations
 
@@ -56,6 +61,19 @@
 ---
 
 ## ADR-004: No Automated Testing Framework
+
+**Status**: Superseded — the project now has a pytest + pytest-qt suite
+
+**Superseding note**: This decision no longer holds. The repository has a real
+automated test suite under `tests/` (`unit`, `integration`, `ui`) — boot smoke,
+coordinate conversions, export/import round-trips, controller state machines,
+project save/load, multi-dim slicing, and the DINO/SAM/YOLO wiring — run in CI
+on 3 OS × Python 3.10-3.14 (`.github/workflows/tests.yml`). An AST-based
+inline-import gate guards refactors (see
+[ADR-016](#adr-016-static-ast-inspection-of-inline-imports-as-quality-gate-for-refactor-prs)).
+Run headless with `QT_QPA_PLATFORM=offscreen pytest tests/ -v`.
+
+### Original decision (historical)
 
 **Status**: Accepted (Technical Debt)
 
@@ -305,7 +323,7 @@ Migrating the GUI from PyQt5 to PyQt6 (same PR) was expected to eliminate the DL
 **Rationale**:
 - Two coupled changes share most of their cost (touching every file that imports PyQt5) so doing them in one PR avoids paying the migration tax twice.
 - Most PyQt5→PyQt6 differences are enum namespacing (`Qt.AlignCenter` → `Qt.AlignmentFlag.AlignCenter`) and module relocations (`QAction` moves from `QtWidgets` to `QtGui`) — mechanical, codemod-able. The behavioural risk is in event APIs (`event.pos()` → `event.position()`, returning `QPointF` not `QPoint`) and a handful of removed widgets (`QDesktopWidget` → `QGuiApplication.primaryScreen()`).
-- The existing test suite (65 pytest-qt tests, mostly exercising coordinate transforms) serves as the regression safety net.
+- The pytest-qt suite (coordinate transforms, export/import round-trips, controller state machines, and boot smoke) serves as the regression safety net.
 
 **Consequences**:
 - ✅ Subprocess workers retired; inference is in-process with cached models (see [ADR-013](#adr-013-in-process-inference-with-qthread-wrapping)).
@@ -1129,8 +1147,8 @@ invites "why is there no run?" confusion.
 
 **Decision**:
 
-- **Core dependency.** MLflow is in `install_requires` (and uncommented in
-  `requirements.txt`), not an extra — a fresh `pip install` always has it. `import
+- **Core dependency.** MLflow is in the `pyproject.toml` runtime `dependencies`
+  list, not an optional extra — a fresh `pip install` always has it. `import
   mlflow` still happens only inside the methods of `training/mlflow_tracker.py`
   (never at module top), so app startup stays fast and a *broken* install can't stop
   the GUI from launching — but tracking is never *expected* to be absent.
@@ -1218,10 +1236,12 @@ first 10% of steps, cosine floor = 10% of peak); only the *peak* LR, train %, an
 patience are user-editable (the literature says the peak LR matters more than the
 shape).
 
-- **Deterministic per-image split.** A new `sam_dataset.split_groups(groups,
-  train_pct, seed)` reuses the YOLO export's stable-MD5 `assign_train_val` (ADR for
-  #83) so SAM and YOLO split identically and reproducibly. `SampleGroup` gained a
-  `name` used only as the split key. At 100% train (or a single image) the val set is
+- **Deterministic split.** A new `sam_dataset.split_groups(groups, train_pct)`
+  reuses the YOLO export's stable-MD5 `assign_train_val` (ADR for #83) so SAM and
+  YOLO split identically and reproducibly. `SampleGroup` gained a `name` used only as
+  the split key. *(Superseded in part by ADR-044: the key is now the source group
+  derived from that name, not the name itself — otherwise the val loss that drives
+  early stopping below is measured on near-copies of trained frames.)* At 100% train (or a single image) the val set is
   empty and the val pass / early stopping are skipped (the UI says so; the SAM dialog
   also disables OK at 0% train). **YOLO's split stays at "Prepare Dataset" time** —
   it's baked into `images/train` vs `images/val` folders at export, so the Train
@@ -1335,6 +1355,17 @@ visibility, and (later PRs) COCO/YOLO-pose export-import + YOLO-pose training. T
   annotation can't become a pose instance and vice versa; a keypoint instance only
   moves to a pose class with an identical `names` list). The schema-definition dialog
   locks the keypoint count K once instances exist (only K can corrupt them).
+  **A class is pose OR regular, not both, enforced at the UI (#44):** defining a schema
+  on a class that already holds plain annotations is blocked
+  (`ClassController.define_keypoint_schema`, only for a *new* conversion — editing an
+  existing/legacy-mixed schema stays allowed so names/skeleton can still be fixed);
+  activating a shape tool (`toggle_tool`) or a SAM tool (`SAMController.toggle_sam_*`)
+  while a pose class is selected is refused (button unchecked); selecting a pose class
+  while a shape/SAM tool is active deactivates it (`on_class_selected`); and DINO
+  detection skips pose classes at the one config builder both paths share
+  (`_build_dino_class_configs`). Legacy-mixed classes from older projects still load,
+  render, and save — the guards only stop *new* mixing; `_pose_export_check` remains the
+  backstop for imported/legacy data.
 - **Area = bbox area (not 0).** `calculate_area` returns the stored box's `w*h` for a
   keypoint instance — deliberate, so sort-by-area behaves consistently with imported
   bbox annotations rather than dumping all poses to the end.
@@ -1472,29 +1503,597 @@ This builds on **ADR-022/023** (canvas selection + #40 handle editing), **ADR-02
 
 ---
 
-## Decisions Under Consideration
+## ADR-030: Centralized stdlib `logging`; `print()` Banned in `src/`
 
-### Consider pytest-qt for Utility Testing
+**Status**: Accepted (issue #33)
 
-**Status**: Under Consideration
+**Context**: The codebase had ~307 `print()` calls and 12 `traceback.print_exc()`
+sites across 23 files and no use of the stdlib `logging` module. Log level could
+not be controlled, output could not be redirected or silenced, and diagnosing a
+user report meant asking them to copy console spam. It also blocked the
+error-handling cleanup (ADR-031): silent `except` sites had no `logger.exception`
+target to migrate to.
 
-**Proposal**: Add unit tests for non-GUI utilities (calculate_area, coordinate conversions, export functions)
+**Decision**: Adopt stdlib `logging` with a single package-level console handler.
 
-**Pros**:
-- Catch regressions in utility functions
-- Build confidence for refactoring
-- Document expected behavior
+- New module `core/logging_config.py` exposes `configure(level=None)` and
+  `get_logger(name)`. `configure()` installs one stderr `StreamHandler` on the
+  package logger `digitalsreeni_image_annotator`, is idempotent (a second call
+  adds no second handler), and is called once from `main.py:main()` **before**
+  `QApplication` is created.
+- Every module does `logger = get_logger(__name__)`; `configure()` derives the
+  package root from its own `__name__` (not a hardcoded string), so all loggers
+  share that root and inherit its handler/level whether the app is imported as
+  `digitalsreeni_image_annotator` or `src.digitalsreeni_image_annotator`.
+- Default level INFO; `--debug` argv flag or `IMAGE_ANNOTATOR_DEBUG` env var
+  switches to DEBUG.
+- No third-party logging dependency. `print()` is banned in `src/` and enforced
+  in review.
+- Level policy: debug = diagnostic chatter (per-item loop progress, shape/metadata
+  dumps), info = user-relevant state changes, warning = soft failures outside
+  `except`, `logger.exception` / `error(exc_info=True)` = inside `except`. See the
+  level table in [docs/08](08_crosscutting_concepts.md#logging-and-debug-output).
 
-**Cons**:
-- Setup overhead
-- Maintenance burden
-- May not catch most bugs (which are in GUI)
+**Consequences**:
+- One switch turns diagnostic chatter on/off; every log line carries its module
+  name (`%(name)s`).
+- `QMessageBox` / dialog behaviour is unchanged — logging is the diagnostic
+  channel, dialogs are the user channel. The migration touched only the output
+  channel of existing prints, never user-visible messaging.
+- Enables ADR-031 (error-handling convention): swallowed exceptions now have a
+  `logger.exception` target.
+- Tests configure the package logger explicitly
+  (`tests/unit/test_logging_config.py`); package loggers have `propagate = False`
+  after `configure()`, so `caplog` tests must enable propagation on the specific
+  logger or attach `caplog.handler`.
 
 ---
 
+## ADR-031: Raise in Core, Catch + Dialog at the UI Boundary, No Silent `pass`
+
+**Status**: Accepted (issue #34)
+
+**Context**: `docs/11`'s "Inconsistent Error Handling" debt — a mix of raised
+exceptions, message boxes, and silent `return None`, plus several
+`except Exception: pass` and one bare `except:` that swallowed real failures
+(CUDA cleanup, a broken MLflow log sink, DICOM VOI-LUT) with no log line. A
+swallowed error left nothing in the bug report.
+
+**Decision**: Adopt one convention (also written into docs/08):
+1. Core / inference / io / training modules **raise**; they never dialog and
+   never return `None` to signal a failed user action.
+2. Controllers / dialogs (the UI boundary) **catch**, `logger.exception(...)`,
+   and surface a `QMessageBox`.
+3. Catch the **narrowest** exception type. `except Exception` only at a UI
+   boundary or a documented crash-safety barrier.
+4. **Never `pass` silently** — log (`exc_info=True` / `.exception`) or use a
+   narrow type + `# reason` comment.
+5. Bare `except:` is **banned**.
+
+Concrete changes: the seven enumerated silent sites now log; the one bare
+`except:` (`dicom_converter.apply_window_level`) became `except Exception` +
+`logger.warning`. A friendly OOM dialog rides along: `core/torch_utils._is_oom`
+(torch-free, unit-tested) drives a "pick a smaller model" message in
+`SAMController.change_sam_model`, while non-OOM failures keep the generic dialog;
+both reset the model selector.
+
+**Consequences**:
+- Every swallowed exception is now visible (logged) or surfaced (dialog).
+- The three deliberate narrow catches stay as the convention's positive
+  examples: `except TypeError: pass  # already disconnected` (yolo /
+  sam_train controllers) and `except ImportError` in `main.py`.
+- `mlflow_tracker`'s outer `except Exception` ("never let tracking abort
+  training") and the ADR-013 `InferenceBusyError` re-entrancy swallow are
+  documented barriers, not silent-swallow sites, and are unchanged.
+- Depends on ADR-030 (logging) for the `logger.exception` target.
+
+---
+
+## ADR-032: Silent Recovery Autosave for Unsaved Projects via a QSettings-Known Location
+
+**Status**: Accepted (issue #41)
+
+**Context**: Autosave is event-driven — every mutation calls `auto_save()`. Before a
+project has ever been saved there is no `.iap` to write to, so the old code popped a
+modal "save now?" from inside the mutation handler. Declining it (or a crash) lost all
+work, and a modal raised from deep in a mutation re-enters the event loop mid-edit.
+Tracked as the "Autosave Doesn't Ask for File Location" debt. Related: ADR-005 (load
+guard), ADR-020 (QSettings precedent).
+
+**Decision**: With no `current_project_file`, `auto_save()` writes a **silent** recovery
+snapshot instead of prompting. The snapshot is exactly a `build_project_data()` dict — a
+new pure serializer factored out of `save_project()` (no dialogs, no file I/O, no image
+copying) — serialized like a real `.iap`, written atomically (temp file + `os.replace`)
+to `QStandardPaths.AppDataLocation/recovery/unsaved.iap.recovery`, its path stored under
+the QSettings key `recovery/pending_path` (same org/app as `app_settings`). A trivially
+empty session writes nothing. On the next launch, `main()` — after `window.show()`, never
+the constructor, so tests that build `ImageAnnotator()` don't trigger it — calls
+`ProjectController.offer_recovery()`, which offers to restore it. A real save (or New
+Project) calls `clear_recovery()`.
+
+**Consequences**:
+- ✅ Work is never silently lost before the first save; no modal ever fires from `auto_save`.
+- ✅ Restore reuses `load_project_data` unchanged (the snapshot has the `.iap` shape).
+- ✅ **Failure-path policy:** a *successful* restore **keeps** the snapshot (the project is
+  still unsaved) until the first real save retires it via `clear_recovery`, so a re-crash
+  before that save can still re-offer the work; a *corrupt or partially-loaded* snapshot is
+  **dropped** on the failed restore (with the UI reset to empty) so it can't nag on every
+  launch. A user who restores and then quits cleanly without editing is re-offered it next
+  launch — intentional, since the work is genuinely still unsaved.
+- ⚠️ The recovery pointer lives in per-user QSettings, so it is machine-local — acceptable,
+  since a restore is always on the same machine that crashed.
+
+---
+
+## ADR-033: Dual Absolute + Relative Image Paths in `.iap`; Relative-First Resolution; Load-Time Validation
+
+**Status**: Accepted (issue #42; supersedes ADR-003)
+
+**Context**: `.iap` stored only absolute image paths, so a project folder couldn't be
+moved or shared (ADR-003). In practice the loader already rebuilt paths from
+`<project_dir>/images/<file_name>` and ignored the stored absolutes — they were dead data
+on load and merely leaked the author's machine paths.
+
+**Decision**: `build_project_data()` writes a portable `image_paths_rel` map (POSIX
+separators via `PurePath(os.path.relpath(...)).as_posix()`; a cross-drive `ValueError`
+just omits that entry) **alongside** the unchanged absolute `image_paths` (dual storage,
+so older app versions still open new files). `image_paths_rel` is written only when a
+project dir exists — recovery snapshots (ADR-032) for an unsaved project have none and
+rely on the absolutes. On load, `ProjectController.resolve_image_path()` returns the first
+that exists: relative → absolute (revives the old dead data, fixing images referenced
+outside `images/`) → the historical `images/` convention → missing. A new pure
+`core/project_schema.py::validate_project_data` runs right after `json.load` in
+`open_specific_project`, raising `ValueError` (surfaced by the existing backup-restore +
+error dialog) on a structurally broken file; it is deliberately lenient about unknown keys
+(the format keeps growing — keypoint schemas, DINO config, relative paths).
+
+**Consequences**:
+- ✅ A project folder (`.iap` + `images/`) is portable across machines/OSes.
+- ✅ v1 projects (no `image_paths_rel`) resolve exactly as before via the `images/` fallback.
+- ✅ A broken `.iap` fails with an actionable message instead of a random traceback.
+- ⚠️ Dual storage means the absolute paths still appear in the file; they are kept only for
+  backward-compatible opening, and relative paths win on load.
+
+---
+
+## ADR-034: Split ImageLabel into Renderer + Edit-Gesture Collaborators (Dispatch Stays)
+
+**Status**: Accepted (issue #46)
+
+**Context**: `widgets/image_label.py` had grown to ~1850 lines — the largest file in
+the codebase — mixing three concerns: canvas painting/overlays, the direct-manipulation
+edit-gesture state machine (ADR-023 bbox/segmentation handles, ADR-029 keypoint edits),
+and event dispatch/zoom/pan/tool routing. Upcoming canvas-heavy work (video timeline
+overlays #48, SAM 3 review/tracking #51) would pile onto it further.
+
+**Decision**: Extract two collaborators by **composition**, leaving `ImageLabel` as the
+dispatcher that owns state and thin delegates — a strictly behavior-preserving move
+(diff = moves + delegates only, no logic/ordering/name changes):
+- `widgets/canvas_renderer.py::CanvasRenderer` — constructed with the label
+  (`self.label = image_label`); owns `draw_annotations`, `draw_temp_annotations`,
+  `draw_tool_size_indicator`, `draw_sam_bbox`, `draw_selection_rect`,
+  `_draw_keypoint_annotation`, `_draw_selection_overlay`, `draw_editing_polygon`,
+  `calculate_centroid`, the painter helpers `_pen_w`/`_overlay_font`, and the
+  `_SELECTION_COLOR` constant. `paintEvent` stays on `ImageLabel` and calls into
+  `self.renderer.*` in the identical layer order; the per-tool `handler.paint_overlay`
+  loop (ADR-019) stays in `paintEvent`.
+- `widgets/edit_gestures.py` — seven module-level **pure functions**
+  (`bbox_handle_points`, `resize_bbox`, `scale_segmentation`, `translate_segmentation`,
+  `scale_keypoints`, `translate_keypoints`, `sync_bbox_key`) plus `class EditGestures`
+  for the 15 stateful gesture methods (`_begin_shape_edit`, `_update_bbox_drag`,
+  `_commit_bbox_drag`, keypoint edits, cursor updates, …). The state fields
+  `bbox_edit`/`editing_keypoint`/`selection_*`/`highlighted_annotations` and
+  `_BBOX_HANDLE_CURSORS` **stay on the label**; `EditGestures` mutates them via
+  `self.label.*` and emits via `self.label.<signal>.emit(...)`.
+- **Compatibility surface**: `ImageLabel` keeps `staticmethod` aliases
+  (`_bbox_handle_points = staticmethod(edit_gestures.bbox_handle_points)`, ×7) so
+  `ImageLabel._resize_bbox(...)` / `label._resize_bbox(...)` call sites and tests are
+  unchanged; `_SELECTION_COLOR = CanvasRenderer._SELECTION_COLOR` is re-exported; a
+  one-line delegate exists for every moved render/gesture method (exact names/sigs).
+  `tests/unit/test_module_split.py` locks the seven alias identities +
+  `_SELECTION_COLOR` re-export.
+
+**Consequences**:
+- ✅ `image_label.py` 1854 → 1197 lines; the two new modules carry module docstrings
+  stating what they own and what stays on the label.
+- ✅ Zero functional change — no signal signatures, dispatch order, paint order, or
+  state-field names changed; every pre-existing test passes unmodified (the suite goes
+  from 686 to 688 passed / 3 skipped purely from the +2 new identity-lock tests).
+- ⚠️ The compatibility layer (~50 one-line pass-through delegates + 7 staticmethod
+  aliases) is **transitional scaffolding**: it keeps every existing call site working for
+  a zero-risk split. As callers migrate to reach `image_label.renderer.*` / the gesture
+  collaborator directly (e.g. during #48/#51 canvas work), the delegate layer should be
+  deleted rather than left to ossify — otherwise the split only adds an indirection tax.
+- ✅ The shared handle geometry (`bbox_handle_points`) stays single-sourced, upholding
+  the "visual == grab" invariant (`_draw_selection_overlay` and `_bbox_handle_at` both
+  resolve to the same function object).
+- Cross-references ADR-018 (CanvasContext), ADR-019 (tool handlers), ADR-022/023
+  (selection + shape editing being relocated), ADR-016 (the AST inline-import gate that
+  guards module moves).
+
+---
+
+## ADR-035: Flat Grouped Image List with Derived Status Badges (No Tree, No Thumbnails)
+
+**Status**: Accepted (issue #43)
+
+**Context**: The image list had alphabetical sort and an annotation-status filter
+(#27/#60) but gave no at-a-glance "is this done?" signal and no way to organise a
+large dataset. A tree/`QTreeWidget` with group headers or per-image thumbnails were
+both considered and rejected: many consumers (DINO batch navigation, COCO import
+reconciliation, `apply_image_filter`) read `image_list.item(i).text()` as a **file
+name** and rely on the positional invariant `all_images[i] ↔ item(i)`, so any header
+/ separator row would be interpreted as a phantom image; thumbnails were explicitly
+out of scope (memory + async decode complexity).
+
+**Decision**: Stay on the flat `QListWidget` and express both features as derived,
+non-structural overlays on the existing sort/filter machinery:
+- **Status badge** = a painted-pixmap `QIcon` per row (filled green dot if
+  `image_has_annotations`, hollow gray otherwise), cached per `(state, dark_mode)`
+  and rebuilt on theme flip. Nothing stored; both states derived.
+- **Group** = an optional `"group"` key on the `all_images` entry (no registry; set
+  derived by `sorted({...})`). Grouped images cluster via the sort key
+  `(group.casefold(), name.casefold(), name)`; the group is shown only in the row
+  tooltip so item text stays the bare file name. A second combo filters by group,
+  OR-combined with the status filter. Persisted in the `.iap`; no load-time
+  restoration is needed because `load_project_data` aliases `all_images` to the
+  parsed `images` list and the load loop doesn't rebuild it.
+
+**Consequences**:
+- ✅ Both features ride the `update_slice_list_colors → apply_image_filter` contract,
+  so badges/marks stay correct after every annotation mutation with no new call sites.
+- ✅ The `.text() == file_name` contract and positional invariant are preserved, so
+  DINO batch nav and COCO import are unaffected (regression-guarded).
+- ✅ No hardcoded colours (painted pixmaps + palette-safe dot colours), dark-mode safe.
+- ⚠️ Groups are a flat single-level tag, not nested folders — sufficient for the PRD
+  US-1 remainder; a real hierarchy would need the tree widget this ADR rejects.
+- Status-badge colours are theme-tuned (a brighter green / lighter gray on the dark
+  sidebar), so the `(annotated, dark_mode)` cache dimension and the `on_theme_changed`
+  rebuild produce genuinely different pixmaps — not dead machinery.
+
+---
+
+## ADR-036: Lazy Slice Extraction with a Bounded Shared LRU (Retained Source Array)
+
+**Status**: Accepted (issue #45)
+
+**Context**: Opening a multi-dimensional TIFF/CZI eagerly converted **every** slice to
+an RGB888 `QImage` in `ImageController.create_slices` and held them all for the session
+(`image_slices[base] = [(name, qimage), ...]`). A 5D 10×20×3 stack of 2048² frames is
+~600 slices ≈ 7.5 GB of live QImages, plus a create-time peak of source-array +
+growing-QImages. Annotation storage is keyed by slice *name* and is unaffected — only
+the pixel data needed to become lazy.
+
+**Decision**: Introduce `core/slice_cache.py` and make QImage materialisation lazy behind
+a process-wide bounded LRU, keeping the exact `(name, qimage)` interface every consumer
+uses (**Strategy A** — retain the already-decoded source ndarray, materialise QImages on
+demand):
+- `SliceProvider` retains the `tif.asarray()`/CZI ndarray and precomputes the ordered
+  `names` + `name → full-index` map with the **byte-identical** naming logic of the old
+  `create_slices` (`{base}_{dim}{index+1}`), then `extract(name)` reconstructs one slice
+  through the exact ADR-010 pipeline (`convert_to_8bit_rgb`/`normalize_array`/
+  `array_to_qimage`) — a **fresh** QImage each call (never mutate a cached one; the SAM
+  worker may be reading it, ADR-013).
+- `LazySliceList` is the drop-in for the old tuple list: `get(name)`, `__getitem__`,
+  `__iter__` (one-at-a-time), `__len__`/`__bool__`/`.names`, `prefetch_around(name)`
+  (pins current ±1 for instant Up/Down nav), `release()`. It is stored as BOTH
+  `image_slices[base]` and `mw.slices` (the same object — several paths compare them).
+- A single module-level `SliceLRU` (keyed `(provider_id, name)`, `LRU_CAPACITY = 8`)
+  bounds live QImages across ALL open stacks; `evict_prefix`/`release_slices` drop a
+  stack's entries on delete. Name-only consumers (save, `image_has_annotations`,
+  `update_slice_list`, navigation membership checks) use `slice_names(...)` so they touch
+  **no** pixels; iterating pixel consumers (exporters, SAM-dataset build, DINO batch,
+  `io_controller`) keep working unchanged via `__iter__`.
+
+**Consequences**:
+- ✅ Opening a stack no longer decodes every slice; live QImages are bounded by the LRU;
+  `save_project` materialises zero pixels (test-asserted via an `extract` spy).
+- ✅ Byte-identical slice names + pixels (lazy == eager, regression-tested), so existing
+  `.iap` annotations and exports are unaffected; Up/Down neighbours are prefetched.
+- ✅ `slice_names()`/`release_slices()` also accept a plain `[(name, qimage)]` list, so
+  legacy/test call sites that inject plain lists keep working with no pixel decode.
+- ⚠️ **Strategy A retains the decoded source ndarray per open stack**, so peak RSS is
+  bounded by the LRU *for QImages* but not for the array. Full array-free reading
+  (memmap/zarr per slice; CZI lazy read) is a deliberate follow-up. The dominant
+  all-QImages-in-RAM cost and the create-time peak are eliminated regardless.
+- ⚠️ The LRU keys on `id(provider)`; providers are `release()`d before being replaced
+  or deleted and `clear_all` wipes the cache, so a recycled `id()` cannot alias a stale
+  QImage. Every dataset-replacing path (`remove_image`/`delete_selected_image`/
+  `redefine_dimensions`/`open_images`/`clear_all`) drops the outgoing `image_slices`
+  entries + their LRU cache so the retained source array cannot leak for the session.
+- Feeds issue #47: video frames reuse the same lazy-slice contract (`None`-payload
+  frames resolved on demand) rather than introducing a parallel cache.
+
+---
+
+## ADR-037: Video Frames as Multi-dimensional Slices (Lazy, Keyed `_F#####`, Reusing LazySliceList)
+
+**Status**: Accepted (issue #47)
+
+**Context**: Video annotation is the next platform feature. The app already handles
+"one file, many annotatable 2D planes" for multi-dim TIFF/CZI stacks — per-slice
+annotation storage, a slice list, Up/Down navigation, per-slice colour, save/load and
+export all key on a slice *name*. The cheapest correct design is to treat a video frame
+exactly like a stack slice. The one thing frames must NOT inherit is eager loading: a
+300-frame 1080p clip is ~1.8 GB of QImages.
+
+**Decision**: Model a video as a stack whose slices are frames, and **reuse the #45
+lazy-slice machinery** rather than a parallel frame cache (the #45/#47 reconciliation):
+- `core/video_handler.py::VideoHandler` wraps `cv2.VideoCapture` — metadata read once,
+  `get_frame(idx)` seeks + decodes ONE frame (BGR→RGB via `cvtColor`, mandatory `.copy()`
+  because the numpy buffer dies at return), `release()` idempotent. Decoding only, no
+  internal LRU. GUI-thread only (`cv2.VideoCapture` is not thread-safe).
+- `VideoSliceProvider` is **duck-type compatible** with `slice_cache.SliceProvider`
+  (`provider_id` / `names` / `extract(name)`), so a video's `image_slices[base]` is an
+  ordinary `LazySliceList` and the shared bounded `SliceLRU` (ADR-036) caps live frame
+  QImages. Frame slice keys are `frame_key(base, idx) = f"{base}_F{idx:05d}"` (0-based),
+  parsed by `parse_frame_index` (`_F(\d+)$` anchored at end so it never matches a
+  `stack_T1_Z5` key).
+- `ImageController.load_video` builds the handler + provider + `LazySliceList` (stored as
+  both `image_slices[base]` and `mw.slices`); `add_images_to_list` gains an
+  `is_video(...)` branch setting `is_multi_slice=True`, `is_video=True`,
+  `video_metadata=handler.metadata()`. The Add/Open file dialogs accept `*.mp4 *.avi
+  *.mov` via the shared `video_handler.file_dialog_filter()` (video globs derived from
+  `VIDEO_EXTS`), used by `add_images` (the live "Add Images / Videos" button),
+  `open_images` and `load_missing_images` so the filter can't drift from `is_video()`.
+  Handlers live in `mw.video_handlers[base]` and are `release()`d on every drop path
+  (delete/remove/redefine/`open_images`/`clear_all`). `.iap` round-trips `is_video`
+  +`video_metadata`; load branches to `load_video`.
+
+**Consequences**:
+- ✅ Because a video is a `LazySliceList`, EVERY existing slice consumer
+  (`switch_slice`/`activate_slice` `.get()`+prefetch, `switch_image` `slices[0]`, `.names`,
+  `__iter__`, exporters, DINO batch, save-touches-no-pixels, delete→`release_slices`)
+  works for video **unchanged** — no parallel resolver, no `None`-placeholder path.
+- ✅ Frames decode lazily and are bounded by the shared LRU for interactive use
+  (navigation, display); opening a video decodes nothing beyond frame 0;
+  `save_project` decodes zero frames (test-asserted).
+- ⚠️ One batch path is NOT LRU-bounded: `DINOController._collect_dino_batch_work_items`
+  builds a flat `[(name, QImage), …]` list, so running DINO batch over a long video
+  materialises all its frames at once (pre-existing for stacks; more costly for video).
+  Streaming that collector frame-by-frame is a documented follow-up.
+- ✅ Annotation storage, per-frame independence, navigation, save/load and export path
+  matching all come for free from the slice machinery.
+- ⚠️ `cv2.VideoCapture` seeking is per-codec-variable; heavy random scrubbing re-seeks.
+  The LRU + `prefetch_around(±1)` keep sequential nav responsive; whole-video
+  pre-decode is deliberately never done.
+- ⚠️ Base-name collision (`video.mp4` vs `video.tif` → same `image_slices` key) is
+  refused with a warning in `add_images_to_list`.
+- Feeds #48 (timeline over `video_handlers`/frame keys) and #51 (SAM 3 tracking seeds a
+  mask on a frame and writes per-frame annotations).
+
+---
+
+## ADR-038: SAM 3 Integration Path (Spike — #49)
+
+**Status**: Accepted (issue #49 spike; findings confirmed in-env and implemented by #50 — see ADR-039. The D3 video items — arbitrary-frame seed/backward propagation, per-frame confidence, long-video memory — were **resolved on a real GPU run by #51**; see ADR-040 Consequences.)
+
+**Context**: Milestone D plans two SAM 3 features — native text-prompt segmentation reusing the DINO
+review workflow (#50) and video object tracking (#51). Both hinge on facts that were unverified when
+the milestone was scoped: whether SAM 3 is consumable through Ultralytics (ADR-002), the exact
+text/video APIs, model sizes, licensing and minimum dependency versions. This ADR records the spike
+findings. Every claim carries a dated source; the environment was probed directly (`pip show
+ultralytics`, an import smoke) rather than trusting docs.
+
+**Findings (checked 2026-07-21):**
+
+1. **Distribution** — SAM 3 (Meta, released 2025-11-20; "Promptable Concept Segmentation") is **fully
+   integrated into Ultralytics as of v8.3.237** (PR ultralytics#22897; discussion #22378). This
+   **upholds ADR-002** — Ultralytics stays the integration layer; no `facebookresearch/sam3` vendor
+   dependency is needed. This dev environment already has `ultralytics 8.4.51`, `torch 2.11.0+cu128`,
+   and `from ultralytics.models.sam import SAM3SemanticPredictor` imports successfully.
+2. **Text-prompt image API** — `SAM3SemanticPredictor(overrides=dict(model="sam3.pt", task="segment",
+   conf=0.25))`; `predictor.set_image(img)`; `results = predictor(text=["person", "bus"])` (a list of noun
+   phrases). Returns a Results object with `.masks` and `.boxes` (numpy via `.cpu().numpy()`; boxes carry
+   confidence). Image-exemplar prompting via `predictor(bboxes=[[x1,y1,x2,y2]])`; feature reuse via
+   `inference_features(features, src_shape=..., text=[...])`. **Confidence is the single knob (`conf`)** —
+   our DINO UI's per-class box/txt/nms thresholds map only to `conf` (reuse `box_thr` as the confidence
+   filter; txt/nms have no SAM 3 equivalent). SAM 2-style visual prompts:
+   `SAM("sam3.pt").predict(source, points=..., bboxes=...)`.
+   **Correction (probed in ultralytics 8.4.51):** the published Ultralytics docs example also passes
+   `quantize=16` and `mode="predict"`; `get_cfg(overrides=dict(..., quantize=16))` **raises**
+   `'quantize' is not a valid YOLO argument`, and `mode` is redundant for a predictor — **D2 must omit
+   both**. This is why the spike probes the environment instead of trusting the docs verbatim.
+3. **Video tracking API** — `SAM3VideoPredictor` (visual: box/point/mask) and `SAM3VideoSemanticPredictor`
+   (text). `predictor(source="video.mp4", bboxes=[[...]], stream=True)` yields **one Results per frame** in
+   file order; `stream=True` is a frame-by-frame generator, omitting it processes the whole video. Docs seed
+   from a **file path**; whether the predictor accepts incrementally-supplied numpy frames (our C1
+   `VideoHandler` decodes on demand) is **UNRESOLVED** — resolve by testing on a GPU box before D3 commits
+   to feeding frames vs. a path. **Backward propagation is not explicitly documented**; the predictor
+   propagates automatically from the seed, so D3 should treat backward as "feed frames in reverse index
+   order" and verify (this is an inference from the streaming-forward API, **not confirmed** without weights).
+   **Long-video predictor memory behaviour is UNRESOLVED** and is D3's verify-first item
+   (measure RSS over 500+ frames; decide whole-video vs chunked).
+4. **Models & download** — `sam3.pt` is **3.45 GB, 473.6M params** (per the Ultralytics SAM 3 docs
+   model table, docs.ultralytics.com/models/sam-3/). It is **NOT auto-downloaded**: the user
+   must request access on the gated HF page `facebook/sam3`, accept Meta's terms, and download/place it
+   manually (or pass a full path). Mirror our DINO gated-download UX + a clear status message. A CLIP
+   dependency quirk may require `pip install git+https://github.com/ultralytics/CLIP.git`.
+5. **License** — code + weights are under Meta's **custom “SAM License”** (NOT MIT/Apache/GPL, NOT
+   OSI-“open source”). Permits research **and** commercial use with restrictions: no military/ITAR use, obey
+   sanctions, no reverse-engineering; a **patent-retaliation clause** (sue over SAM 3 patents → license
+   terminates); **redistributed weights/derivatives must stay under the SAM License**. Consequence: **we
+   must NOT vendor or redistribute `sam3.pt`** — users accept Meta's terms and download it themselves (same
+   posture as our gated DINO/HF models). Source: https://huggingface.co/facebook/sam3/blob/main/LICENSE.
+6. **Minimum versions** — **ultralytics >= 8.3.237** (per the Ultralytics SAM 3 docs; our floor is
+   `>=8.3.27,<9`; #50 must raise it to `>=8.3.237,<9`). **Caveat**: the installed 8.4.51 only proves
+   `>= 8.3.237`, not that 8.3.237 was the *first* integrated version — **D2 must independently re-confirm
+   the exact first-integrated release before pinning the floor** (check the Ultralytics changelog/release
+   notes). Python/torch/torchvision minima are not separately pinned by the SAM 3 docs; our installed torch
+   2.11 + Python 3.10+ floor satisfy it (verified by the successful import). No conflict with the
+   #38-reconciled `<9` upper bound.
+7. **CPU fallback** — GPU latency ~30 ms/image on an H200 at 100+ objects. **CPU is not documented and is
+   impractical** given 3.45 GB / 473.6M params. Recommendation: document SAM 3 as **GPU-recommended**; keep
+   the Grounding-DINO two-stage pipeline as the CPU fallback (D2 keeps DINO selectable).
+8. **Decision for D2 (#50)** — Mirror `SAMUtils` via Ultralytics: a new `inference/sam3_utils.py` wrapping
+   `SAM3SemanticPredictor`, reusing `sam_utils._run_sync` / `_qimage_to_numpy` / `_mask_to_polygon`
+   (the shared `_inference_in_flight` flag then serialises SAM 3 against SAM 2/DINO — desirable). New
+   packaging entries: raise `ultralytics` floor to `>=8.3.237,<9`; document the gated `sam3.pt` weights
+   and the CLIP quirk. Real end-to-end model verification requires a GPU + approved weights (cannot run in
+   CI or a dev box without the gated weights) — stubbed/monkeypatched tests cover the wiring; the real-model
+   check is a documented manual step (CLAUDE.md inference checklist).
+
+**Go/no-go for D3 (#51)**: GO on the API surface (SAM3VideoPredictor exists, streaming per-frame results,
+seed-then-propagate), with two verify-first gates carried into D3: (a) numpy-frame vs file-path seeding,
+(b) long-video predictor memory → whole-video vs chunked. Both are measured in the D3 branch before
+building on them.
+
+**Consequences**:
+- ✅ D2/#50 and D3/#51 are unblocked with a concrete integration route, API names, versions and license.
+- ✅ ADR-002 (Ultralytics for SAM) is upheld, not superseded — no new backend dependency.
+- ⚠️ The weights are gated + non-redistributable (SAM License) and large (3.45 GB); CPU is impractical.
+  These become the D2/D3 UX constraints (gated download, GPU-recommended, DINO fallback for CPU).
+- ⚠️ Two D3 facts remain UNRESOLVED (numpy-frame seeding; long-video memory) and are its verify-first items.
+
+**Sources** (dated 2026-07-21): docs.ultralytics.com/models/sam-3/ ; github.com/ultralytics/ultralytics
+docs/en/models/sam-3.md ; newreleases.io … ultralytics v8.3.237 ; huggingface.co/facebook/sam3 (gated) +
+/blob/main/LICENSE ; github.com/orgs/ultralytics/discussions/22378 ; local `pip show ultralytics` (8.4.51).
+
+---
+
+## ADR-039: SAM 3 Text-Prompt Segmentation via the DINO Review-Pipeline Reuse
+
+**Status**: Accepted (issue #50; implements ADR-038's D2 recommendation)
+
+**Context**: Text-prompted segmentation existed as a two-stage pipeline — Grounding-DINO turns
+per-class phrases into boxes, then SAM 2 refines each box into a mask — wrapped in a mature review
+workflow (temp-annotation overlay, Enter/Escape accept/reject, batch over images+slices, auto-accept,
+`.iap` persistence). SAM 3 (ADR-038) does text→masks natively in one stage. The goal was to add SAM 3
+WITHOUT a second review UI.
+
+**Decision**: Plug SAM 3 in as a new **producer** at the exact spot "DINO boxes → SAM masks" sits, and
+reuse everything downstream verbatim:
+- New `inference/sam3_utils.py::SAM3Utils` mirrors `SAMUtils`/`DINOUtils`: lazy-imports
+  `SAM3SemanticPredictor` (ADR-012/016), constructs with `overrides=dict(model="sam3.pt",
+  task="segment", conf=<floor>, device=<resolved>, save=False, verbose=False)` — **no `quantize`/`mode`**
+  (ADR-038: `quantize` raises in ultralytics 8.4.51); `save`/`verbose` are `False` to stop a
+  `runs/segment/predict/` dir + per-call console summary on every detection — and reuses
+  `sam_utils._run_sync` / `_qimage_to_numpy` / `_mask_to_polygon` + the shared
+  `_inference_in_flight` flag (so SAM 3 serialises against SAM 2/DINO on the GPU). `detect_text(image,
+  class_configs)` returns per-instance `{class_name, score, segmentation, bbox}`; `box_thr` is the
+  confidence filter (SAM 3's only knob — `txt_thr`/`nms_thr` ignored). Weights (`sam3.pt`, 3.45 GB,
+  gated) are never auto-downloaded; `_weights_available()` drives a "request access + place sam3.pt"
+  status, mirroring the DINO gated-download UX.
+- `DINOController` gains a `_run_text_detection(qimage) -> (results, sam_results)` choke point used by
+  BOTH single + batch: for SAM 3 it splits each instance into a `results`-shaped `{class_name, score,
+  bbox, source:"sam3"}` and a parallel `sam_results`-shaped `{segmentation, score}` — SAME length +
+  order — so the existing zip/commit/temp-attach logic is byte-identical; for DINO it runs the unchanged
+  two-stage path. SAM 3 skips the "No SAM Model" guard; DINO keeps it.
+- Produced temps carry `"source": "sam3"`; every `source == "dino"` check (esp. the
+  `DINOReviewEventFilter` Enter/Escape gate) was widened to `in ("dino", "sam3")` via a
+  `.get("source", "dino")` default that keeps DINO's un-tagged dicts resolving to `"dino"`. SAM 3 batch
+  results land in the SAME `dino_batch_results` dict (the single-field `_refresh_dino_temp_for_current`
+  re-sync is untouched).
+
+**Consequences**:
+- ✅ One-stage SAM 3 masks flow through the entire existing review/accept/batch/auto-accept/undo/persist
+  machinery with zero new review UI; commits reuse `_commit_dino_results` (so `record_history` fires —
+  undoable).
+- ✅ Grounding-DINO two-stage path is **functionally** unchanged — identical final annotations/temps,
+  so its tests pass unmodified. (The single path drops a transient "Running SAM…" status line and
+  unifies the two error-dialog titles into one — the only intra-run UX differences.) The model picker's
+  "SAM 3 (text prompt)" entry sits alongside the DINO models.
+- ✅ `ultralytics` floor raised to `>=8.3.237,<9` (ADR-038). SAM 3 lazy-imports, so older installs still
+  launch and the app stays importable.
+- ⚠️ Real end-to-end verification needs a GPU + the gated 3.45 GB `sam3.pt` (cannot run in CI or a
+  weightless dev box) — the wiring is covered by monkeypatched/stubbed tests; the real-model check is a
+  documented manual step (CLAUDE.md inference checklist). CPU is impractical — DINO stays the CPU fallback.
+- ✅ Real-model check **done** (2026-07-22, RTX 4070, ultralytics 8.4.51): `detect_text` on `bus.jpg`
+  returned sensible masks (bus 0.97 + 6 persons; `box_thr=0.25` filtered the raw 3 buss / 31 persons down
+  to 1 + 6), and the live `SAM3SemanticPredictor` API (`set_image(np)` + `__call__(text=…)` →
+  `.masks.data` / `.boxes.conf` / `.boxes.xyxy`) matches the code. Two real-only findings, both handled:
+  (a) first use pip-installs `clip` + `timm` via ultralytics AutoUpdate (needs network — documented, not
+  vendored; despite ultralytics' "restart runtime" warning the install+import complete in-process, so the
+  first detection succeeds without a restart — observed on a clean env); (b) `save`/`verbose` are forced
+  `False` (added to the overrides) to avoid a `runs/` dir + console spam on every detection.
+
+---
+
+## ADR-040: SAM 3 Video Object Tracking — Standard Commit Path, Per-Frame Undo + Run Rollback
+
+**Status**: Accepted (issue #51; builds on ADR-037 video, ADR-039 SAM 3, ADR-026 undo)
+
+**Context**: With videos as lazily-decoded frame slices (#47) and SAM 3 wired in (#50), the
+flagship video feature: select an object's mask on one frame and track it across the clip,
+writing a per-frame annotation. The ADR-038 verify-first items were **RESOLVED on a real GPU
+run** (2026-07-23, RTX 4070, ultralytics 8.4.51 + gated `sam3.pt`); the design below was updated
+to match what the real `SAM3VideoPredictor` actually does (see Consequences).
+
+**Decision**:
+- **Backend** — `SAM3Utils.track(video_path, seed_idx, seed_bbox, direction, should_cancel)`
+  runs the WHOLE propagation inside ONE `_run_sync` call (the worker never touches Qt) and
+  returns `[(frame_idx, {"segmentation","score"} | None), …]`. ALL real-model interaction is
+  isolated in `_track_blocking` (the single monkeypatch seam): it lazy-imports
+  `SAM3VideoPredictor`, constructs with the SAME overrides as detect (`model/task/conf/device`,
+  no `quantize`/`mode`), seeds via the **video file path** + bbox with `stream=True`, and maps
+  each per-frame result through `_mask_to_polygon`. **Arbitrary-frame seeding + bidirectional
+  propagation are implemented and VERIFIED**: ultralytics' streaming predictor only seeds the
+  FIRST frame and propagates forward, and both it and the low-level `init_state` path reject a
+  frame *list* (`mode=="images"`), so `_track_blocking` slices the clip and re-muxes a short temp
+  video per run -- forward = `frames[seed_idx:]`, backward = `frames[seed_idx::-1]` -- each seeding
+  the bbox on its own frame 0 (== `seed_idx`) and mapping the streamed position back to the real
+  index; `direction="both"` (the controller default) runs both and de-dupes the shared seed frame.
+  `torch._dynamo.config.disable = True` is set before the video predictor (its encoder's
+  `torch.compile` needs Triton, which has no Windows build); overrides add `save=False`/`verbose=False`.
+- **Controller** — new `TrackingController`: `can_track()` (active video + SAM 3 loaded + exactly
+  one selected annotation carrying a `"segmentation"` — pose instances excluded, ADR-029);
+  `run_tracking()` (confirm dialog + confidence-threshold spinbox default 0.5; **modal**
+  `QProgressDialog` blocks GUI navigation during the track and feeds `should_cancel`). Results
+  route: `score >= threshold` → `_commit_tracked_result` (MIRRORS `_commit_dino_results`:
+  `record_history(frame_name)` FIRST, `source=="sam3-track"`, a shared `track_run` uuid,
+  per-class `number`, write to `image_label.annotations` if current else
+  `all_annotations[frame_name]`); `0 < score < threshold` → a temp entry in `dino_batch_results`
+  (`source=="sam3"`) so the EXISTING DINO batch-review pipeline + Enter/Escape filter handle it
+  verbatim; `None` → nothing. The seed frame is skipped (it already carries the source). One
+  `auto_save()` at the end, not per frame.
+- **Undo granularity** (the explicit decision): per-frame Ctrl+Z undoes ONE frame (each commit
+  `record_history`s its own key); `undo_last_track()` is the bulk convenience — removes every
+  annotation whose `track_run == run_id` across the run's frames (per-frame `record_history`
+  first, so it too is undoable). Rollback finds annotations by EXACT `track_run` match.
+- **Timeline** — `VideoTimeline.set_frame_states({idx: "annotated"|"tracked"|"needs_review"})`
+  paints palette-derived coloured segments (precedence needs_review > tracked > annotated);
+  `set_annotated_frames` delegates to it (C2 back-compat). `needs_review` derives from
+  `dino_batch_results` keys, `tracked` from `sam3-track` annotations.
+
+**Consequences**:
+- ✅ Tracked masks are ordinary annotations — saved, exported, undoable — with zero new review UI
+  (uncertain frames reuse the DINO pipeline; commits reuse the `record_history` discipline).
+- ✅ The model call is a single stub seam; the full controller/timeline logic is covered by
+  stubbed tests (per-frame + run-rollback undo, commit/review routing, pose exclusion,
+  save/reload). Real-model tracking is a documented manual GPU step.
+- ✅ **Verified on the real model** (2026-07-23, RTX 4070, gated `sam3.pt`, 191-frame clip): a
+  mid-clip seed (frame 60) with `direction="both"` returns a contiguous `0..190` with a mask on
+  every frame (forward 60→190 and backward 60→0 both work). Findings that reshaped the design:
+  (a) SAM 3 video's encoder is `torch.compile`'d and **crashes on Windows without Triton** →
+  TorchDynamo disabled (eager; `suppress_errors` is not enough); (b) the streaming API is
+  frame-0-forward-only and needs a *video* source → arbitrary seed + backward via the temp-video
+  slices above; (c) it writes a `runs/` dir + per-frame console spam → `save=False`/`verbose=False`.
+- ⚠️ **Per-frame confidence is a constant 1.0** (VERIFIED): SAM 3 video exposes `res.boxes.conf`
+  but always at 1.0, so the confident/uncertain threshold is effectively **decorative** — object
+  *absence* is signalled by an empty mask (→ `None`), not a low score. `_frame_result` still reads
+  conf (future-proof) but near-everything commits as confident; the threshold UI is kept as a
+  harmless safety valve and the uncertain→review path rarely fires for SAM 3 tracks.
+- ⚠️ **Long-video memory**: `_track_blocking` decodes the whole clip into **host RAM** for the
+  track's duration (~`n·H·W·3` bytes) plus a per-run temp `.avi` on disk (2× for `both`). This
+  host-RAM frame buffer is one clip-length growth path; the OTHER is **VRAM**: the ~7 GB measured on
+  the 191-frame run is mostly model weights (clip-length-independent), but SAM-lineage video
+  predictors also accumulate a per-object memory bank across the propagated frames, so a run's VRAM
+  activations rise with the number of frames it walks (`del predictor` resets it only between the
+  forward and backward runs). Bounded by clip length — fine for typical annotation clips;
+  a very long clip is the documented limit, and a frame-window/chunked read (avoiding the full
+  RAM->disk->RAM round-trip) is the follow-up. **Revisit if a future ultralytics exposes video
+  `init_state` with an in-memory tensor source** — that would drop the temp-video re-mux entirely;
+  this is a version-pinned workaround, not the intended shape.
+
+---
+
+## Decisions Under Consideration
+
 ### Consider Relative Paths with Image Copying
 
-**Status**: Under Consideration
+**Status**: Resolved by ADR-033 (#42) — implemented as dual absolute+relative paths
+*without* forced image copying (the copy-into-`images/` prompt already existed), so the
+"disk duplication" con below does not apply.
 
 **Proposal**: Copy images to project folder, store relative paths
 
@@ -1506,3 +2105,325 @@ This builds on **ADR-022/023** (canvas selection + #40 handle editing), **ADR-02
 - Disk space duplication
 - Slow for large image sets
 - Export already copies images
+
+---
+
+## ADR-041: Headless CLI as a Separate Entry Point Behind a Qt-Free Boundary
+
+**Status**: Accepted (issue #76)
+
+**Context**: Everything the app could do required a human, a screen and a mouse. There was no
+way to regenerate a training dataset in a build script, convert annotation formats without
+opening the GUI, fail a CI job because someone committed self-intersecting polygons, or run a
+model over a folder overnight. For an ML engineer, an annotation tool that cannot be scripted is
+a tool that has to be baby-sat.
+
+**Decision**:
+
+- **A separate console script**, `sreeni-cli`, not a `--headless` flag on the GUI entry point.
+  `main.py` imports torch eagerly *before* constructing the `QApplication` to work around a
+  Windows DLL conflict (ADR-017). A flag would inherit that whole startup path, so `validate`
+  would load torch and require a display on a CI runner.
+- **Four commands**: `export`, `convert`, `validate`, `predict`. `train` is deliberately out of
+  scope — it needs a GPU, a progress UI and a stop button, none of which belong in a build step.
+- **Exit codes are the contract**: 0 success, 1 usage/read/operation error, 2 `validate` findings
+  at or above `--fail-on`. Progress narration to stderr, machine-readable output to stdout.
+  `--fail-on` is inclusive-upward (`warning` also fails on errors), so a project can tighten its
+  gate over time.
+- **Read-only by construction**: `core/project_io.py` has no write path at all. Autosave and
+  recovery exist to protect interactive editing (ADR-005/032); a build script silently rewriting
+  the file it was asked to read is exactly the surprise a CI gate must not spring.
+- **Lazy heavy imports per command**: only `predict` imports torch and Ultralytics.
+
+**The architectural work was the separation, not the argument parsing.** Two Qt dependencies sat
+in the shared layer, each sufficient on its own to make headless operation impossible:
+
+| Dependency | Why it was there | Replacement |
+|---|---|---|
+| `QImage` in `io/export_formats.py` | reading a file's dimensions, nothing else | `core/image_size.image_dimensions` (Pillow header read — Qt-free and faster) |
+| `QMessageBox` in `io/import_formats.py` | prompting when images and labels do not line up | a `confirm` callback; the GUI supplies the prompt (ADR-031) |
+
+**Alternatives considered**:
+
+- *A `--headless` flag on the existing entry point*: rejected for the ADR-017 startup path above.
+- *A thin CLI calling the controllers with a hidden QApplication*: would require a display on
+  every CI runner and drag the whole widget tree into a format conversion.
+- *Duplicating the export logic for the CLI*: two implementations of a format drift, and the
+  divergence surfaces as a dataset that trains differently depending on how it was produced.
+
+**Consequences**:
+
+- The Qt-free boundary is now load-bearing and **enforced by a subprocess test**
+  (`tests/integration/test_cli.py`) over `cli/`, `cli.commands`, both `io/` modules,
+  `core/project_io` and `core/annotation_qc`. The subprocess matters: the test session has
+  already imported PyQt6, so an in-process `sys.modules` check would pass regardless.
+- An accidental `from PyQt6 ...` in any shared module re-breaks headless operation, and would
+  work perfectly on the machine of whoever added it. The test is the only thing that catches it.
+- **Documented limits**: the CLI exports what a project already materialised; extracting new
+  slices from a stack runs through the Qt-bound `ImageController` and is out of scope (the count
+  skipped is reported). An unresolvable image path refuses the export rather than writing a
+  partial dataset that looks complete but trains on fewer images than the user believes.
+- `docs/07_deployment_view.md` exists now because there are two entry points with materially
+  different runtime requirements.
+
+---
+
+## ADR-042: One Training Dialog, with the Task Derived Rather Than Asked
+
+**Status**: Accepted (issue #73; builds on ADR-028 LR schedule, ADR-029 pose)
+
+**Context**: Training a YOLO model *and actually using it* took six menu navigations and about
+ten dialogs, including a step in the middle where the user reloaded the model they had just
+produced. SAM fine-tuning was a separate top-level menu with four more actions, one of which was
+a manual "Refresh Model Selector". Eleven menu actions for what is conceptually one operation —
+and dataset preparation, YAML handling and saving are mechanics, not decisions anyone wanted to
+make.
+
+**Decision**:
+
+- **One `Train Model…` action, one dialog**, covering both YOLO training and SAM 2 fine-tuning.
+  Preparation, YAML writing, model loading, saving and selector refresh happen implicitly.
+- **The task is derived from the annotations, not asked**: boxes only means detect, polygons mean
+  segment, keypoints mean pose. Asking is asking the user to restate their own data.
+- **`core/task_inference.py` is a module, not a dialog method.** `train_model` already infers the
+  task a second time from the prepared dataset YAML (`kpt_shape` present means pose) and raises
+  pre-flight if the loaded model's `.task` disagrees. A dialog announcing one task while the
+  trainer decides another would be a bug by construction, so both derive from one place.
+- **Pre-flight refusals before the run**: mixed-K pose and pose-plus-non-pose projects cannot be
+  expressed in YOLO-pose's single dataset-global `kpt_shape`, and an *annotated* stack or video
+  whose slices were never materialised has no pixels to export. Both previously surfaced late —
+  the first deep inside Ultralytics, the second during dataset preparation.
+  **Amended**: the second refusal originally blocked every stack and video outright, inherited
+  from a note that predated slice-aware export. It is wrong: a video's `image_slices[base]` is an
+  ordinary `LazySliceList` and the exporters resolve slice pixels through it (#45/#47), so
+  annotated frames train like any other image. Refusing them rejected valid datasets — and made
+  SAM 3 tracking (#51), whose entire purpose is generating training data from video, a dead end.
+- **Advanced options collapsed, not removed.** ADR-028 deliberately kept `lr0`/`cos_lr`/
+  `patience` off the main surface; they stay reachable.
+- **Advanced menu entries demoted, not deleted.** Preparing a dataset for external use and
+  training from an externally-prepared folder are real workflows for someone who already has one.
+  "Refresh Fine-Tuned Model List" *is* deleted: a manual refresh action existing at all was the
+  symptom this set out to remove (issue #74 makes registration automatic).
+
+**Alternatives considered**:
+
+- *A wizard*: more clicks, not fewer, for a form that fits on one screen.
+- *Keeping two dialogs and just tidying the menus*: the duplicate mechanics (prepare, save,
+  reload) were the actual cost; the menu depth was a symptom.
+- *Asking for the task*: every project already answers it, and a user who picks wrongly discovers
+  it as an opaque Ultralytics failure.
+
+**Consequences**:
+
+- The trainers (`YOLOTrainer`, `SAMFineTuner`) are untouched — this is UI and orchestration only,
+  so the GPU gate, busy guard, progress/stop dialog and automatic MLflow configuration (ADR-027)
+  all keep working unchanged.
+- The base model must be loaded *before* dataset preparation, so `train_model`'s `.task`-vs-YAML
+  pre-flight still runs. Reordering those two steps would silently disable the check that turns
+  an opaque failure into an actionable message.
+- Irrelevant fields hide rather than grey out when the type changes: a permanently-disabled
+  control invites the user to wonder what would enable it.
+
+---
+
+## ADR-043: A Gated Shortcut Registry Instead of More Top-Level Event Filters
+
+**Status**: Accepted (issue #65; fulfils the ADR-015 follow-up)
+
+**Context**: The app had exactly three global shortcuts (F2, Undo, Redo). Every class switch cost
+a trip to the class list with the mouse and every tool switch a trip to the sidebar — in a dense
+annotation session, the single largest source of wasted motion. Digits 1-9 and every letter were
+unclaimed.
+
+**Decision**: Bare-key bindings go through a **gated application-wide event filter**, not
+`QShortcut`.
+
+- A `QShortcut` on `3` with `ApplicationShortcut` context swallows that keystroke in **every**
+  `QLineEdit` in the app: renaming a class to "Layer 3" or typing a DINO phrase would silently
+  drop characters. An event filter is the only mechanism that can be *conditional* on where the
+  focus currently is. `QShortcut` remains right for modified keys (Ctrl+Z, F2) that no text field
+  wants.
+- `ShortcutEventFilter` is a **registry** — `{(key, modifiers): callable}` plus a list of gate
+  predicates that must all pass — rather than another bespoke filter. This is what ADR-015's
+  follow-up note asked for: *"Future review modes should share filter or layer via strategy
+  registry, not install multiple top-level filters."*
+- The two gate predicates live in `ui/input_gates.py` and are **shared with
+  `DINOReviewEventFilter`**, which previously duplicated them inline. Two filters drifting apart
+  on a *safety* predicate is precisely the failure that note warned about. The extraction also
+  widened the DINO filter's notion of "typing" to include spin boxes and editable combos.
+- `widget_is_text_entry` is split from `focus_is_text_entry` so the classification is testable on
+  its own: which widget holds focus is a property of the windowing system and unreliable under
+  the offscreen platform, whereas "is a QSpinBox a text entry" is a decision this module owns.
+- Tool bindings call `ImageAnnotator.activate_tool` and nothing else — never `current_tool` or
+  the SAM flags directly — so a SAM tool still cannot end up active alongside a manual one. A
+  test asserts the binding does not write `current_tool`.
+
+**Alternatives considered**:
+
+- *`QShortcut` for everything*: breaks text entry, as above.
+- *`keyPressEvent` on the main window*: `QTableWidget` and other focusable children consume keys
+  before they bubble — the original reason `ui/shortcuts.py` uses `ApplicationShortcut` at all.
+- *A second bespoke top-level filter*: the thing ADR-015 explicitly warned against.
+- *A modifier-based second bank for classes 10+*: two-key class selection is slower than
+  clicking, so it would add surface without adding speed. Digits address the first nine; the rest
+  stay mouse-reachable.
+
+**Consequences**:
+
+- Adding a global-key feature now means registering a binding, not installing a filter. Ctrl+C /
+  Ctrl+V for the annotation clipboard (issue #66) joined this way, and inherit the same gating —
+  Ctrl+C in a rename field still copies text.
+- A binding that returns `False` does not consume the event, which is what makes an out-of-range
+  digit a silent no-op rather than an error.
+- Discoverability is a paint-pass concern: `ClassShortcutDelegate` draws the 1-9 badge rather
+  than appending it to the item text, because **the item text IS the class name** across the app
+  (`findItems(MatchExactly)`, the `Temp-` prefix checks, `text()[5:]` on accept, rename).
+  Decorating it would break all of those at runtime only.
+- **Accepted trade-off**: the bare letter bindings shadow `QListWidget`'s built-in type-ahead
+  search in the class, image and slice lists — neither is a text-entry widget, so the gate
+  correctly passes and `P` activates the polygon tool rather than jumping to "platelet". Gating
+  letters on list focus was considered and rejected: switching tools right after clicking an
+  image is the *common* case, and breaking it would defeat the feature. Digits are unaffected in
+  practice (type-ahead on a numeric prefix is rare). Revisit if type-ahead turns out to be load-
+  bearing for anyone.
+
+## ADR-044: The Train/Val Split Key Is the Group, Not the Image Name
+
+**Status**: Accepted (issue #81; the decision came out of the #80 curation discussion)
+
+**Context**: `assign_train_val` partitioned train/val by a stable MD5 of the image *name*. That is
+correct exactly when every name is an independent observation, and in this app it routinely is
+not. A multi-dimensional stack contributes one name per slice (`stack_T1_Z5_C1`) and a video one
+per frame (`video_F00042`), and consecutive frames are near-identical. A name-keyed split
+therefore scatters the frames of one recording across both sides **by construction** — the model
+is validated on data it effectively trained on.
+
+Nothing fails. The dataset exports, training runs, and the validation metrics come back *better*
+— the more redundant the data, the better they look. That is the worst available failure mode for
+a number people use to decide whether a model is ready.
+
+The function was the single choke point for all three training paths: `export_yolo_v4`,
+`export_yolo_v5plus` (and therefore `prepare_dataset` → in-app YOLO training) and
+`training/sam_dataset.py::split_groups` (SAM fine-tuning — where val loss also drives early
+stopping, so a leaky split does not merely misreport, it changes when the run stops).
+
+**Decision**: The split key is a **group**, and a group never straddles the split.
+
+- Grouping is derived from **structure, not from a model**. `image_slices` is already keyed by the
+  ext-stripped base name, so `{slice_name: base}` is exact and needs no parsing and no pixel work.
+  Names it does not cover fall back to a name-prefix heuristic; anything left is its own group.
+- **Always on, no opt-in.** The exporters derive the grouping themselves, so no caller has to
+  remember to ask for it. The headless CLI is safe for a different reason and it is worth being
+  precise about which: it cannot resolve slice or frame pixels at all, so `_is_exportable` drops
+  those names before the split sees them and every surviving name is a file on disk, hence its own
+  group. There is no group larger than one image there, so there is nothing to leak and nothing to
+  warn about — the CLI's existing `note:` about unexported slices is the honest signal. An earlier
+  revision of this change shipped a CLI warning branch that could not fire.
+- Embedding clusters from the curation feature (#72) could **refine** the grouping — union them
+  into the derived groups so two near-identical images from different files also stay on one side
+  — but are never required: the worst case, a 200-frame video, is fixed with no model, no GPU and
+  no curation run. None of that is in this change, not even the seam. `similarity.cluster` is
+  pure-Python all-pairs, so calling it during an export would freeze the GUI for minutes on a few
+  hundred images; the merge helper and the parameter to feed it land in #82 together with the
+  vectorised clusterer and an actual caller.
+- The exporters filter the split input to names they will actually **write** (`_is_exportable`).
+  A name the export loop skips must not consume a slot in the train/val budget: once whole groups
+  move together, a video's worth of unwritable frames takes the entire train side with it. That
+  is not hypothetical — headlessly, where no slice collection is loaded, an earlier revision of
+  this change produced an empty `images/train` with `data.yaml` still pointing at it. As a side
+  effect the requested percentage now describes what lands on disk rather than what was counted.
+- New Qt-free `core/dataset_split.py`. `assign_train_val` moved there and stays **re-exported**
+  from `io/export_formats.py`, which is where `training/sam_dataset.py` and the split tests import
+  it from.
+- **Degenerate case: warn, do not silently disable validation.** When everything belongs to one
+  group — a project that is a single video — no honest split exists. `plan_split` returns a
+  `fell_back` flag, uses the per-name split, and the UI states plainly that the validation numbers
+  will be optimistic.
+
+**Alternatives considered**:
+
+- *An empty val set in the degenerate case*: the truthful answer, and rejected. The trainer skips
+  the validation pass and early stopping when val is empty (ADR-028), so the user silently loses
+  two features and gets no explanation — that reads as a regression, not as information.
+- *Opt-in checkbox, default off*: no behavioural change for anyone, and the leak stays the default
+  for everyone who never finds the checkbox. The bug would remain in practice.
+- *Grouping from embedding clusters only*: conceptually cleaner, practically worse. It requires a
+  GPU curation run before every export, and without one there is no protection at all.
+- *Splitting a group proportionally instead of whole*: defeats the purpose. A partially split
+  group leaks exactly as much as an unsplit one.
+
+**Consequences**:
+
+- The requested val percentage becomes a **target rather than a guarantee**, and the honest bound
+  is narrow: *no single group added, dropped, or swapped for another would land closer to the
+  target*. Choosing the best subset is subset-sum, so `_split_by_group` fills with groups that
+  fit, allows one large group to replace the selection when that lands nearer, then hill-climbs on
+  single add/drop/swap moves until none improves. The climb enumerates one representative per
+  distinct group *size*, since same-size groups are interchangeable for hitting a count — without
+  that, the ungrouped path (one group per image) would compare millions of identical singletons.
+  On a project of one 100-frame video plus one photo, a requested 20 % delivers a single image:
+  that is the closer of the two available answers, not a defect. **Group cohesion is not
+  sufficient test coverage here** — a selection can keep every group whole and still deliver 1 %
+  for a requested 20 %, so the delivered *size* needs its own property test, as do the bounds that
+  keep both sides non-empty, and so does every boolean filter feeding the budget.
+- `groups=None` is bit-for-bit the historical per-name split (every name its own group), so
+  the existing `test_yolo_split.py` tests are unaffected.
+- The name-prefix fallback deliberately errs toward **over-grouping**: a stack literally named
+  `run_T1` yields base `run`, merging it with `run_T2`. That costs some split granularity; the
+  opposite error would reopen the leak this ADR exists to close. The suffix is restricted to the
+  letters `DimensionDialog` actually assigns (T/Z/C/S) plus F for video, because matching any
+  `[A-Z]\d+` collapsed a whole 96-well plate into one group. Ambiguity remains where the name is
+  genuinely ambiguous — `Plate1_C1_Z1` cannot be told apart from a stack `Plate1` with a channel
+  and a Z dimension, so wells in rows C, F, S, T and Z still merge. Nothing in a filename can
+  resolve that, which is the argument for the `image_slices` mapping being the primary source and
+  the heuristic only the fallback for paths that have none.
+- **Known gap:** a folder of *extracted* video frames on disk (`clip_F00001.png` as real files)
+  does not group. The dot means "a file, therefore an independent observation", and that is the
+  discriminator both the exporters and `_slice_base` rely on. Grouping ext-stripped filenames too
+  would close it, at the cost of collapsing legitimately independent photographs that happen to be
+  named `sample_T1.png` / `sample_T2.png` into one group — a false alarm on a flat dataset,
+  reported rather than silent, but disruptive. Left open deliberately, and recorded here rather
+  than discovered later: this is the one remaining path where the leak is still silent.
+  `dialogs/dataset_splitter.py` — the standalone folder-splitting tool, which is not one of the
+  three choke points above — walks straight into it and is also unseeded, so its splits are not
+  even reproducible. Tracked as **#85**; the app is **not** uniformly group-aware, and that tool
+  is where it is not.
+  - One exception, deliberately inconsistent with the paragraph above:
+    `build_groups_from_folder` **does** ext-strip, because a prepared SAM dataset is written by
+    `export_sam_dataset` from slice names and is therefore known to contain them. The cost is the
+    one just described — `sample_T1.png` and `sample_T2.png` in such a folder merge — and it is
+    accepted there because the alternative was no grouping at all on that path. `_is_exportable`
+    carries a second, narrower version of the same gap: it cannot decode pixels, so a slice that
+    is *indexed* but turns out to be undecodable passes the filter and consumes a split slot the
+    export never fills. Same shape as the empty-`images/val` bug, much smaller blast radius, and
+    unavoidable without decoding during planning. The two SAM entry
+    points consequently group the same data slightly differently.
+- `SAMFineTuner.train` calls `split_groups` on a worker thread with no access to `image_slices`,
+  so it uses the prefix fallback — which covers every name the app itself produces.
+- The wording lives in `core/dataset_split.split_warning`, **not** on the controller. It began
+  next to the dialog, in a module importing Qt at top level, which is what forced the CLI to
+  hand-roll a subset of it — the same duplication that had already let the split preview and the
+  export drift apart. `io_controller` is now only the QMessageBox shell. (The CLI ended up needing
+  no warning at all, per the point above, but keeping pure text out of a Qt module is right
+  regardless.)
+- The warning offers **Cancel**, and all three GUI call sites honour it: `prompt_validation_split`
+  (YOLO export menu and Prepare YOLO Dataset) returns to its input dialog,
+  `TrainingController.run_yolo` and `SAMTrainController._launch` abandon the run. A warning saying
+  the validation numbers cannot be trusted, with only an OK button, trains exactly the
+  click-through reflex it exists to prevent — and its advice ("choose a different percentage") had
+  nothing to act on. `run_yolo` is the one that must not be missed: the unified Train dialog
+  carries its own split slider and never passes through the prompt, so it would otherwise be the
+  app's main training path with no signal at all.
+- It covers a second case besides the degenerate grouping: a split that leaves **training with a
+  single group**. Holding out a percentage by image count can route every small group to
+  validation when one group dominates, which is optimal by the count the split aims at and useless
+  as a dataset — and silent, because the grouping technically succeeded.
+- The preview behind the warning and the export itself must be computed over the **same** set of
+  names, which is why both go through `exportable_annotated_names`. They were computed separately
+  once, and a preview that counted an unopened video's frames stayed quiet while the export fell
+  back to the per-name split.
+- `training/sam_dataset.py::build_groups_from_folder` normalises `SampleGroup.name` to the
+  ext-stripped basename. The manifest stores `images/clip_F00042.png`, and that dot made every
+  frame its own group — so "Fine-Tune SAM from Dataset Folder" got no grouping at all while the
+  project path was correctly grouped. Normalising at the producer keeps every consumer of `name`
+  seeing one shape.

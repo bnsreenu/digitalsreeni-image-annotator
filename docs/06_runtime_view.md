@@ -132,7 +132,9 @@ One shape selected → handles are grab targets (hover shows resize/move cursors
     └─> Esc during drag → restore original geometry, cancel
 ```
 
-Polygon vertex edits (double-click) are likewise clamped into the image on Enter.
+Polygon vertex edits (double-click) are likewise clamped into the image on Enter
+— and, since #68, on an image or slice switch too, because leaving edit mode by
+navigating away used to skip the clamp entirely.
 See ADR-023 (shape editing) and ADR-024 (bounds enforcement).
 
 ## Placing a Keypoint / Pose Instance (issue #35, ADR-029)
@@ -381,9 +383,19 @@ User accepts prediction
     └─> Clear SAM state, reset to normal mode
 ```
 
-## LLM-Assisted Detection (Grounding DINO + SAM)
+## LLM-Assisted Detection (Grounding DINO + SAM, or SAM 3 one-stage)
 
-End-to-end flow when the user clicks "Detect Current Image" in the DINO panel:
+The DINO panel's model picker chooses the **producer** (ADR-039): the
+Grounding-DINO two-stage path below, or **"SAM 3 (text prompt)"** which does
+text→masks in ONE stage. `DINOController._run_text_detection(qimage)` is the
+fork: for SAM 3 it calls `SAM3Utils.detect_text` and splits each instance into
+the `(results, sam_results)` shape the DINO pipeline already zips; for DINO it
+runs the two stages. Everything after the fork — temp-annotation overlay,
+Enter/Escape accept/reject, batch over images+slices, auto-accept, persistence —
+is identical. SAM 3 skips the "No SAM Model" guard (it needs no SAM 2 refinement)
+and its temps carry `source: "sam3"`; the Grounding-DINO flow is unchanged:
+
+End-to-end flow when the user clicks "Detect Current Image" with a DINO model:
 
 ```
 User clicks "Detect Current Image"
@@ -521,6 +533,110 @@ User clicks "Open" or Ctrl+O
     └─> Return
 ```
 
+## Unsaved-Project Recovery (issue #41, ADR-032)
+
+Before a project has ever been saved, every mutation still calls `auto_save()`. With no
+`current_project_file`, `ProjectController.auto_save()` writes a **silent** snapshot
+(`build_project_data()` → atomic temp-file + `os.replace`) to
+`AppDataLocation/recovery/unsaved.iap.recovery`, remembering its path in QSettings
+(`recovery/pending_path`). A trivially empty session writes nothing.
+
+On the next launch, `main()` calls `ProjectController.offer_recovery()` after the window
+is shown:
+
+```
+main() → window.show() → offer_recovery()
+    │
+    ├─ pending_recovery() finds a snapshot?
+    │     ├─ No  → return
+    │     └─ Yes → "Restore unsaved work from <mtime>?"
+    │                ├─ No  → clear_recovery()
+    │                └─ Yes → is_loading_project = True → load_project_data(snapshot)
+    │                          → current_project_file left UNSET (user still saves)
+    │                          → clear_recovery() on success
+```
+
+A real save (or New Project) calls `clear_recovery()`, so a stale snapshot is never
+offered once the project is disk-backed.
+
+## Organising the Image List — Groups & Status Badges (issue #43)
+
+1. **Badge refresh** (automatic, no user action): any annotation mutation
+   flows through `ClassController.update_slice_list_colors →
+   ImageController.apply_image_filter`, whose tail calls
+   `refresh_image_status_icons()`. Each row's `QIcon` is set from a
+   `(annotated, dark_mode)`-keyed painted-pixmap cache — filled green dot if
+   the image (or any of its slices) has annotations, hollow gray otherwise.
+   Toggling dark mode calls `ImageController.on_theme_changed()`, which clears
+   the cache and repaints.
+2. **Assigning a group**: right-click a row → "Move to group…" opens
+   `QInputDialog.getItem` (existing groups + free text) →
+   `set_image_group(name, group)` sets the `"group"` key on the `all_images`
+   entry, `sort_image_list()` re-clusters grouped rows (ungrouped first; item
+   text stays the file name, group in the tooltip), then `auto_save()` (skipped
+   during load). "Remove from group" passes `None`.
+3. **Filtering by group**: `image_group_combo` ("All groups" + derived names)
+   drives `apply_image_filter`, which hides a row when the status filter **or**
+   the group filter excludes it. Both combos' index 0 means "hide nothing".
+4. **Persistence**: `save_project` writes `"group"` per image; on load a
+   restoration loop re-applies saved groups onto the rebuilt `all_images`.
+
+## Video Loading (issue #47, ADR-037)
+
+1. User adds `clip.mp4` (or `.avi`/`.mov`) via Add Images / Videos / Open Images.
+2. `add_images_to_list` detects the video extension (`is_video`) and calls
+   `ImageController.load_video(path)`:
+   - `VideoHandler(path)` opens the capture and reads metadata once
+     (`total_frames`, `fps`, `width`, `height`, `duration_s`).
+   - A `VideoSliceProvider` (names `clip_F00000 … clip_F<N-1>`) is wrapped in a
+     `LazySliceList` and stored as both `image_slices["clip"]` and `mw.slices`;
+     the handler is stored in `mw.video_handlers["clip"]`.
+   - The slice list is populated with frame names; frame 0 is activated.
+   - `image_info` gets `is_multi_slice=True`, `is_video=True`,
+     `video_metadata=handler.metadata()`.
+3. Navigation (Up/Down, slice-list click) routes through `switch_slice`, which
+   `.get(frame_key)`s the frame QImage on demand (decoded via `VideoHandler`,
+   cached in the shared `SliceLRU`) and `prefetch_around`s the neighbours — no
+   frame is decoded until visited.
+4. Annotating a frame keys under its frame name in `all_annotations`, exactly
+   like a stack slice — per-frame independence, save/load and export come for free.
+5. Save writes `is_video`/`video_metadata` + per-frame annotations (no pixels);
+   load branches to `load_video`. A missing video flows through the existing
+   missing-images prompt.
+6. **Timeline (issue #48):** for a video, `ImageController.update_video_timeline`
+   shows `window.video_timeline` (a scrub slider + `F i/N • MM:SS / MM:SS`
+   label + a marker strip ticking every annotated frame). Scrubbing emits
+   `frameSelected(idx)` → `on_timeline_frame_selected` → `switch_slice`
+   (never a direct `current_image` write); `set_current_frame` re-syncs the
+   slider WITHOUT re-emitting. Marks refresh from `annotated_frame_indices`
+   at the `update_slice_list_colors` choke point, so they update live on
+   annotate/delete/undo/accept. `Home`/`End` jump to the first/last frame.
+   "Tools → Export Annotated Video Frames…" writes one `{frame_key}.png`
+   per annotated frame, decoding one frame at a time via `VideoHandler`.
+
+## Track an Object Across a Video (issue #51, ADR-040)
+
+1. On a video frame, the user selects exactly one mask (segmentation) and
+   triggers "Tools → Track Selected Object…". `TrackingController.can_track`
+   gates it (active video + SAM 3 loaded + one segmentation selected; pose
+   instances excluded).
+2. A confirm dialog offers a confidence threshold (default 0.5). A **modal**
+   `QProgressDialog` blocks frame navigation during the track and feeds
+   `should_cancel`.
+3. `SAM3Utils.track(handler.path, seed_idx, seed_bbox, should_cancel)` runs the
+   whole propagation in ONE `_run_sync` (the worker reads the video by path via
+   `SAM3VideoPredictor`, never Qt objects) and returns `[(frame_idx, result)]`.
+4. Each result routes: `score >= threshold` → `_commit_tracked_result`
+   (`record_history(frame_name)` first, `source:"sam3-track"`, shared `track_run`
+   id) written to the frame's annotations; `0 < score < threshold` → a temp
+   entry in `dino_batch_results` (`source:"sam3"`); `None` → nothing. The seed
+   frame is skipped. One `auto_save()` at the end.
+5. If any uncertain frames, the user is offered the existing batch review
+   (`_show_dino_batch_review`) — Enter/Escape accept/reject, verbatim.
+6. Undo: per-frame Ctrl+Z undoes one frame; "Undo Last Track" removes the whole
+   run by `track_run` id. The timeline paints tracked / needs-review / annotated
+   segments (`set_frame_states`).
+
 ## Multi-dimensional Image Loading
 
 ```
@@ -541,19 +657,19 @@ User adds TIFF stack
     │   │   │
     │   │   └─> dimension_string = "TZCHW"
     │   │
-    │   ├─> Extract slices:
+    │   ├─> Build slice index (LAZY — ADR-036/#45):
+    │   │   │
+    │   │   ├─> SliceProvider retains the source ndarray
     │   │   │
     │   │   ├─> For each T, Z, C combination:
-    │   │   │   │
-    │   │   │   ├─> Extract 2D slice
-    │   │   │   │
-    │   │   │   ├─> Convert to QImage
-    │   │   │   │
-    │   │   │   ├─> Name: "file_T0_Z5_C0"
-    │   │   │   │
-    │   │   │   └─> Store in image_slices[filename]
+    │   │   │   └─> Precompute name "file_T1_Z6_C1" + full-index
+    │   │   │       (NO pixel work, NO QImage yet)
     │   │   │
-    │   │   └─> Display first slice
+    │   │   ├─> Store LazySliceList in image_slices[filename]
+    │   │   │   (mw.slices is the SAME object)
+    │   │   │
+    │   │   └─> Display first slice (its QImage decoded on demand,
+    │   │       cached in the shared bounded LRU; prefetch ±1 on nav)
     │   │
     │   └─> Store dimension metadata
     │       (image_dimensions, image_shapes)
@@ -584,9 +700,21 @@ User clicks "Export" > "YOLO v8/v11"
     ├─> Select output directory
     │
     ├─> Prompt for validation split % (QInputDialog, default 20, 0 = all train)
-    │       assign_train_val() deterministically partitions the annotated
-    │       images via a stable filename hash; the val count is exact so a
-    │       requested split is never silently empty (issue #83)
+    │       plan_split() partitions by GROUP, not by name (issue #81,
+    │       ADR-044): a stack's slices and a video's frames are one group and
+    │       never straddle the split, so validation is not measured on frames
+    │       all but identical to trained ones. Ordering is a stable MD5 of the
+    │       group key, so the split is reproducible across runs and machines.
+    │       A group is indivisible, so the requested count is a TARGET: the
+    │       guarantee is only that no single group added, dropped or swapped
+    │       would land closer. Neither side is ever empty.
+    │
+    ├─> Warn if the grouping degenerates
+    │       Everything in one group (a project that is one video) -> falls back
+    │       to the per-name split and says the metrics will be optimistic; an
+    │       empty val set would be truthful but silently disables validation
+    │       and early stopping (ADR-028). Also warns when the split leaves
+    │       training with a single recording.
     │
     ├─> export_yolo_v5plus(all_annotations, class_mapping, ..., val_split)
     │   │
@@ -646,7 +774,10 @@ User: SAM Fine-Tune (beta) > Train on Current Project…
     │       trainer loads its OWN SAM instance; locking avoids a 2nd model on the same CUDA context
     │
     └─> SAMTrainingThread → SAMFineTuner.train(...)
-            │  split_groups(train_pct, seed) → train/val (deterministic; empty val at 100%)
+            │  split_groups(groups, train_pct) → train/val, keyed by SOURCE not image
+            │    (ADR-044: a recording's frames never straddle the split, or the
+            │     val loss driving early stopping is measured on near-copies of
+            │     trained frames); deterministic; empty val at 100%
             │  build predictor (one warmup predict), pin device, apply freeze policy
             │  LambdaLR(warmup_cosine_lambda(total_steps)) when the schedule is on
             │  for each epoch:
@@ -718,3 +849,120 @@ auto-increments on collision), **not** the default `./runs` — parallel to SAM'
 (`run_ui_url`, `start_mlflow_ui_server`); the only difference is YOLO reads the
 run id from Ultralytics' *native* MLflow callback rather than the in-process
 `MLflowTracker`.
+
+## Training, End to End (issues #73 / #74, ADR-042)
+
+The path from "I have annotations" to "I can see the model working" used to be six menu
+navigations and about ten dialogs, with a step in the middle where you reloaded the model you had
+just produced.
+
+```
+Model → Train Model…
+  │
+  ├─ TrainDialog reads the project
+  │    • task inferred from the annotations (core/task_inference)
+  │    • live data summary, incl. how many images have no labels
+  │    • stacks and videos count as their SLICES, not as one entry
+  │      (task_inference.trainable_image_names) — annotated video frames
+  │      train like any other image, via image_slices (#45/#47)
+  │    • pre-flight blockers disable Train with the specific reason:
+  │        - mixed-K pose / pose + non-pose (YOLO-pose has ONE global kpt_shape)
+  │        - an ANNOTATED stack/video whose slices were never materialised
+  │          (no pixels to export, so its labels would be silently dropped)
+  │
+  └─ Train pressed → TrainingController
+       1. load the base model          ← BEFORE prepare, so train_model's
+       2. prepare the dataset             .task-vs-YAML pre-flight still runs
+       3. build_yolo_train_opts (ADR-028)
+       4. start_training → worker thread, progress + stop dialog, MLflow armed
+            │
+            └─ training_finished
+                 │ error?  → message box, nothing registered
+                 └─ ModelRegistryController.finish_run
+                      a. register as the active prediction model
+                      b. copy weights to <project>/models/<name>_<ts>.pt
+                         + JSON sidecar (classes, task, kpt_shape, config, metrics)
+                      c. TrainingResultsDialog — metrics, paths, MLflow link
+                      d. "Try it on the current image" → predict_single_image
+                         → temp_annotations → the existing review overlay
+```
+
+Guards worth knowing: a failed or stopped run registers and writes nothing; nothing is written
+while `is_loading_project` is set (ADR-005); a filename collision does not overwrite, because two
+runs can finish inside the same second.
+
+## Reviewing a Model Against the Labels (issue #71)
+
+The active-learning loop the prediction path was already 60 % wired for:
+
+```
+Images panel → "Review with model"
+  │
+  └─ for each plain 2D image (stacks and videos are reported as skipped)
+       predict → extract predictions  ← NOT via process_yolo_results, which
+       │                                 writes into the review overlay as a
+       │                                 side effect; a scoring run must not
+       │                                 touch the canvas
+       ├─ has annotations?  → disagreement score
+       └─ has none?         → uncertainty score
+  │
+  ├─ score painted on each image row (ImageScoreDelegate — never in the text)
+  ├─ "Sort by score" reorders; unscored images sink rather than hide
+  └─ selecting one and predicting shows its predictions as temp annotations,
+     so the disagreement is visible against the existing labels
+```
+
+Nothing is ever mutated, and the wording says "worth a look", never "wrong".
+
+## Auditing a Project (issue #70)
+
+```
+Tools → Check Annotations…
+  │
+  └─ QCController gathers annotations + image sizes + class names
+       └─ core/annotation_qc.run_audit   ← Qt-free; sreeni-cli validate
+            geometry / pose / redundancy /   runs these exact rules
+            statistics / hygiene rules
+  │
+  └─ AnnotationQCDialog: grouped by rule, with counts
+       • "Go to" → reuses the DINO batch-review navigator, which already
+         handles the mixed image-name / slice-name namespace
+       • "Fix all repairable" → one record_history PER IMAGE, taken before
+         that image's first mutation. AnnotationHistory is keyed by image
+         (ADR-026), so a keyless snapshot would have covered only the image
+         on screen and made every other repair permanent. The cost is one
+         Ctrl+Z per affected image, and the dialog says so.
+```
+
+Only unambiguous repairs are offered. An area outlier might be a genuinely large object.
+
+## Segment Everything (issue #69)
+
+A third producer into the **existing** review overlay — not a second review mechanic (ADR-015):
+
+```
+Segment Everything → SAMUtils.apply_sam_everything (no prompt, via _run_sync)
+  │                                              └─ inherits the in-flight guard
+  └─ core/mask_filters: area bounds, overlap-with-existing IoU, count cap
+     (applied AFTER sorting by score, so the cap keeps the best candidates)
+  │
+  └─ temp_annotations under "Temp-Auto", source="sam-everything"
+       • click assigns the active class (digits 1-9 switch class — #65)
+       • assigned candidates draw solid in the class colour, unassigned dashed
+       • Enter commits only the assigned ones; unassigned are discarded rather
+         than guessed at, so no orphan Temp-* class survives
+       • Escape discards everything
+```
+
+## Headless Operation (issue #76, ADR-041)
+
+```
+sreeni-cli validate --project data.iap --fail-on error
+  │
+  ├─ core/project_io.load_project      ← read-only; no write path exists
+  ├─ core/annotation_qc.run_audit      ← the same rules the dialog runs
+  ├─ summary JSON → stdout, per-finding lines → stderr
+  └─ exit 2 if findings reach the threshold, else 0
+```
+
+No Qt, no torch, no display. See [Deployment View](07_deployment_view.md).

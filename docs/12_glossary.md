@@ -20,6 +20,83 @@ Carl Zeiss Image file format for multi-dimensional microscopy images. Contains m
 ### DINO / Grounding DINO
 "DINO" in this codebase refers specifically to **Grounding DINO** (IDEA-Research, 2023) — an open-set object detector that takes a natural-language phrase ("drone", "wing of an aircraft") and returns bounding boxes for matching regions of an image. Not to be confused with the self-supervised vision-only DINOv1/v2 backbones (similar name, different model). Models live under `models/grounding-dino-base/` and `models/grounding-dino-tiny/`.
 
+### Disagreement Score
+How much a trained model and the human labels differ on one image (issue #71):
+`unmatched_ground_truth + unmatched_predictions + sum(1 - IoU)` over matched pairs. Perfect
+agreement scores 0; every term is in the same unit ("one object's worth of disagreement"), so a
+missing label, a spurious detection and a badly-fitting pair contribute comparably. **A high
+score is a hint, not a verdict** — it means the annotation is worth a look, never that it is
+wrong. Computed in the Qt-free `core/disagreement.py`. Pose instances are excluded (mask IoU is
+meaningless for keypoints; OKS is the right metric) and the exclusion is reported.
+
+### Uncertainty Score
+The counterpart for an image with **no** annotations (issue #71): how unsure the model is, so
+labelling it teaches the most. Each detection contributes `1 - 2*|conf - 0.5|`, summed rather
+than averaged — ten borderline detections teach more than one. An image with no detections
+scores 0: the model seeing nothing is not the model being unsure.
+
+### Finding / Rule / Severity (QC)
+The vocabulary of the annotation audit (issue #70). A **rule** is one check (self-intersecting
+polygon, near-duplicate, class-name typo, orphaned `Temp-*` class …). A **finding** is one
+instance of a rule firing, as plain data: rule, severity, image, class, annotation number,
+message, and whether it is `fixable`. **Severity** is `error` (will export or train wrong),
+`warning` (probably a mistake) or `info` (an observation, not a defect). Only unambiguous
+repairs are offered — an area outlier might be a genuinely large object.
+
+### Near-Duplicate Cluster
+A group of images whose embeddings are mutually reachable above a cosine-similarity threshold
+(issue #72). Found by connected components rather than k-means, because the cluster count is not
+known in advance and k-means would partition *every* image whether or not any are similar. The
+**representative** is the medoid — the member most similar to the rest, i.e. the frame that best
+stands in for the group. Clustering is transitive, which is correct for a burst of frames
+drifting slowly.
+
+### Group-Aware Split
+
+The train/val partition keys on a **group** — one recording, one stack, one near-duplicate
+cluster — rather than on the image name, and a whole group lands on one side. Introduced by
+ADR-044 because slice and frame names are individually addressable but are not independent
+observations. The requested percentage becomes a target: a group is indivisible.
+
+### Near-Duplicate Leakage
+
+Near-identical images landing on **both** sides of the train/val split, so validation measures
+memorisation instead of generalisation. Silent by construction — the metrics get *better* as the
+data gets more redundant, which is why it survived undetected until #81. What the group-aware
+split prevents.
+
+### Model Sidecar
+A JSON file written next to a trained `.pt` (issue #74) holding what the checkpoint cannot say
+about itself: class names, task, `kpt_shape`/`flip_idx`, the training configuration and the final
+metrics. **Additive, never required** — a `.pt` without one still loads through the bare
+`kpt_shape` reconstruction, so externally trained models keep working, and a corrupt sidecar
+reads as no sidecar.
+
+### Onion Skin
+The neighbouring slice or frame ghosted over the current one at low opacity (issue #67). Two
+ghosts are available and the **annotation** ghost is the default: the neighbour's committed
+shapes, dashed and unfilled in their class colour, answering "what did I label there, and does
+this slice line up with it?". The **raster** ghost (the animator's onion skin) is opt-in, because
+blending two adjacent photographic slices — which differ everywhere, unlike two animation cels —
+mostly just makes the current one look out of focus. Purely decorative either way: it participates
+in no hit-testing, no SAM input and no export. Drawn *after* the image and *before* the
+annotations — an image slice is opaque, so a ghost painted beneath it would be invisible.
+
+### Pascal VOC
+An XML annotation format (one file per image) from the PASCAL Visual Object Classes challenge.
+Coordinates are corners — `xmin, ymin, xmax, ymax` — not `[x, y, width, height]`, so the importer
+converts (issue #75). `export_pascal_voc_both` additionally writes each outline **inline** as
+`<segmentation><polygon><ptN>`, and the importer reads it back, which is what makes the
+round-trip preserve masks rather than degrading them to boxes.
+
+Mask-PNG (`SegmentationClass`) reconstruction is deliberately **not** supported: in a foreign
+dataset the palette index is that producer's class id, with no defined relationship to a class
+name in this project, so any colour-to-class mapping would misattribute regions while appearing
+to work.
+
+A bndbox is always written, derived from the outline when the annotation has no `bbox` key —
+which is the normal case, since shapes drawn in this app carry segmentation only.
+
 ### Fine-Tuning (SAM)
 Continuing training of a pre-trained SAM 2 / 2.1 model on the user's own annotations so the assisted tools work better on their imagery. Because Ultralytics ships no SAM trainer, the app uses a custom loop over the Ultralytics `SAM2Model` (see [ADR-021](09_architecture_decisions.md#adr-021-sam-fine-tuning-via-a-custom-loop-over-the-ultralytics-sam2-module)). **Decoder-only** (default) trains just the mask decoder, freezing the image and prompt encoders — fast, low-VRAM, robust on modest data; optionally the image encoder is also unfrozen for heavily domain-shifted data.
 
@@ -33,6 +110,27 @@ The mask-supervision loss used during SAM fine-tuning: a focal term (down-weight
 
 ### Mask Decoder
 The lightweight SAM head that turns image embeddings + prompt embeddings into mask logits. The default fine-tuning target (`sam_mask_decoder`, ~4.2M params for the tiny model) since it is small and adapts quickly.
+
+### Frame Key
+The slice name of a single video frame (issue #47): `f"{base_name}_F{idx:05d}"` with a
+0-based, zero-padded frame index (e.g. `clip_F00042`). Produced by
+`core/video_handler.py::frame_key` and parsed by `parse_frame_index` (`_F(\d+)$`
+anchored at the end so an ordinary multi-dim slice key like `stack_T1_Z5` is not
+mistaken for a frame). It is the annotation key + export filename for that frame.
+
+### Track Run
+One SAM 3 video-tracking pass (issue #51, [ADR-040](09_architecture_decisions.md)): the user
+seeds an object's mask on one frame and `TrackingController` propagates it across the video.
+Every annotation the run commits carries a shared `track_run` uuid and `source: "sam3-track"`,
+so "Undo Last Track" can remove the whole run in one action (per-frame Ctrl+Z still undoes a
+single frame). "Undo Last Track" is session-scoped — it targets the most recent run of the
+current session; after a project reload the `track_run` ids persist but the bulk affordance
+resets (per-frame undo still works).
+
+### Seed Frame
+The video frame whose selected mask seeds a [Track Run](#track-run). Tracking propagates the
+seed's object to the other frames; the seed frame itself is skipped on commit (its source
+annotation already lives there).
 
 ### Keypoint / Pose Instance
 A single labelled instance of a **pose class** (issue #35, [ADR-029](09_architecture_decisions.md#adr-029-keypoint--pose-annotation--per-class-schema-coco-instance-model-3-state-visibility)):
@@ -96,9 +194,6 @@ Post-processing step that removes redundant overlapping boxes. After Grounding D
 ### Paint Brush Tool
 Drawing tool that creates freeform annotations by painting a mask with adjustable brush size. Converted to polygon contours when finished.
 
-### Pascal VOC
-Visual Object Classes dataset format. XML-based annotation format primarily for bounding boxes.
-
 ### Phrase (DINO)
 A free-form text description used by Grounding DINO to find objects. Each annotation class has a list of phrases — for example a "drone" class might use phrases `["drone", "quadcopter", "octocopter", "helicopter"]`. The class name itself is always the first phrase and cannot be removed.
 
@@ -159,6 +254,13 @@ A 2D image extracted from a multi-dimensional image stack. Named with format `{f
 
 ### Stack
 A multi-dimensional image, typically a TIFF or CZI file with multiple 2D slices in Z-dimension (depth).
+
+### Video (Frames as Slices)
+A video file (`.mp4`/`.avi`/`.mov`) opened as a stack whose slices are its frames
+(issue #47, [ADR-037](09_architecture_decisions.md)). Frames decode lazily on demand via
+`core/video_handler.py::VideoHandler` (OpenCV) and are held in the same shared bounded
+`SliceLRU` as multi-dim slices, so a long clip never materialises all its frames. Each
+frame is keyed by its [Frame Key](#frame-key).
 
 ### Subprocess Worker (historical)
 A standalone Python script (`sam_worker.py`, `dino_worker.py`) that ran ML model inference in its own process to dodge a PyQt5 + Torch DLL load-order conflict on Windows + Python 3.14. Removed once the codebase migrated to PyQt6 (the conflict no longer manifests). See [ADR-011](09_architecture_decisions.md#adr-011-run-torch-based-workers-in-isolated-subprocesses) (Superseded) and [ADR-013](09_architecture_decisions.md#adr-013-in-process-inference-with-qthread-wrapping).

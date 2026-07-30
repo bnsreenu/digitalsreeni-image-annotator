@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QPushButton, 
                              QFileDialog, QLabel, QMessageBox, QComboBox, QGridLayout, QWidget,
                              QProgressDialog, QApplication)
 from PyQt6.QtCore import Qt

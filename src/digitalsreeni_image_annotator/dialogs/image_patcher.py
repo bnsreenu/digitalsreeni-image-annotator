@@ -1,12 +1,11 @@
 import os
 import numpy as np
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, 
-                             QSpinBox, QProgressBar, QMessageBox, QListWidget, QDialogButtonBox,
+                             QSpinBox, QProgressBar, QMessageBox, QDialogButtonBox,
                              QGridLayout, QComboBox, QApplication, QScrollArea, QWidget)
 
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtCore import QTimer, QEventLoop
 from tifffile import TiffFile, imwrite
 from PIL import Image
 
@@ -90,7 +89,7 @@ class PatchingThread(QThread):
                     if dimensions:
                         if 'H' in dimensions and 'W' in dimensions:
                             h_index = dimensions.index('H')
-                            w_index = dimensions.index('W')
+                            _w_index = dimensions.index('W')
                             for idx in np.ndindex(images.shape[:h_index] + images.shape[h_index+2:]):
                                 slice_idx = idx[:h_index] + (slice(None), slice(None)) + idx[h_index:]
                                 image = images[slice_idx]

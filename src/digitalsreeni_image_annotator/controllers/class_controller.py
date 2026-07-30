@@ -515,6 +515,21 @@ class ClassController(QObject):
             self.mw.dino_class_table.rename_class(old_name, new_name)
             self.mw.dino_phrase_panel.on_class_renamed(old_name, new_name)
 
+            # Pending review results capture the class name at DETECTION time,
+            # so they are name-keyed too. A rename mid-review otherwise leaves
+            # proposals tagged with a name the project no longer has: they draw
+            # in the fallback colour and are discarded on accept.
+            self.mw.dino_controller.rename_class_in_pending(old_name, new_name)
+
+            # Undo snapshots are per-image {class_name: [...]} dicts, as
+            # name-keyed as anything above. Skipping them made Ctrl+Z after a
+            # rename restore the annotations under the OLD name -- unmapped,
+            # uncoloured, absent from the class list, so invisible on canvas
+            # and still written into the .iap.
+            self.mw.annotation_controller.rename_class_in_history(
+                old_name, new_name
+            )
+
             for image_name, image_annotations in self.mw.all_annotations.items():
                 if old_name in image_annotations:
                     image_annotations[new_name] = image_annotations.pop(old_name)
@@ -543,6 +558,10 @@ class ClassController(QObject):
             finally:
                 self.mw.class_list.blockSignals(False)
 
+            # The onion ghosts hold (class_name, annotations) pairs resolved at
+            # navigation time, so without this they keep drawing the old name --
+            # in the white fallback colour -- until the next slice change.
+            self.mw.image_controller.refresh_onion_skin()
             self.mw.image_label.update()
             self.mw.auto_save()
 
@@ -591,6 +610,12 @@ class ClassController(QObject):
 
             self.mw.dino_class_table.remove_class(class_name)
             self.mw.dino_phrase_panel.on_class_removed(class_name)
+            # Pending review results and undo snapshots are name-keyed as well.
+            # A proposal for a deleted class can only ever be discarded on
+            # accept, and an undo that resurrects the class brings it back
+            # unmapped, uncoloured and absent from the class list.
+            self.mw.dino_controller.drop_class_from_pending(class_name)
+            self.mw.annotation_controller.drop_class_from_history(class_name)
 
             self.mw.update_annotation_list()
 
@@ -606,6 +631,7 @@ class ClassController(QObject):
                 else:
                     self.mw.disable_annotation_tools()
 
+            self.mw.image_controller.refresh_onion_skin()
             self.mw.image_label.update()
 
             QMessageBox.information(

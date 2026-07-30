@@ -1,9 +1,16 @@
 import json
-from PyQt6.QtGui import QImage
+# Deliberately no Qt import here (issue #76). This module only ever needed
+# QImage to read a file's dimensions, and that single need was enough to make a
+# headless export require a display. `core.image_size` reads the header via
+# Pillow instead. Slice QImages still arrive as arguments and are used as
+# objects, which needs no import.
+from ..core.dataset_split import assign_train_val, derive_groups
+from ..core.image_size import image_dimensions
 from ..core.keypoint_schema import schema_k
+from ..core.slice_index import resolve_slice_image as _resolve_slice_image
+from ..core.slice_index import slice_index as _slice_index
 from ..utils import calculate_area, calculate_bbox
 import yaml
-import hashlib
 import os
 import shutil
 import tempfile
@@ -62,7 +69,7 @@ def export_coco_json(all_annotations, class_mapping, image_paths, slices, image_
     annotation_id = 1
     image_id = 1
     # Create a mapping of slice names to their QImage objects
-    slice_map = {slice_name: qimage for slice_name, qimage in slices}
+    slice_index = _slice_index(slices, image_slices)
     
     # Handle all images and slices
     for image_name, annotations in all_annotations.items():
@@ -70,27 +77,15 @@ def export_coco_json(all_annotations, class_mapping, image_paths, slices, image_
         if not annotations:
             continue
 
-        # Check if it's a slice (either in slice_map or has underscores and no file extension)
-        is_slice = image_name in slice_map or ('_' in image_name and '.' not in image_name)
+        # A stack slice or a video frame (known name, or the name shape a
+        # slice key has: underscores and no file extension).
+        is_slice = image_name in slice_index or ('_' in image_name and '.' not in image_name)
         
         if is_slice:
-            qimage = slice_map.get(image_name)
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
-                # If the slice is not in slice_map, it might be a CZI slice or a TIFF slice
-                # Find the corresponding QImage in slices or image_slices
-                matching_slices = [s for s in slices if s[0] == image_name]
-                if matching_slices:
-                    qimage = matching_slices[0][1]
-                else:
-                    # Check in image_slices
-                    for stack_slices in image_slices.values():
-                        matching_slices = [s for s in stack_slices if s[0] == image_name]
-                        if matching_slices:
-                            qimage = matching_slices[0][1]
-                            break
-                if qimage is None:
-                    logger.warning(f"No image data found for slice {image_name}, skipping")
-                    continue
+                logger.warning(f"No image data found for slice {image_name}, skipping")
+                continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
             save_path = os.path.join(images_dir, file_name_img)
@@ -117,8 +112,8 @@ def export_coco_json(all_annotations, class_mapping, image_paths, slices, image_
 
         image_info = {
             "file_name": file_name_img,
-            "height": qimage.height() if is_slice else QImage(image_path).height(),
-            "width": qimage.width() if is_slice else QImage(image_path).width(),
+            "height": qimage.height() if is_slice else image_dimensions(image_path)[1],
+            "width": qimage.width() if is_slice else image_dimensions(image_path)[0],
             "id": image_id
         }
         coco_format["images"].append(image_info)
@@ -179,27 +174,74 @@ def create_coco_annotation(ann, image_id, annotation_id, class_name, class_mappi
 
 
 
-def assign_train_val(image_names, val_pct):
-    """Deterministically partition image names into (train_set, val_set).
+# `assign_train_val` moved to core.dataset_split (issue #81, ADR-044) and is
+# imported above. It stays re-exported from here: `training.sam_dataset` and the
+# split tests import it from this module, and the split remains an export
+# concern even though the grouping logic is not.
 
-    val_pct in [0, 100]; 0 -> everything in train (the original behaviour).
-    Ordering uses a stable filename hash so the split is reproducible across
-    runs and machines (unlike the built-in hash() which is salted per process).
-    The val count is the nearest integer to the requested fraction, clamped so
-    the val set is never accidentally empty: whenever val_pct > 0 and there are
-    >= 2 annotated images, at least one image lands in val and at least one
-    stays in train.
+
+def _is_exportable(image_name, slice_index, image_paths):
+    """Whether the export loop below will actually write ``image_name``.
+
+    Used to filter the split input, and it has to be: a name the loop skips
+    must not consume a slot in the train/val budget. Otherwise the requested
+    percentage describes a larger set than what lands on disk — and once whole
+    groups move together (ADR-044), a video's worth of unwritable frames can
+    take the entire train side with it. That is not hypothetical: headlessly,
+    where no slice collection is loaded, it produced an empty `images/train`
+    with `data.yaml` still pointing at it.
+
+    Mirrors the loop's resolution order, with one deliberate gap: planning a
+    split must not decode pixels, so a slice that is *indexed* but whose
+    QImage turns out to be unavailable (a released video handler, an
+    undecodable frame) passes here and is skipped by the loop. It therefore
+    over-estimates slightly and never under-estimates, which is the harmless
+    direction — a name wrongly kept costs a split slot, a name wrongly dropped
+    would lose an image from the dataset.
+
+    This is a second implementation of the loop's dispatch, and what keeps the
+    two honest is
+    ``test_the_split_preview_lists_exactly_what_the_export_writes``: it runs a
+    mixed name set through both and asserts the written files equal the
+    returned names. Calling this from inside the loop as well was tried and
+    reverted — the loop's own branches already skip everything it rejects, so
+    the extra call changed nothing any test could detect.
     """
-    names = list(image_names)
-    if val_pct <= 0 or len(names) < 2:
-        return set(names), set()
-    ordered = sorted(names, key=lambda n: hashlib.md5(n.encode("utf-8")).hexdigest())
-    n = len(ordered)
-    # round() is half-to-even, which is fine here; the clamp keeps both sides
-    # non-empty regardless of how the nearest-integer falls.
-    val_count = max(1, min(n - 1, round(n * val_pct / 100)))
-    val = set(ordered[:val_count])
-    return set(names) - val, val
+    if image_name in slice_index:
+        return True
+    if '_' in image_name and '.' not in image_name:
+        # Looks like a slice, but no loaded collection holds it, so there are
+        # no pixels to write (the CLI passes empty collections by design).
+        return False
+    image_path = image_paths.get(image_name)
+    if image_path is None:
+        image_path = next(
+            (path for name, path in image_paths.items() if image_name in name), None
+        )
+    if not image_path:
+        return False
+    # TIFF/CZI sources are skipped in favour of their extracted slices.
+    return not image_path.lower().endswith(('.tif', '.tiff', '.czi'))
+
+
+def exportable_annotated_names(all_annotations, image_paths, slices, image_slices):
+    """The annotated names a YOLO export will actually write.
+
+    Exactly the set the split partitions. The UI's split preview calls this so
+    the warning it shows is about the split that runs — computing the two
+    separately is how they drift, and they did: a preview that counted an
+    unopened video's frames saw two groups and stayed quiet while the export
+    saw one and silently fell back to the per-name split.
+
+    Parameter order matches ``export_yolo_v5plus``'s (minus ``class_mapping``)
+    on purpose: a helper whose whole job is to agree with the exporter should
+    not be one transposed positional argument away from disagreeing with it.
+    """
+    index = _slice_index(slices, image_slices)
+    return [
+        name for name, annotations in (all_annotations or {}).items()
+        if annotations and _is_exportable(name, index, image_paths)
+    ]
 
 
 def export_yolo_v4(all_annotations, class_mapping, image_paths, slices, image_slices, output_dir, val_split=0):
@@ -214,11 +256,19 @@ def export_yolo_v4(all_annotations, class_mapping, image_paths, slices, image_sl
     class_to_index = {name: i for i, name in enumerate(class_mapping.keys())}
 
     # Create a mapping of slice names to their QImage objects
-    slice_map = {slice_name: qimage for slice_name, qimage in slices}
+    slice_index = _slice_index(slices, image_slices)
 
-    # Deterministically split the annotated images into train/val.
-    annotated = [name for name, ann in all_annotations.items() if ann]
-    _, val_names = assign_train_val(annotated, val_split)
+    # Split by GROUP, not by name (ADR-044): a stack's slices and a video's
+    # frames are near-identical observations, and letting them straddle the
+    # split silently inflates every validation metric. Deriving the grouping
+    # here rather than taking it from the caller means every path -- including
+    # the headless CLI -- is protected without opting in.
+    annotated = [
+        name for name, ann in all_annotations.items()
+        if ann and _is_exportable(name, slice_index, image_paths)
+    ]
+    name_groups = derive_groups(annotated, image_slices)
+    _, val_names = assign_train_val(annotated, val_split, name_groups)
 
     for image_name, annotations in all_annotations.items():
         # Skip if there are no annotations for this image/slice
@@ -231,14 +281,9 @@ def export_yolo_v4(all_annotations, class_mapping, image_paths, slices, image_sl
         labels_dir = os.path.join(split_dir, 'labels')
 
         # Handle image saving (similar to before, but adjusted for new directory structure)
-        if image_name in slice_map or ('_' in image_name and '.' not in image_name):
+        if image_name in slice_index or ('_' in image_name and '.' not in image_name):
             # Handle slice images
-            qimage = slice_map.get(image_name) or next((s[1] for s in slices if s[0] == image_name), None)
-            if qimage is None:
-                for stack_slices in image_slices.values():
-                    qimage = next((s[1] for s in stack_slices if s[0] == image_name), None)
-                    if qimage:
-                        break
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
                 logger.warning(f"No image data found for slice {image_name}, skipping")
                 continue
@@ -264,8 +309,7 @@ def export_yolo_v4(all_annotations, class_mapping, image_paths, slices, image_sl
             dst_path = os.path.join(images_dir, file_name_img)
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
-            img = QImage(image_path)
-            img_width, img_height = img.width(), img.height()
+            img_width, img_height = image_dimensions(image_path)
 
         # Write YOLO format annotation
         label_file = os.path.splitext(file_name_img)[0] + '.txt'
@@ -401,12 +445,17 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
     # Create a mapping of class names to YOLO indices
     class_to_index = {name: i for i, name in enumerate(class_mapping.keys())}
 
-    # Create a mapping of slice names to their QImage objects
-    slice_map = {slice_name: qimage for slice_name, qimage in slices}
+    # Name -> collection, no decoding. Video frames and stack slices both live
+    # here, which is what lets a video's annotated frames train (#45/#47).
+    slice_index = _slice_index(slices, image_slices)
 
-    # Deterministically split the annotated images into train/val.
-    annotated = [name for name, ann in all_annotations.items() if ann]
-    _, val_names = assign_train_val(annotated, val_split)
+    # Split by GROUP, not by name (ADR-044) -- see export_yolo_v4 above.
+    annotated = [
+        name for name, ann in all_annotations.items()
+        if ann and _is_exportable(name, slice_index, image_paths)
+    ]
+    name_groups = derive_groups(annotated, image_slices)
+    _, val_names = assign_train_val(annotated, val_split, name_groups)
 
     logger.debug(f"export: {len(all_annotations)} image entries, "
           f"{len(image_paths)} known image paths, "
@@ -429,14 +478,9 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
             images_dir, labels_dir = images_train_dir, labels_train_dir
 
         # Handle image saving (similar logic to the v4 version)
-        if image_name in slice_map or ('_' in image_name and '.' not in image_name):
-            # Handle slice images
-            qimage = slice_map.get(image_name)
-            if qimage is None:
-                for stack_slices in image_slices.values():
-                    qimage = next((s[1] for s in stack_slices if s[0] == image_name), None)
-                    if qimage:
-                        break
+        if image_name in slice_index or ('_' in image_name and '.' not in image_name):
+            # Handle slice images (stack slices AND video frames)
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
                 logger.warning(f"skipping: no image data for slice {image_name}")
                 continue
@@ -467,8 +511,7 @@ def export_yolo_v5plus(all_annotations, class_mapping, image_paths, slices, imag
             if not os.path.exists(dst_path):
                 shutil.copy2(image_path, dst_path)
                 logger.debug(f"copied image -> {dst_path}")
-            img = QImage(image_path)
-            img_width, img_height = img.width(), img.height()
+            img_width, img_height = image_dimensions(image_path)
 
         # Write YOLO format annotation
         label_file = os.path.splitext(file_name_img)[0] + '.txt'
@@ -555,7 +598,7 @@ def export_sam_dataset(all_annotations, class_mapping, image_paths, slices, imag
     """
     images_dir = os.path.join(output_dir, 'images')
     os.makedirs(images_dir, exist_ok=True)
-    slice_map = {slice_name: qimage for slice_name, qimage in slices}
+    slice_index = _slice_index(slices, image_slices)
 
     manifest = {"classes": list(class_mapping.keys()), "images": []}
     for image_name, annotations in all_annotations.items():
@@ -563,13 +606,8 @@ def export_sam_dataset(all_annotations, class_mapping, image_paths, slices, imag
             continue
 
         # Resolve + save the image (same branching as export_yolo_v5plus).
-        if image_name in slice_map or ('_' in image_name and '.' not in image_name):
-            qimage = slice_map.get(image_name)
-            if qimage is None:
-                for stack_slices in image_slices.values():
-                    qimage = next((s[1] for s in stack_slices if s[0] == image_name), None)
-                    if qimage is not None:
-                        break
+        if image_name in slice_index or ('_' in image_name and '.' not in image_name):
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
                 continue
             # basename guards against a separator in an image/slice key
@@ -629,33 +667,22 @@ def export_labeled_images(all_annotations, class_mapping, image_paths, slices, i
         os.makedirs(os.path.join(labeled_images_dir, class_name), exist_ok=True)
 
     # Create a mapping of slice names to their QImage objects
-    slice_map = {slice_name: qimage for slice_name, qimage in slices}
+    slice_index = _slice_index(slices, image_slices)
 
     for image_name, annotations in all_annotations.items():
         # Skip if there are no annotations for this image/slice
         if not annotations:
             continue
 
-        # Check if it's a slice (either in slice_map or has underscores and no file extension)
-        is_slice = image_name in slice_map or ('_' in image_name and '.' not in image_name)
+        # A stack slice or a video frame (known name, or the name shape a
+        # slice key has: underscores and no file extension).
+        is_slice = image_name in slice_index or ('_' in image_name and '.' not in image_name)
         
         if is_slice:
-            qimage = slice_map.get(image_name)
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
-                # If the slice is not in slice_map, it might be a CZI slice or a TIFF slice
-                matching_slices = [s for s in slices if s[0] == image_name]
-                if matching_slices:
-                    qimage = matching_slices[0][1]
-                else:
-                    # Check in image_slices
-                    for stack_slices in image_slices.values():
-                        matching_slices = [s for s in stack_slices if s[0] == image_name]
-                        if matching_slices:
-                            qimage = matching_slices[0][1]
-                            break
-                if qimage is None:
-                    logger.warning(f"No image data found for slice {image_name}, skipping")
-                    continue
+                logger.warning(f"No image data found for slice {image_name}, skipping")
+                continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
             save_path = os.path.join(images_dir, file_name_img)
@@ -734,33 +761,22 @@ def export_semantic_labels(all_annotations, class_mapping, image_paths, slices, 
     class_to_pixel = {name: i+1 for i, name in enumerate(sorted(class_mapping.keys()))}
 
     # Create a mapping of slice names to their QImage objects
-    slice_map = {slice_name: qimage for slice_name, qimage in slices}
+    slice_index = _slice_index(slices, image_slices)
 
     for image_name, annotations in all_annotations.items():
         # Skip if there are no annotations for this image/slice
         if not annotations:
             continue
 
-        # Check if it's a slice (either in slice_map or has underscores and no file extension)
-        is_slice = image_name in slice_map or ('_' in image_name and '.' not in image_name)
+        # A stack slice or a video frame (known name, or the name shape a
+        # slice key has: underscores and no file extension).
+        is_slice = image_name in slice_index or ('_' in image_name and '.' not in image_name)
         
         if is_slice:
-            qimage = slice_map.get(image_name)
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
-                # If the slice is not in slice_map, it might be a CZI slice or a TIFF slice
-                matching_slices = [s for s in slices if s[0] == image_name]
-                if matching_slices:
-                    qimage = matching_slices[0][1]
-                else:
-                    # Check in image_slices
-                    for stack_slices in image_slices.values():
-                        matching_slices = [s for s in stack_slices if s[0] == image_name]
-                        if matching_slices:
-                            qimage = matching_slices[0][1]
-                            break
-                if qimage is None:
-                    logger.warning(f"No image data found for slice {image_name}, skipping")
-                    continue
+                logger.warning(f"No image data found for slice {image_name}, skipping")
+                continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
             save_path = os.path.join(images_dir, file_name_img)
@@ -827,33 +843,22 @@ def export_pascal_voc_bbox(all_annotations, class_mapping, image_paths, slices, 
     os.makedirs(annotations_dir, exist_ok=True)
 
     # Create a mapping of slice names to their QImage objects
-    slice_map = {slice_name: qimage for slice_name, qimage in slices}
+    slice_index = _slice_index(slices, image_slices)
 
     for image_name, annotations in all_annotations.items():
         # Skip if there are no annotations for this image/slice
         if not annotations:
             continue
 
-        # Check if it's a slice (either in slice_map or has underscores and no file extension)
-        is_slice = image_name in slice_map or ('_' in image_name and '.' not in image_name)
+        # A stack slice or a video frame (known name, or the name shape a
+        # slice key has: underscores and no file extension).
+        is_slice = image_name in slice_index or ('_' in image_name and '.' not in image_name)
         
         if is_slice:
-            qimage = slice_map.get(image_name)
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
-                # If the slice is not in slice_map, it might be a CZI slice or a TIFF slice
-                matching_slices = [s for s in slices if s[0] == image_name]
-                if matching_slices:
-                    qimage = matching_slices[0][1]
-                else:
-                    # Check in image_slices
-                    for stack_slices in image_slices.values():
-                        matching_slices = [s for s in stack_slices if s[0] == image_name]
-                        if matching_slices:
-                            qimage = matching_slices[0][1]
-                            break
-                if qimage is None:
-                    logger.warning(f"No image data found for slice {image_name}, skipping")
-                    continue
+                logger.warning(f"No image data found for slice {image_name}, skipping")
+                continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
             save_path = os.path.join(images_dir, file_name_img)
@@ -879,8 +884,7 @@ def export_pascal_voc_bbox(all_annotations, class_mapping, image_paths, slices, 
             else:
                 logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
 
-            img = QImage(image_path)
-            img_width, img_height = img.width(), img.height()
+            img_width, img_height = image_dimensions(image_path)
 
         # Create the XML structure
         root = ET.Element('annotation')
@@ -904,8 +908,14 @@ def export_pascal_voc_bbox(all_annotations, class_mapping, image_paths, slices, 
                 ET.SubElement(obj, 'truncated').text = '0'
                 ET.SubElement(obj, 'difficult').text = '0'
 
-                if 'bbox' in ann:
-                    x, y, w, h = ann['bbox']
+                # Always emit a bndbox -- see export_pascal_voc_both for why
+                # gating on the `bbox` key silently produced geometry-less
+                # objects for every shape drawn in the app.
+                box = ann.get('bbox')
+                if box is None and ann.get('segmentation'):
+                    box = calculate_bbox(ann['segmentation'])
+                if box is not None:
+                    x, y, w, h = box
                     bndbox = ET.SubElement(obj, 'bndbox')
                     ET.SubElement(bndbox, 'xmin').text = str(int(x))
                     ET.SubElement(bndbox, 'ymin').text = str(int(y))
@@ -930,33 +940,22 @@ def export_pascal_voc_both(all_annotations, class_mapping, image_paths, slices, 
     os.makedirs(annotations_dir, exist_ok=True)
 
     # Create a mapping of slice names to their QImage objects
-    slice_map = {slice_name: qimage for slice_name, qimage in slices}
+    slice_index = _slice_index(slices, image_slices)
 
     for image_name, annotations in all_annotations.items():
         # Skip if there are no annotations for this image/slice
         if not annotations:
             continue
 
-        # Check if it's a slice (either in slice_map or has underscores and no file extension)
-        is_slice = image_name in slice_map or ('_' in image_name and '.' not in image_name)
+        # A stack slice or a video frame (known name, or the name shape a
+        # slice key has: underscores and no file extension).
+        is_slice = image_name in slice_index or ('_' in image_name and '.' not in image_name)
         
         if is_slice:
-            qimage = slice_map.get(image_name)
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
-                # If the slice is not in slice_map, it might be a CZI slice or a TIFF slice
-                matching_slices = [s for s in slices if s[0] == image_name]
-                if matching_slices:
-                    qimage = matching_slices[0][1]
-                else:
-                    # Check in image_slices
-                    for stack_slices in image_slices.values():
-                        matching_slices = [s for s in stack_slices if s[0] == image_name]
-                        if matching_slices:
-                            qimage = matching_slices[0][1]
-                            break
-                if qimage is None:
-                    logger.warning(f"No image data found for slice {image_name}, skipping")
-                    continue
+                logger.warning(f"No image data found for slice {image_name}, skipping")
+                continue
             file_name_img = f"{image_name}.png"
             # Save the QImage as a file
             save_path = os.path.join(images_dir, file_name_img)
@@ -982,8 +981,7 @@ def export_pascal_voc_both(all_annotations, class_mapping, image_paths, slices, 
             else:
                 logger.debug(f"Image {file_name_img} already exists in the target directory. Skipping copy.")
 
-            img = QImage(image_path)
-            img_width, img_height = img.width(), img.height()
+            img_width, img_height = image_dimensions(image_path)
 
         # Create the XML structure
         root = ET.Element('annotation')
@@ -1007,15 +1005,25 @@ def export_pascal_voc_both(all_annotations, class_mapping, image_paths, slices, 
                 ET.SubElement(obj, 'truncated').text = '0'
                 ET.SubElement(obj, 'difficult').text = '0'
 
-                if 'bbox' in ann:
-                    x, y, w, h = ann['bbox']
+                # Always emit a bndbox. Shapes drawn in this app carry no
+                # `bbox` key (edit_gestures.sync_bbox_key), so gating on its
+                # presence produced <object> elements with no geometry a VOC
+                # consumer can read -- including this app's own importer, which
+                # then silently dropped every exported polygon. Derive it from
+                # the outline when it is missing; VOC without a bndbox is not
+                # VOC.
+                box = ann.get('bbox')
+                if box is None and ann.get('segmentation'):
+                    box = calculate_bbox(ann['segmentation'])
+                if box is not None:
+                    x, y, w, h = box
                     bndbox = ET.SubElement(obj, 'bndbox')
                     ET.SubElement(bndbox, 'xmin').text = str(int(x))
                     ET.SubElement(bndbox, 'ymin').text = str(int(y))
                     ET.SubElement(bndbox, 'xmax').text = str(int(x + w))
                     ET.SubElement(bndbox, 'ymax').text = str(int(y + h))
 
-                if 'segmentation' in ann:
+                if ann.get('segmentation'):
                     segmentation = ET.SubElement(obj, 'segmentation')
                     ET.SubElement(segmentation, 'area').text = str(ann.get('area', 0))
                     

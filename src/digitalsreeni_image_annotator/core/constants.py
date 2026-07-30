@@ -52,6 +52,14 @@ DEFAULT_CLASS_COLORS = [
 ]
 
 
+# Class-selection hotkeys (issue #65): digits 1..9 address the first nine
+# classes. A modifier-based second bank was considered and deliberately left
+# out -- two-key class selection is slower than clicking, so it would add
+# surface without adding speed. Lives here (Qt-free) because both the shortcut
+# registry and the class-list delegate need it.
+CLASS_KEY_LIMIT = 9
+
+
 def default_class_color(index: int) -> str:
     """Hex colour for the index-th class, cycling through DEFAULT_CLASS_COLORS.
 
