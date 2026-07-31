@@ -95,6 +95,14 @@ def build_parser():
         "--conf", type=float, default=0.25, help="confidence threshold"
     )
 
+    # No arguments: it reports on the environment it is running in. Its value is
+    # that it works when the GUI does not -- the CLI never imports Qt (ADR-041), so
+    # this still runs in an environment whose Qt is broken (issue #92).
+    subparsers.add_parser(
+        "doctor",
+        help="report the Qt/PyQt6 environment and diagnose import failures",
+    )
+
     return parser
 
 
@@ -138,6 +146,7 @@ def main(argv=None):
         "convert": commands.run_convert,
         "validate": commands.run_validate,
         "predict": commands.run_predict,
+        "doctor": commands.run_doctor,
     }
     try:
         return handlers[args.command](args)

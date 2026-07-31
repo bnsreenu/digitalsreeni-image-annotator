@@ -36,9 +36,13 @@ would load torch and require a display on a CI runner.
 Everything on the left of that boundary is imported by both, and **must not
 import Qt at module level**. `tests/integration/test_cli.py` enforces this in a
 subprocess for `cli/`, `cli.commands`, `io/export_formats`, `io/import_formats`,
-`core/project_io` and `core/annotation_qc`. The subprocess matters: the test
-session has already imported PyQt6, so an in-process `sys.modules` check would
-pass regardless of what those modules do.
+`core/project_io`, `core/annotation_qc` and `core/qt_diagnostics`. The subprocess
+matters: the test session has already imported PyQt6, so an in-process
+`sys.modules` check would pass regardless of what those modules do.
+
+`core/qt_diagnostics` is the sharpest case for the rule. It exists to explain a Qt
+that will not import, so a `from PyQt6 ...` in it would fail in exactly the
+environment it was written for (ADR-046).
 
 Two Qt dependencies were removed to reach this boundary (issue #76):
 
@@ -57,9 +61,24 @@ sreeni-cli export   --project data.iap --format coco --out ./dataset [--val-spli
 sreeni-cli convert  --in ./coco.json --from coco --to yolov5 --out ./yolo [--images DIR]
 sreeni-cli validate --project data.iap [--json report.json] [--fail-on error|warning|info|never]
 sreeni-cli predict  --model best.pt --images ./raw --out ./preds [--format coco|yolov5] [--conf 0.25]
+sreeni-cli doctor
 ```
 
 `train` is deliberately out of scope.
+
+`doctor` takes no arguments and reports on the environment it runs in: the
+installed PyQt6 / Qt / sip versions, the MSVC runtime picture, and every
+`Qt6Core.dll` **in the order `PyQt6/__init__.py::find_qt()` will consult it** —
+not the order the Windows loader would, because `find_qt` decides first and
+registers exactly one directory. It exits 1 on an `error` or `suspect` finding
+and 0 otherwise (a `warning` is a forecast, not a fault). The DLL rules are
+Windows-only and gated as such; off Windows the command reports the environment
+and makes no claims about it. Rules whose evidence only means something *after*
+Qt has actually failed — the MSVC runtime comparison — do not run here at all;
+they are reachable only from the startup guard, which knows the import failed.
+Their inputs are still printed, so a pasted report carries them either way. Because the CLI never imports Qt, it still runs in
+an environment where the GUI itself cannot start — which is the whole point
+(issue #92, ADR-046).
 
 **Exit codes** — the contract that makes `validate` a CI gate:
 

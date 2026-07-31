@@ -25,7 +25,17 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "PyQt6>=6.7.0",
+    # Upper bound = the highest minor CI actually exercises, plus one. 6.11 is green
+    # across ubuntu/windows/macos x Py3.10-3.14, so the cap only keeps an untested
+    # future minor from arriving silently; Qt 6.12 is upstream's last Windows-10
+    # release, so raising it deserves a real run rather than a bump.
+    #
+    # NOT a fix for issue #92. That report (PyQt6 6.11 failing to import in an
+    # existing Conda env) is DLL shadowing inside that environment, not a defect in
+    # 6.11 -- see ADR-046. Do not "fix" it by tightening this to <6.9: that downgrades
+    # every working install to paper over one contaminated environment. The remedy
+    # lives in `sreeni-cli doctor` and README's Troubleshooting section.
+    "PyQt6>=6.7.0,<6.12",
     "numpy>=2.0.0",           # pip resolves 2.4+ on Py3.14, 2.2.x on Py3.10
     "Pillow>=10.0.0",
     "tifffile>=2023.0.0",
@@ -149,6 +159,7 @@ module = [
     "digitalsreeni_image_annotator.core.model_sidecar",
     "digitalsreeni_image_annotator.core.onion",
     "digitalsreeni_image_annotator.core.project_io",
+    "digitalsreeni_image_annotator.core.qt_diagnostics",
     "digitalsreeni_image_annotator.core.similarity",
     "digitalsreeni_image_annotator.core.task_inference",
 ]

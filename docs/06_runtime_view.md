@@ -4,6 +4,24 @@
 
 ```
 ┌──────────┐
+│ main.py  │  module level, before main() is ever called
+└────┬─────┘
+     │
+     ├─> import torch                       ← ADR-017: must come FIRST, so
+     │     (ImportError → ignored)             torch's DLLs claim their slot
+     │
+     ├─> try: from PyQt6.QtWidgets import QApplication
+     │   except ImportError → core/qt_diagnostics.format_import_failure(exc)
+     │                        → stderr, exit 1          ← ADR-046
+     │     Names the Qt6Core.dll that won the search instead of printing a bare
+     │     "DLL load failed". Only the PyQt6 import is guarded — wrapping
+     │     annotator_window too would report a missing shapely as a Qt failure.
+     │     If the loader kills the process outright nothing in-process can run;
+     │     `sreeni-cli doctor` is the fallback, since the CLI never imports Qt.
+     │
+     └─> from .annotator_window import ImageAnnotator
+
+┌──────────┐
 │  main()  │
 └────┬─────┘
      │

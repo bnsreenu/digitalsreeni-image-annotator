@@ -284,6 +284,7 @@ out-of-process.
 | `core/mask_filters.py` | Polygon IoU and the noise limits for unprompted mask proposals (#69). |
 | `core/onion.py` | Onion-skin neighbour selection, the content choice (annotations / image / both) and the settings clamps (#67). Ends never wrap. |
 | `core/image_size.py` | Image dimensions via a Pillow header read (#76) — what replaced `QImage` in the export layer. |
+| `core/qt_diagnostics.py` | Explains a Qt that will not import (#92, ADR-046): distribution versions from package *metadata*, and every `Qt6Core.dll` **in the order `PyQt6/__init__.py::find_qt()` will consult it** — not the Windows loader's order, since `find_qt` decides first and registers exactly one directory — each version read out of its PE resource without loading the file. `qt_environment()` does the I/O, `diagnose()` is pure, so the rules test on a runner with no Conda and no Windows; the DLL rules are additionally gated to `win32` and **make no claims** elsewhere, since the filename they look for exists only there. The strictest member of this table: it exists *because* importing Qt failed. |
 | `core/dataset_split.py` | Group-aware train/val splitting (#81, ADR-044): `derive_groups` (exact from `image_slices`, name-prefix fallback), `plan_split` (whole groups, locally-optimal size, plus the `fell_back` flag), `split_warning` (the text the GUI shows — here rather than on the controller so it stays Qt-free) and `assign_train_val`, which moved here from `io/export_formats.py` and stays re-exported there. Plus `merge_groups` / `translate_clusters` (#82, ADR-045), which fold near-duplicate clusters into the structural grouping — closing, for anyone who runs curation first, the case the names cannot see: frames extracted as ordinary files. Deliberately imports nothing from `core/slice_cache`, which reaches `QImage`. |
 
 ## Level 3: CLI
@@ -291,7 +292,7 @@ out-of-process.
 | Module | Responsibility |
 |---|---|
 | `cli/main.py` | `argparse` subcommands, exit-code constants, and the CLI-slug ↔ internal-format-label map. |
-| `cli/commands.py` | `export`, `convert`, `validate`, `predict`. Only `predict` imports torch, lazily. |
+| `cli/commands.py` | `export`, `convert`, `validate`, `predict`, `doctor`. Only `predict` imports torch, lazily; `doctor` reports the Qt environment and is the one command that still runs when the GUI cannot start (ADR-046). |
 
 ## Level 3: Export/Import Subsystem
 

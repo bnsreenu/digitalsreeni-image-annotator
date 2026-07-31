@@ -55,6 +55,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   operation never comes to require a display.
 - Type hints across the Qt-free core, with `ruff` and `mypy` as separate CI
   steps, and coverage for the canvas interaction paths.
+- `sreeni-cli doctor` and `core/qt_diagnostics.py`: report the PyQt6 / Qt / sip
+  versions and every `Qt6Core.dll` in the order PyQt6's own `find_qt()` consults
+  them, and name the one that wins over the Qt the wheel ships. The GUI entry
+  point now prints the same diagnosis instead of a bare `DLL load failed`
+  traceback (issue #92, ADR-046).
+
+### Changed
+- `PyQt6` bounded to `>=6.7.0,<6.12` — the highest minor CI exercises, plus one,
+  so an untested Qt minor cannot reach users on release day. This is not a fix
+  for issue #92; see ADR-046 for why pinning below 6.11 would be the wrong call.
 
 ### Fixed
 - **The train/val split scattered a video across both sides.** The split was

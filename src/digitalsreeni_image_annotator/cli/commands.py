@@ -324,6 +324,33 @@ def run_predict(args):
     return EXIT_OK
 
 
+def run_doctor(args):
+    """Report the Qt environment and diagnose a broken PyQt6 install (issue #92).
+
+    Imports nothing from PyQt6 -- that is the entire point. The command has to work in
+    the environment where the GUI cannot start, which is exactly the environment where
+    importing Qt raises or kills the process.
+
+    ``error`` and ``suspect`` findings fail the command -- anything that could explain
+    a Qt that will not load. A ``warning`` is a forecast ("a second Qt is on the path
+    but its version currently matches"), worth printing and not worth failing a build
+    over.
+    """
+    from ..core.qt_diagnostics import (
+        FAILING_SEVERITIES, diagnose, format_report, qt_environment,
+    )
+
+    # No `qt_failed`: this is a proactive preflight, so rules whose evidence only
+    # means something after an actual failure stay quiet (ADR-046). The MSVC state is
+    # still printed in the report -- it is just not a finding.
+    env = qt_environment()
+    findings = diagnose(env)
+    print(format_report(env, findings))
+    if any(finding.severity in FAILING_SEVERITIES for finding in findings):
+        return EXIT_ERROR
+    return EXIT_OK
+
+
 def _results_to_annotations(results, class_mapping):
     """Ultralytics results -> the app's per-class annotation dict."""
     by_class = {}

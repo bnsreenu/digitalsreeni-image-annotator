@@ -26,7 +26,30 @@ try:
 except ImportError:
     pass  # torch may not be installed; lazy fallback in sam_utils/dino_utils
 
-from PyQt6.QtWidgets import QApplication
+# ── Qt import guard (issue #92, ADR-046)
+#
+# This block MUST stay below the torch import above.  ADR-017 requires torch to
+# claim its DLL slot before any Qt DLL loads, and this is what loads Qt; the two
+# Windows DLL workarounds now sit adjacent, and reordering them re-breaks ADR-017
+# in a way that only shows up on Windows with torch installed.
+#
+# In a contaminated environment -- typically Conda, where a stray Qt6Core.dll or an
+# outdated msvcp140.dll shadows the one the PyQt6 wheel ships -- this import fails
+# with a bare "DLL load failed while importing QtCore: The specified procedure could
+# not be found", which tells the user nothing about which DLL or what to do.
+# core.qt_diagnostics names the offending file instead.  It cannot help when the
+# loader terminates the process outright rather than raising; that is what
+# `sreeni-cli doctor` is for, since the CLI never imports Qt at all.
+#
+# Only the PyQt6 import is guarded.  Wrapping the annotator_window import too would
+# report an unrelated missing dependency as a Qt failure.
+try:
+    from PyQt6.QtWidgets import QApplication
+except ImportError as exc:
+    from .core.qt_diagnostics import format_import_failure
+    print(format_import_failure(exc), file=sys.stderr)
+    sys.exit(1)
+
 from .annotator_window import ImageAnnotator
 
 # Legacy defensive cleanup from the PyQt5 era: a stale
