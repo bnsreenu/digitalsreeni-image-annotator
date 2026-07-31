@@ -122,7 +122,7 @@ def build_groups_from_folder(folder: str):
 
 # ── train/val split ──────────────────────────────────────────────────────────
 
-def split_groups(groups, train_pct):
+def split_groups(groups, train_pct, keyed_groups=None):
     """Partition ``groups`` into ``(train, val)`` deterministically by source.
 
     ``train_pct`` in ``[0, 100]``; ``>= 100`` (or fewer than 2 groups) keeps
@@ -145,7 +145,17 @@ def split_groups(groups, train_pct):
 
     The grouping comes from the names alone: this runs on the training worker
     thread and has no access to the main window's ``image_slices``, so
-    ``derive_groups`` falls back to its name-prefix rule — which covers every
+    ``keyed_groups`` lets the GUI hand over the grouping it already computed
+    and *warned about*, refined by near-duplicate clusters when a curation run
+    produced any (ADR-045). Re-deriving it here instead would silently drop
+    that refinement, so the dialog would describe one split and the run would
+    perform another. Keys it does not recognise are ignored and keys it omits
+    fall back to the derived grouping, so a stale mapping degrades to the
+    structural split rather than to nonsense.
+
+    Otherwise the grouping comes from the names alone: this runs on the
+    training worker thread with no access to the main window's
+    ``image_slices``, so ``derive_groups`` falls back to its name-prefix rule — which covers every
     name the app itself produces.
     """
     from ..io.export_formats import assign_train_val
@@ -154,9 +164,24 @@ def split_groups(groups, train_pct):
     if train_pct >= 100 or len(groups) < 2:
         return groups, []
 
-    keyed, keyed_groups = split_keys(groups)
+    keyed, derived = split_keys(groups)
+    if keyed_groups:
+        if not set(keyed_groups) & set(derived):
+            # The keys are "{index}:{name}", rebuilt here from the same list the
+            # caller keyed. If they ever stop matching -- a reordered or
+            # rebuilt group list -- every lookup falls back and the refinement
+            # vanishes without a trace. Say so; the fallback is safe, the
+            # silence is not.
+            logger.warning(
+                "the supplied grouping matched none of the %d split keys; "
+                "using the derived grouping instead",
+                len(derived),
+            )
+        derived = {
+            key: keyed_groups.get(key, group) for key, group in derived.items()
+        }
     _train_keys, val_keys = assign_train_val(
-        keyed.keys(), 100 - train_pct, keyed_groups
+        keyed.keys(), 100 - train_pct, derived
     )
     train = [g for k, g in keyed.items() if k not in val_keys]
     val = [g for k, g in keyed.items() if k in val_keys]

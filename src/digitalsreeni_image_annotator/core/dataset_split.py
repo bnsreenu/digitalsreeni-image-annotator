@@ -15,11 +15,13 @@ observations", and the whole group lands on one side.
 
 **Groups are derived from structure, not from a model.** The primary source is
 ``image_slices``, already keyed by the ext-stripped base name, so the mapping is
-exact and free. Near-duplicate clusters from the curation feature (#72) could
-refine it further, but they are never required and nothing here waits for them:
-the worst leakage -- a 200-frame video -- is fixed without a model, a GPU or a
-curation run. That refinement lands in #82, with the vectorised clusterer and
-an actual caller.
+exact and free. Near-duplicate clusters from the curation feature (#72) refine
+it further through :func:`merge_groups`, but they are never *required* and
+nothing here waits for them: the worst leakage -- a 200-frame video -- is fixed
+without a model, a GPU or a curation run. The refinement closes the case the
+names cannot see: a folder of frames extracted as real files
+(``clip_F00001.png``), where the dot says "independent file" and the pixels say
+otherwise.
 
 Qt-free (ADR-041), and deliberately importing nothing from ``slice_cache``:
 that module reaches ``core.image_utils``, which imports ``QImage``. The
@@ -100,6 +102,69 @@ def derive_groups(
     for name in names:
         groups[name] = exact.get(name) or _slice_base(name) or name
     return groups
+
+
+def merge_groups(
+    groups: Mapping[str, str], clusters: Iterable[Iterable[str]]
+) -> dict[str, str]:
+    """Fold near-duplicate clusters into a name-derived grouping.
+
+    ``{a: A, b: B, c: C}`` plus the cluster ``[a, b]`` yields one group for
+    ``a`` and ``b``; and because grouping is transitive, a cluster touching two
+    existing groups merges *both* of them entirely -- if ``a``'s whole stack is
+    near-identical to ``b``'s, splitting them was never safe either.
+
+    This is what makes a curation run pay for itself beyond the report: it
+    catches the redundancy the names cannot, above all a folder of video frames
+    extracted as ordinary files, where nothing in the name says they came from
+    one recording.
+
+    Names not already in ``groups`` are ignored rather than added: the grouping
+    describes one specific set of names about to be split, and a cluster
+    computed over the whole project routinely mentions images that are not in
+    it.
+    """
+    merged = dict(groups)
+
+    def resolve(key: str) -> str:
+        while parent.get(key, key) != key:
+            key = parent[key]
+        return key
+
+    parent: dict[str, str] = {}
+    for cluster in clusters:
+        members = [name for name in cluster if name in merged]
+        if len(members) < 2:
+            continue
+        roots = sorted({resolve(merged[name]) for name in members})
+        target = roots[0]
+        for root in roots[1:]:
+            parent[root] = target
+
+    for name, group in merged.items():
+        merged[name] = resolve(group)
+    return merged
+
+
+def translate_clusters(
+    clusters: Iterable[Iterable[str]], names_by_key: Mapping[str, str]
+) -> list[list[str]]:
+    """Rewrite clusters of image names as clusters of split keys.
+
+    The SAM path splits on ``"{index}:{name}"`` keys rather than on names, so
+    that two same-named sources stay distinct entries (``sam_dataset.split_keys``).
+    Clusters arrive keyed by name, and handing them over untranslated would
+    match nothing at all -- silently, since :func:`merge_groups` ignores names
+    it does not recognise.
+    """
+    keys_by_name: dict[str, list[str]] = {}
+    for key, name in names_by_key.items():
+        keys_by_name.setdefault(name, []).append(key)
+    translated = [
+        [key for name in cluster for key in keys_by_name.get(name, [])]
+        for cluster in clusters
+    ]
+    return [cluster for cluster in translated if len(cluster) > 1]
 
 
 def _split_by_group(

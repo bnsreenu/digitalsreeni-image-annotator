@@ -699,6 +699,12 @@ User clicks "Export" > "YOLO v8/v11"
     │
     ├─> Select output directory
     │
+    ├─> split_inputs(mw) -> (names, groups)
+    │       ONE grouping, computed once and used by both the warning and the
+    │       export. Structural (ADR-044), then refined by near-duplicate
+    │       clusters if a curation run produced any (ADR-045) — which computes
+    │       nothing at all when it did not.
+    │
     ├─> Prompt for validation split % (QInputDialog, default 20, 0 = all train)
     │       plan_split() partitions by GROUP, not by name (issue #81,
     │       ADR-044): a stack's slices and a video's frames are one group and
@@ -716,7 +722,8 @@ User clicks "Export" > "YOLO v8/v11"
     │       and early stopping (ADR-028). Also warns when the split leaves
     │       training with a single recording.
     │
-    ├─> export_yolo_v5plus(all_annotations, class_mapping, ..., val_split)
+    ├─> export_yolo_v5plus(all_annotations, class_mapping, ..., val_split,
+    │                      groups=<the same mapping the warning described>)
     │   │
     │   ├─> Create directory structure:
     │   │   output_dir/
@@ -913,6 +920,54 @@ Images panel → "Review with model"
 ```
 
 Nothing is ever mutated, and the wording says "worth a look", never "wrong".
+
+## Finding Near-Duplicates, and Feeding Them to the Split (issues #72 / #82)
+
+The report is the visible half. The useful half is that a cluster is evidence two images must not
+land on opposite sides of a train/val split.
+
+```
+Images panel → "Dataset similarity"
+  │
+  ├─ collect_work_items()
+  │    Every plain image, AND every slice / video frame — iterating
+  │    `all_images` alone would miss the most redundant data the app handles.
+  │
+  ├─ embed each item (progress dialog, cancellable)
+  │    cache key = (model, content hash)                          for a file
+  │              = (model, source hash + slice name + axis order) for a slice
+  │                                                              or frame ← #82
+  │    A second run over unchanged data recomputes nothing and decodes
+  │    nothing. Before #82 only files were cached, so a video project — the
+  │    primary case — re-embedded every frame every time.
+  │
+  └─ DatasetCurationDialog
+       │
+       ├─ analyse(threshold)  → ONE blocked NumPy pass over every pair yields
+       │    clusters, isolated images and coarse appearance modes together.
+       │    Debounced 200 ms: the slider tracks live, the pass runs when the
+       │    drag settles.
+       │
+       ├─ per cluster: cohesion (min / mean) — compact blob or chain?
+       │               suggested member      — medoid, or the most uncertain
+       │                                       one when #71 scores cover the
+       │                                       whole cluster (precedence, not
+       │                                       a combined score)
+       │
+       ├─ model combo → set_model() drops the vectors and re-embeds; a failed
+       │                switch restores the previous model AND its vectors
+       │
+       └─ "Select cluster in image list" — the only action. There is no delete
+          path anywhere in the feature, by design.
+
+Later, at any export or training run:
+  CurationController.split_groups(names)
+    = merge_groups(derive_groups(...), clusters())
+  → frames extracted as ordinary files (`clip_F00001.png`) group by what the
+    pixels say, which is the one case the names cannot see (ADR-044/045).
+    With no curation run this returns the structural grouping and computes
+    nothing.
+```
 
 ## Auditing a Project (issue #70)
 

@@ -106,6 +106,57 @@ def test_a_caller_without_project_state_gets_the_plain_prompt(monkeypatch):
     assert io_controller.prompt_validation_split(None) == (20, True)
 
 
+# --- split_inputs: one grouping, computed once ------------------------------
+
+
+def test_split_inputs_carries_the_curation_refinement(qtbot):
+    """The one route by which near-duplicate clusters reach a split (ADR-045).
+
+    These two files are independent by name — nothing structural links them —
+    so if `split_inputs` returned the bare derived grouping (or None), the
+    refinement would be silently inert and every split would simply look
+    reasonable.
+    """
+    import numpy as np
+    from PyQt6.QtWidgets import QListWidget, QWidget
+
+    from src.digitalsreeni_image_annotator.controllers.curation_controller import (
+        CurationController,
+    )
+
+    class _Window(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.all_images = []
+            self.image_paths = {
+                name: f"C:/photos/{name}"
+                for name in ("burst_a.png", "burst_b.png", "other.png")
+            }
+            self.image_slices = {}
+            self.slices = []
+            self.image_list = QListWidget()
+            self.current_project_file = None
+            self.all_annotations = {
+                name: {"cell": [{"bbox": [0, 0, 1, 1]}]} for name in self.image_paths
+            }
+
+    window = _Window()
+    qtbot.addWidget(window)
+    window.curation_controller = CurationController(window)
+    window.curation_controller.embeddings = {
+        "burst_a.png": np.array([1.0, 0.0], dtype=np.float32),
+        "burst_b.png": np.array([1.0, 0.01], dtype=np.float32),
+        "other.png": np.array([0.0, 1.0], dtype=np.float32),
+    }
+
+    names, groups = io_controller.split_inputs(window)
+
+    assert set(names) == set(window.all_annotations)
+    assert groups is not None, "no grouping reached the split"
+    assert groups["burst_a.png"] == groups["burst_b.png"]
+    assert groups["other.png"] != groups["burst_a.png"]
+
+
 # --- the training call sites ------------------------------------------------
 
 
@@ -116,9 +167,29 @@ class _FakeTrainer:
     def load_model(self, _base):
         return True
 
-    def prepare_dataset(self, _val_split):
+    def prepare_dataset(self, _val_split, groups=None):
         self.prepared = True
+        self.groups = groups
         return "unused.yaml"
+
+
+class _NoCurationRun:
+    """A main window whose curation controller holds no embeddings.
+
+    Delegates to the same ``derive_groups`` the controller would, rather than
+    reimplementing it: the point of the stub is "no clusters to fold in", not
+    "a different grouping".
+    """
+
+    def __init__(self, image_slices):
+        self.image_slices = image_slices
+
+    def split_groups(self, names):
+        from src.digitalsreeni_image_annotator.core.dataset_split import (
+            derive_groups,
+        )
+
+        return derive_groups(names, self.image_slices)
 
 
 def test_declining_the_warning_abandons_a_yolo_run(warning_box, monkeypatch):
@@ -139,6 +210,7 @@ def test_declining_the_warning_abandons_a_yolo_run(warning_box, monkeypatch):
         slices = [(name, object()) for name in _frames("clip", 8)]
         image_slices = {"clip": slices}
         yolo_trainer = trainer
+        curation_controller = _NoCurationRun(image_slices)
 
         class yolo_controller:
             @staticmethod

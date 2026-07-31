@@ -47,6 +47,19 @@ def annotated_image_names(mw):
     )
 
 
+def split_inputs(mw):
+    """``(names, groups)`` for ``mw``'s next YOLO split.
+
+    One function because the two belong together: the warning and the export
+    that follows it have to describe the same split, and computing the grouping
+    twice at two call sites is exactly how they drift (ADR-044). The grouping
+    is structural, refined by near-duplicate clusters when a curation run has
+    produced any (ADR-045).
+    """
+    names = annotated_image_names(mw)
+    return names, mw.curation_controller.split_groups(names)
+
+
 def confirm_split_warning(parent, names, image_slices, val_pct, groups=None):
     """Show what is wrong with the split, if anything. ``False`` to back out.
 
@@ -75,7 +88,7 @@ def confirm_split_warning(parent, names, image_slices, val_pct, groups=None):
     return choice == QMessageBox.StandardButton.Ok
 
 
-def prompt_validation_split(parent, names=None, image_slices=None):
+def prompt_validation_split(parent, names=None, image_slices=None, groups=None):
     """Ask what fraction of images to hold out for validation.
 
     Returns ``(val_split, ok)`` from a single shared QInputDialog so the YOLO
@@ -102,7 +115,7 @@ def prompt_validation_split(parent, names=None, image_slices=None):
             return val_split, False
         proposed = val_split
         if names is None or confirm_split_warning(
-            parent, names, image_slices, val_split
+            parent, names, image_slices, val_split, groups=groups
         ):
             return val_split, True
 
@@ -386,9 +399,11 @@ def export_annotations(mw):
     # YOLO training needs a non-empty validation set; let the user choose how
     # much of the data to hold out (0 keeps the historical all-in-train layout).
     val_split = 0
+    split_groups = None
     if export_format in ("YOLO (v4 and earlier)", "YOLO (v5+)"):
+        names, split_groups = split_inputs(mw)
         val_split, ok = prompt_validation_split(
-            mw, annotated_image_names(mw), mw.image_slices
+            mw, names, mw.image_slices, groups=split_groups
         )
         if not ok:
             return
@@ -420,6 +435,7 @@ def export_annotations(mw):
             mw.image_slices,
             file_name,
             val_split,
+            groups=split_groups,
         )
         message = "Annotations have been exported successfully in YOLO (v4 and earlier) format.\n"
         message += f"Labels: {labels_dir}\nYAML: {yaml_path}\nValidation split: {val_split}%"
@@ -435,6 +451,7 @@ def export_annotations(mw):
                 file_name,
                 val_split,
                 keypoint_schemas=mw.keypoint_schemas,
+                groups=split_groups,
             )
         except ValueError as e:
             QMessageBox.warning(mw, "Export Error", str(e))

@@ -25,9 +25,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Model-vs-ground-truth review ranking** — score every image by how much a
   trained model disagrees with its labels (or how unsure it is where there are
   none), then sort the image list by it. Closes the active-learning loop.
-- **Embedding-based dataset curation** — CLIP/DINOv2 image embeddings, cosine
-  near-duplicate clusters and a diversity report, with a persistent
-  content-hash-keyed cache. Recommends only; it has no delete path by design.
+- **Embedding-based dataset curation** — CLIP or DINOv2 image embeddings,
+  switchable per dataset because which one suits a given kind of image is not a
+  question that has a global answer. Cosine near-duplicate clusters, cluster
+  cohesion (so a chain is distinguishable from a blob), coarse appearance modes
+  and a diversity report. The cache is keyed by content hash *and* model and
+  covers slices and video frames as well as files on disk, so a second run over
+  a video project is nearly instant. Clustering is one blocked NumPy pass, which
+  moves the supported ceiling from 3000 images to 20 000 and makes the binding
+  cost embedding time rather than comparison. Recommends only; it has no delete
+  path by design.
+- **Near-duplicate clusters seed the train/val split.** A cluster is evidence
+  that two images must not land on opposite sides of a split. Structure already
+  catches a stack's slices and a video's frames; embeddings catch what structure
+  cannot — a folder of frames extracted as ordinary files, where the name says
+  "independent image" and the pixels say otherwise. Nothing is computed unless a
+  curation run has already happened, and every split path (YOLO export, dataset
+  preparation, the Train dialog and SAM fine-tuning) reads the same grouping the
+  warning described.
 - **One Train Model dialog** for both YOLO and SAM 2, inferring the task from the
   annotations and performing dataset preparation, YAML handling, loading and
   saving implicitly.

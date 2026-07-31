@@ -79,13 +79,15 @@ class TrainingController(QObject):
         # is knowable without the model, and backing out should not cost a
         # several-hundred-megabyte download. Only `prepare_dataset` has to come
         # after the load (ADR-042).
-        from .io_controller import annotated_image_names, confirm_split_warning
+        from .io_controller import confirm_split_warning, split_inputs
 
+        names, groups = split_inputs(self.mw)
         if not confirm_split_warning(
             self.mw,
-            annotated_image_names(self.mw),
+            names,
             self.mw.image_slices,
             config["val_split"],
+            groups=groups,
         ):
             return
 
@@ -94,7 +96,7 @@ class TrainingController(QObject):
             return
 
         try:
-            yaml_path = trainer.prepare_dataset(config["val_split"])
+            yaml_path = trainer.prepare_dataset(config["val_split"], groups=groups)
         except Exception as exc:
             logger.exception("Dataset preparation failed")
             QMessageBox.critical(

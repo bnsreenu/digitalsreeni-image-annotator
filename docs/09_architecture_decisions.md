@@ -2325,7 +2325,9 @@ stopping, so a leaky split does not merely misreport, it changes when the run st
   no curation run. None of that is in this change, not even the seam. `similarity.cluster` is
   pure-Python all-pairs, so calling it during an export would freeze the GUI for minutes on a few
   hundred images; the merge helper and the parameter to feed it land in #82 together with the
-  vectorised clusterer and an actual caller.
+  vectorised clusterer and an actual caller. **Delivered in ADR-045**, with the guard that made it
+  safe: the refinement uses embeddings that already exist because the user ran curation, and
+  computes nothing when they do not.
 - The exporters filter the split input to names they will actually **write** (`_is_exportable`).
   A name the export loop skips must not consume a slot in the train/val budget: once whole groups
   move together, a video's worth of unwritable frames takes the entire train side with it. That
@@ -2384,6 +2386,10 @@ stopping, so a leaky split does not merely misreport, it changes when the run st
   named `sample_T1.png` / `sample_T2.png` into one group — a false alarm on a flat dataset,
   reported rather than silent, but disruptive. Left open deliberately, and recorded here rather
   than discovered later: this is the one remaining path where the leak is still silent.
+  **Partly closed by ADR-045** from the other side — by what the pixels say rather than what the
+  name says. A curation run over such a folder clusters the frames and `merge_groups` folds that
+  into the grouping. It closes the case only for someone who runs curation first; the name-only
+  path is unchanged, and that is still the default.
   `dialogs/dataset_splitter.py` — the standalone folder-splitting tool, which is not one of the
   three choke points above — walks straight into it and is also unseeded, so its splits are not
   even reproducible. Tracked as **#85**; the app is **not** uniformly group-aware, and that tool
@@ -2427,3 +2433,169 @@ stopping, so a leaky split does not merely misreport, it changes when the run st
   frame its own group — so "Fine-Tune SAM from Dataset Folder" got no grouping at all while the
   project path was correctly grouped. Normalising at the producer keeps every consumer of `name`
   seeing one shape.
+
+---
+
+## ADR-045: What Dataset Curation Is, and What It Is Not
+
+**Status**: Accepted (issue #82, closing the #80 discussion together with ADR-044)
+
+**Context**: #72 shipped embedding-based curation — CLIP vectors, cosine near-duplicate clusters,
+a diversity report — explicitly as a foundation. #80 then asked six questions about what it should
+become, several pulling in opposite directions. Reading the code answered some of them and
+reframed others:
+
+- The report had **no consumer**. It told the user what was redundant and left them to act on it
+  by hand, which is a finding without a decision attached.
+- The "instant" threshold slider ran two pure-Python O(n²) sweeps per tick, recomputing both
+  vector norms per pair. The 3000-image ceiling measured that implementation, not the problem.
+- **DINOv2 was unreachable.** `EMBEDDING_MODELS` carried it and the cache was keyed by model
+  identity so both could coexist, but nothing ever set `model_name` and no picker existed. "CLIP
+  or DINOv2" was unanswerable because nobody *could* compare.
+- **Slices were never cached.** `_embed_one` cached only `kind == "path"`, so video frames — the
+  data the controller docstring names as the primary use case — were re-embedded on every run.
+
+**Decision**:
+
+- **The curation output seeds the train/val split.** That is what it is *for*. A near-duplicate
+  cluster is evidence that two images must not land on opposite sides of a split, and ADR-044
+  already built the machinery that consumes exactly that. `merge_groups` folds clusters into the
+  structural grouping; `CurationController.split_groups`/`refine` is the single place it happens,
+  and every GUI split path goes through it — YOLO export, Prepare YOLO Dataset, the Train dialog,
+  and SAM fine-tuning.
+- **It computes nothing unless a curation run already happened.** `refine` returns its input
+  untouched when `embeddings` is empty. This is not an optimisation, it is the condition that
+  makes the wiring safe at all: an earlier attempt clustered on demand from the export path, which
+  meant a synchronous O(n²) pure-Python sweep on the GUI thread — 43 seconds at 800 images — that
+  ran even at a 0 % validation split, where the result was discarded.
+- **Connected components stay; cohesion is reported.** Transitivity is right for a slow pan, where
+  consecutive frames are near-identical and the ends of the run are not. Its weakness is that a
+  cluster can be a chain rather than a blob, so `cohesion()` reports the minimum and mean pairwise
+  similarity and the report shows both. Make the weakness visible rather than argue about it.
+- **The backend is choosable, not chosen.** CLIP versus DINOv2 is a per-dataset question — DINOv2
+  is generally stronger on pure visual similarity, CLIP's semantic bias helps on natural
+  photographs and hurts on texture-heavy microscopy. Shipping the picker makes it answerable
+  empirically; answering it globally would have been a guess.
+- **One blocked NumPy pass, no new dependency.** `_scan` computes every threshold's components
+  *and* each row's nearest neighbour from a single sweep, in row blocks sized so peak memory is a
+  constant rather than O(n²). The `(n, d)` matrix itself is an unavoidable floor — 61 MB at
+  20 000 images with 768-d vectors — and the blocked pairwise work sits on top of it: measured
+  `analyse` 99 MB, `representative` 94 MB, `cohesion` 113 MB.
+
+  Both halves of that took a review to get right, and the second one twice. `representative` was
+  1.6 GB until a review caught it was the one routine still multiplying a whole cluster unblocked
+  (a single video clusters into **one** component, so "a cluster" and "the dataset" are routinely
+  the same size). The replacement figures were then wrong as well: they were quoted from that
+  review rather than measured here, and the real peaks were 125 MB across the board, all three
+  within 0.2 MB of each other because none was dominated by its own pairwise work. `_stack` — the
+  helper every one of them calls — built a second full copy of the matrix (`(m * m).sum(axis=1)`)
+  purely to sum it away. `np.einsum("ij,ij->i", ...)` removes it, and the numbers above are
+  measurements of the shipped code. **Blocking every pairwise pass is worth nothing if the shared
+  entry point allocates 2n·d before any of it starts.**
+- **No edge list.** Components are built by relabelling, not by union-find over materialised
+  edges. A project of 20 000 near-identical frames — precisely the case someone opens this tool to
+  diagnose — has 200 million edges; two components can only merge n−1 times.
+- **Coarse appearance modes** answer the coverage half: the same machinery at a lower threshold
+  with singletons kept, so it is a true partition. The threshold is stated everywhere the count
+  is, because it is a heuristic and model-dependent.
+- **Precedence with #71, not a combined score.** Redundancy decides what can be skipped;
+  uncertainty ranks what is left. With review scores the suggested cluster member switches from
+  the medoid (labelled `most typical`, right for *keeping*) to the most uncertain (labelled
+  `most uncertain`, right for *annotating*) — but only when every member is scored and every score
+  is an uncertainty score.
+- **Slices are cached**, keyed on `(model, source-file digest, slice name)`.
+- **No automatic deletion, ever.** Re-affirmed rather than re-decided. The controller has no
+  delete path at all, which is the strongest form that promise can take.
+
+**Alternatives considered**:
+
+- *Automatic deletion of redundant images*: unrecoverable, on a similarity heuristic, against data
+  the user collected. `select_in_image_list` gives the same reach with the decision left where it
+  belongs. This is the one item on the list that is not a trade-off.
+- *Complete linkage (every pair must exceed the threshold) instead of components*: it fragments a
+  slow pan into arbitrary chunks, and a slow pan is the primary case. Cohesion surfaces the chains
+  without changing what a cluster means.
+- *FAISS or hnswlib for approximate nearest neighbours*: ANN starts paying off around 10⁵ images.
+  Below that the exact pass is seconds, embedding time dominates by orders of magnitude, and both
+  libraries add a wheel that is awkward to package on Windows. Reconsider if #83 (coverage against
+  an unlabelled pool) makes 10⁵-image comparisons routine.
+- *A combined redundancy × uncertainty score*: needs a weight nobody can justify, and hides which
+  of the two drove the answer. Precedence gives the same ordering with an explainable reason.
+- *Ranking a mixed cluster by review score anyway*: disagreement is measured against labels and
+  uncertainty against nothing. They are different quantities on different scales; ranking across
+  them compares two different measurements and looks entirely plausible while doing it.
+- *Keeping embeddings as Python float lists*: at the new ceiling that is roughly 500 MB of live
+  float objects versus 60 MB as `float32` arrays.
+- *A cluster-count control (k-means and friends)*: rejected in #72 and still right. The number of
+  clusters is not known in advance, and k-means partitions *every* image whether or not any of
+  them resemble each other.
+
+**Consequences**:
+
+- `ALL_PAIRS_LIMIT` rises 3000 → 20 000 and its message changes subject: the binding cost is now
+  embedding time (one forward pass per image, hours without a GPU at that scale), not the
+  comparison. The number is set by what a person will wait for, and the measurements behind it are
+  in the `similarity` module header.
+- The threshold slider is **debounced** (200 ms) and shows a wait cursor. Re-analysing is one pass
+  now instead of three, but one pass is still seconds at the ceiling, and a drag would otherwise
+  queue up dozens of them.
+- `analyse()` is what the dialog calls. `cluster()`, `outliers()` and `modes()` remain as
+  standalone functions — each doing its own pass — so the module stays usable piecewise.
+- Switching backend **drops the embeddings and recomputes**. The persisted cache is keyed by model
+  identity, so switching back is free. A failed switch (no network, or a cancelled progress
+  dialog) restores the previous model *and* its vectors rather than leaving the report empty.
+- The review-score column is **hidden** when no review has run, rather than shown empty — an empty
+  column reads as "nothing is uncertain here", not "nothing measured it". On a video or stack
+  project it can never be populated: `ReviewController` scores from a file path and skips slices
+  entirely, while curation exists mainly *for* slices. The two features overlap on plain-image
+  projects and nowhere else.
+- `SAMFineTuner.train` gains a `keyed_groups` parameter, and `SAMTrainController` passes the exact
+  mapping the warning described. Without it the worker would re-derive the grouping from names and
+  silently drop the refinement — the dialog would describe one split and the run would perform
+  another, which is the same divergence class ADR-044 spent two revisions closing. Clusters are
+  keyed by image name and that split is keyed by `"{index}:{name}"`, so `translate_clusters` does
+  the rewrite; handing them over untranslated would have matched nothing, in silence.
+- Both YOLO exporters take `groups=None`. It **overrides** the derived grouping rather than adding
+  to it, because the caller's mapping is itself built by folding clusters into the derived one —
+  accepting both would invite two answers to the same question.
+- `io_controller.split_inputs(mw)` returns `(names, groups)` together, so a call site cannot
+  compute the grouping for the warning and a different one for the export.
+- Curation is **not** wired into `dialogs/dataset_splitter.py` (#85): that tool splits a folder
+  the app has never embedded.
+- `clusters()` is **memoised** on `(embedding version, model, threshold)`, where the version is
+  bumped by the `embeddings` property setter — the one write path, so the memo cannot outlive the
+  vectors it describes. Without it every export and every training launch pays a full pass on the
+  GUI thread, which at the new 20 000 ceiling is seconds each time. An earlier draft of this ADR
+  claimed the repetition was "a fraction of a second at project sizes where curation is usable";
+  that sentence and a 20 000-image limit could not both be true.
+- `compute()` carries an **in-flight guard** (ADR-013), and the dialog disables the picker for the
+  duration. Its `QProgressDialog` is non-modal and the loop spins `processEvents` on every item,
+  so the combo stayed live for the whole run: a second selection unloaded the model the outer loop
+  was still using and left `embeddings` holding a mixture of CLIP and DINOv2 vectors. Both are
+  768-d, so nothing downstream could detect it — and `refine` feeds those clusters into a real
+  training run's split. Found in review, reproduced headlessly.
+- The slice cache key includes the **axis assignment**, not just the source digest and the slice
+  name. A `(10, 512, 512)` array assigned `ZHW` and the same array assigned `HWZ` both produce the
+  names `base_Z1`…`base_Z10` — `SliceProvider._build_index` only emits the non-spatial letters —
+  while indexing a different axis. Same file, same name, different pixels, and the cache persists
+  across sessions. (Swapping which axis is called H and which W is harmless: both are
+  `slice(None)` in the index tuple.)
+- `split_inputs` runs **before** the validation-percentage prompt, because the warning that prompt
+  shows needs the grouping. So a user who has run curation and then exports at 0 % pays one
+  clustering pass for nothing — once per embedding set, thanks to the memo above. Making it lazy
+  would mean threading a callable through the prompt for a cost that is now paid at most once.
+- The report is not free to redraw: `_fill_tree` calls `cohesion` and `representative` per
+  cluster, each building its own matrix. On the case this feature exists for — one video, one
+  component — a single slider settle is three full passes over the whole dataset. The 200 ms
+  debounce guards `analyse`, which is the cheapest of them. Acceptable at the sizes curation is
+  usable at, and the reason the ceiling is 20 000 rather than higher.
+- `refine` is reachable from **Fine-Tune SAM from Dataset Folder**, where `SampleGroup.name` is an
+  ext-stripped basename while the project's embeddings are keyed with extensions. Today the
+  translation therefore matches nothing and the refinement is a silent no-op — the right answer
+  (a folder is a different dataset) for the wrong reason. The drift warning does not fire either,
+  because the *keys* match; only the clusters are empty.
+- The refinement clusters at **the threshold the user last set in the report**, which they can
+  only have set by looking at it. Cohesion is shown there for exactly this reason — but note that
+  `merge_groups` then treats a chained cluster and a compact one identically. A chain whose ends
+  do not resemble each other is still merged into one group, which costs split granularity rather
+  than correctness.

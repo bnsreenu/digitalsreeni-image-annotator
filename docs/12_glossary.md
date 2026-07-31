@@ -49,7 +49,21 @@ A group of images whose embeddings are mutually reachable above a cosine-similar
 known in advance and k-means would partition *every* image whether or not any are similar. The
 **representative** is the medoid — the member most similar to the rest, i.e. the frame that best
 stands in for the group. Clustering is transitive, which is correct for a burst of frames
-drifting slowly.
+drifting slowly. A cluster is evidence two images must not be split across train and val, which
+is what the clusters are ultimately *for* (ADR-045).
+
+### Cohesion
+How tight a near-duplicate cluster is: the least similar pair and the average pair (issue #82).
+Close together means a genuinely compact group; a minimum well below the mean means a **chain** —
+A resembles B and B resembles C while A and C do not resemble each other at all. That is the
+correct and intended behaviour of connected components for a slow pan, and cohesion is how it
+becomes visible rather than something to argue about.
+
+### Appearance Mode
+A connected component at a deliberately **low** similarity threshold, with singletons kept, so
+the result is a true partition of every image (issue #82). Answers the coverage question — "how
+many distinct kinds of image are in here, and how evenly" — rather than the redundancy question.
+The threshold is a heuristic and model-dependent, so it is always reported alongside the count.
 
 ### Group-Aware Split
 

@@ -607,6 +607,39 @@ accept, and rename reads it back. The same rule applies to the review-score badg
 list (`ImageScoreDelegate`, issue #71), where the text additionally backs the
 `all_images[i]` ↔ `image_list.item(i)` positional invariant (ADR-035).
 
+## Redundancy and Uncertainty: a Precedence Rule (issues #71 + #82)
+
+Two features rank the same images by different criteria, and they meet on the cluster list.
+
+- **Redundancy** (#72/#82) answers *what can be skipped*. Forty near-identical frames teach
+  roughly what five would.
+- **Uncertainty** (#71) answers *what is worth the effort*. A high score means the model is unsure
+  or disagrees with the labels.
+
+The rule is **precedence, never a combined score**: redundancy filters, uncertainty ranks what is
+left. So the suggested member of a near-duplicate cluster is the medoid, labelled `most typical` —
+the right pick when the question is *which one to keep* — unless review scores are available, in
+which case it becomes the most uncertain member, labelled `most uncertain` — the right pick when
+the question is *which one to annotate*.
+
+Multiplying the two into one number would need a weight nobody can justify, and would hide which
+of the two drove the answer.
+
+Two conditions gate the switch, both in `CurationController.suggested`:
+
+1. **Every member must be scored.** Otherwise the members that happen to have been measured
+   outrank the unmeasured ones for no reason.
+2. **Every score must be an uncertainty score.** `ReviewController` scores an annotated image by
+   *disagreement* (against its labels) and an unannotated one by *uncertainty* (against nothing).
+   These are different quantities on different scales; ranking a cluster that mixes them compares
+   two different measurements, and does so entirely plausibly.
+
+Worth knowing before reading anything into an empty uncertainty column: the two features overlap
+on **plain-image projects and nowhere else**. Review scoring runs from a file path and skips
+stacks and videos entirely, while curation exists mainly *for* slices. That is why the column is
+hidden rather than shown empty when no scores exist — an empty column reads as "nothing is
+uncertain here", not "nothing measured it".
+
 ## The Annotation Clipboard (issue #66)
 
 App-level, not per-image: it survives switching image, slice, frame and project, because "copy

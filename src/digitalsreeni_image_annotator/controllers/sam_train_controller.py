@@ -161,6 +161,32 @@ class SAMTrainController(QObject):
 
     # -- run -----------------------------------------------------------------
 
+    def _training_config(self, dialog_config, groups):
+        """``(split keys, trainer config)`` — config carrying the grouping.
+
+        One function because the warning and the run must describe the same
+        split, and `keyed_groups` is how the exact mapping reaches the worker.
+        Without it `SAMFineTuner.train` re-derives the grouping from names
+        alone on the training thread and quietly drops the curation
+        refinement, so the dialog would describe one split and the run would
+        perform another (ADR-044/045).
+
+        `split_keys` gives the exact keys the split will use rather than a
+        rebuilt approximation: two groups can share a name, and a bare name
+        list collapses those before the split sees them. The clusters are keyed
+        by image name and this split is keyed by ``"{index}:{name}"``, so
+        `refine` translates them — untranslated they would match nothing, in
+        silence.
+        """
+        from ..training.sam_dataset import split_keys
+
+        keyed, keyed_groups = split_keys(groups)
+        config = dict(dialog_config)
+        config["keyed_groups"] = self.mw.curation_controller.refine(
+            keyed_groups, {key: group.name for key, group in keyed.items()}
+        )
+        return keyed, config
+
     def _launch(self, groups):
         if hasattr(self.mw, "sam_training_thread") and self.mw.sam_training_thread is not None \
                 and self.mw.sam_training_thread.isRunning():
@@ -178,13 +204,9 @@ class SAMTrainController(QObject):
         # here: the SAM val loss drives early stopping, so a val set sharing a
         # recording with train does not merely report an optimistic number, it
         # changes when the run stops. Worth being able to back out of.
-        from ..training.sam_dataset import split_keys
         from .io_controller import confirm_split_warning
 
-        # The exact keys and grouping `split_groups` will use, not a rebuilt
-        # approximation of them: two groups can share a name, and a bare name
-        # list collapses those before the split sees them.
-        keyed, keyed_groups = split_keys(groups)
+        keyed, cfg = self._training_config(cfg, groups)
         if not confirm_split_warning(
             self.mw,
             list(keyed),
@@ -193,7 +215,7 @@ class SAMTrainController(QObject):
             # would silently set 0% and switch the warning off for good if the
             # dialog's key were ever renamed.
             100 - cfg["train_pct"],
-            groups=keyed_groups,
+            groups=cfg["keyed_groups"],
         ):
             return
 

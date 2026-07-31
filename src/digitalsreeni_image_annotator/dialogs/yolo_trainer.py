@@ -337,7 +337,7 @@ class YOLOTrainer(QObject):
                 QMessageBox.critical(self.main_window, "Error Loading Model", f"Could not load the model. Error: {str(e)}")
         return False
 
-    def prepare_dataset(self, val_split=20):
+    def prepare_dataset(self, val_split=20, groups=None):
         output_dir, yaml_path = export_yolo_v5plus(
             self.main_window.all_annotations,
             self.main_window.class_mapping,
@@ -346,9 +346,13 @@ class YOLOTrainer(QObject):
             self.main_window.image_slices,
             self.dataset_path,
             val_split,
-            # The group-aware split (ADR-044) is derived inside the exporter,
-            # so this path gets it without passing anything.
+            # The group-aware split (ADR-044) is derived inside the exporter
+            # when `groups` is None, so this path is protected whether or not
+            # the caller passes anything. A caller that has already shown the
+            # split warning passes the grouping it warned about, so the two
+            # cannot describe different splits (ADR-045).
             keypoint_schemas=self.main_window.keypoint_schemas,
+            groups=groups,
         )
 
         yaml_path = Path(yaml_path)

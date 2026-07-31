@@ -214,6 +214,17 @@ class ReviewController(QObject):
         record = self.scores.get(file_name)
         return record["score"] if record else None
 
+    def mode_for(self, file_name):
+        """Which question this image's score answers, or ``None``.
+
+        Disagreement and uncertainty are not on a common scale, so anything
+        ranking several images against each other has to check they are the
+        same kind of number first (#82 uses this to decide whether a
+        near-duplicate cluster can be ranked by uncertainty at all).
+        """
+        record = self.scores.get(file_name)
+        return record["mode"] if record else None
+
     def has_scores(self) -> bool:
         return bool(self.scores)
 

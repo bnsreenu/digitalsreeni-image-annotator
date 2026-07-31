@@ -284,6 +284,7 @@ class SAMFineTuner(QObject):
         seed: int = 0,
         out_path: str,
         tracker=None,
+        keyed_groups=None,
     ) -> dict:
         """Fine-tune and save. Returns a small result dict; raises on failure.
 
@@ -332,7 +333,7 @@ class SAMFineTuner(QObject):
         # (issue bnsreenu#85, then ADR-044). At 100% train (or a single image)
         # val is empty and the val pass / early stopping are off.
         from .sam_dataset import split_groups
-        train_groups, val_groups = split_groups(groups, train_pct)
+        train_groups, val_groups = split_groups(groups, train_pct, keyed_groups)
 
         model, pred, base_file = self._build_predictor(base_model)
         net = pred.model
