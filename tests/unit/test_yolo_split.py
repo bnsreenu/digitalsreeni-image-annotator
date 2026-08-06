@@ -13,6 +13,28 @@ def _names(n):
     return [f"img_{i:03d}.png" for i in range(n)]
 
 
+def test_it_is_still_importable_from_the_export_module():
+    """The implementation moved to ``core.dataset_split`` (ADR-044) but stays
+    re-exported here: ``training.sam_dataset`` imports it from this module."""
+    from src.digitalsreeni_image_annotator.core.dataset_split import (
+        assign_train_val as moved,
+    )
+
+    assert assign_train_val is moved
+
+
+def test_groups_are_never_split_across_train_and_val():
+    """The group-aware path (ADR-044). Without it, near-identical frames of one
+    recording land on both sides and every validation metric is optimistic."""
+    names = _names(20)
+    groups = {name: ("even" if int(name[4:7]) % 2 == 0 else "odd") for name in names}
+    train, val = assign_train_val(names, 50, groups)
+    evens = {n for n in names if groups[n] == "even"}
+    odds = {n for n in names if groups[n] == "odd"}
+    assert evens <= train or evens <= val
+    assert odds <= train or odds <= val
+
+
 def test_zero_split_keeps_everything_in_train():
     names = _names(10)
     train, val = assign_train_val(names, 0)

@@ -86,6 +86,35 @@ class AnnotationHistory:
         self._cap(stack["undo"])
         return stack["redo"].pop()
 
+    def rename_class(self, old_name, new_name):
+        """Re-key every snapshot after a class rename.
+
+        A snapshot is ``{class_name: [...]}``, so a rename that skips the
+        stacks leaves undo restoring annotations under a name the project no
+        longer has: no ``class_mapping`` entry, no colour, no class-list row.
+        ``draw_annotations`` then skips them -- they disappear from the canvas
+        -- and they are still written into the ``.iap``.
+        """
+        for stack in self._stacks.values():
+            for snapshots in stack.values():
+                for snapshot in snapshots:
+                    if old_name not in snapshot:
+                        continue
+                    snapshot[new_name] = snapshot.pop(old_name)
+                    for annotation in snapshot[new_name]:
+                        annotation["category_name"] = new_name
+
+    def drop_class(self, class_name):
+        """Forget a deleted class in every snapshot.
+
+        An undo that resurrects a deleted class is worse than no undo at all:
+        it comes back unmapped, uncoloured and absent from the class list.
+        """
+        for stack in self._stacks.values():
+            for snapshots in stack.values():
+                for snapshot in snapshots:
+                    snapshot.pop(class_name, None)
+
     def drop(self, key):
         self._stacks.pop(key, None)
 

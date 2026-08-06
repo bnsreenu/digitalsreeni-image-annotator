@@ -33,6 +33,12 @@ class _Sam3Stub:
     def weights_available(self):
         return True
 
+    def searched_weight_paths(self):
+        # Named in the "weights not found" tooltip: "not found" is
+        # unactionable without a location, and one of the real candidates is
+        # the working directory, which moves with how the app was launched.
+        return [r"C:\somewhere\sam3.pt", r"C:\models\sam\sam3.pt"]
+
     def ensure_loaded(self):
         self.loaded = True
 
@@ -145,6 +151,12 @@ def test_sam3_gated_download_status_when_weights_absent(window, monkeypatch):
     assert not window.btn_detect_single.isEnabled()
     assert not window.btn_detect_batch.isEnabled()
     assert "sam3.pt" in window.lbl_dino_status.text()
+    # The searched locations go in the tooltip, not the one-line status strip.
+    # Without them "not found" sends the user hunting -- which is exactly what
+    # happened when a checkpoint that had worked the day before went missing.
+    tooltip = window.lbl_dino_status.toolTip()
+    assert r"C:\models\sam\sam3.pt" in tooltip
+    assert "SAM3_MODEL_PATH" in tooltip
 
 
 # --- single detection -------------------------------------------------------

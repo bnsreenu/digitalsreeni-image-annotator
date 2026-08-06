@@ -1,4 +1,3 @@
-import os
 import warnings
 
 from PyQt6.QtCore import Qt, QTimer
@@ -17,16 +16,23 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .app_settings import load_ui_prefs
+from .app_settings import load_onion_prefs, load_ui_prefs
 from .controllers import io_controller
 from .controllers.annotation_controller import AnnotationController
 from .controllers.class_controller import ClassController
+from .controllers.clipboard_controller import ClipboardController
+from .controllers.curation_controller import CurationController
 from .controllers.dino_controller import DINOController
 from .controllers.image_controller import ImageController
+from .controllers.model_registry_controller import ModelRegistryController
 from .controllers.project_controller import ProjectController
+from .controllers.qc_controller import QCController
+from .controllers.review_controller import ReviewController
 from .controllers.sam_controller import SAMController
+from .controllers.segment_everything_controller import SegmentEverythingController
 from .controllers.sam_train_controller import SAMTrainController
 from .controllers.tracking_controller import TrackingController
+from .controllers.training_controller import TrainingController
 from .controllers.yolo_controller import YOLOController
 from .core import image_utils
 from .ui import theme
@@ -35,8 +41,7 @@ from .ui.shortcuts import install_event_filters, install_shortcuts
 from .ui.sidebar import build_image_area, build_image_list, build_sidebar
 from .dialogs.annotation_statistics import show_annotation_statistics
 from .dialogs.coco_json_combiner import show_coco_json_combiner
-from .dialogs.dino_phrase_editor import ClassThresholdTable, PhraseEditorPanel
-from .inference.dino_utils import DINOUtils, GDINO_MODEL_PATHS
+from .inference.dino_utils import DINOUtils
 from .dialogs.dataset_splitter import DatasetSplitterTool
 from .dialogs.dicom_converter import DicomConverter
 from .dialogs.dino_merge_dialog import show_dino_merge_dialog
@@ -137,6 +142,10 @@ class ImageAnnotator(QMainWindow):
         self._sam_inference_in_flight = False
 
         self.sam_controller = SAMController(self)
+        # Unprompted SAM proposals into the existing review overlay (issue
+        # #69). A third producer into the same pipeline as DINO and SAM 3 --
+        # deliberately not a second review mechanic (ADR-015).
+        self.segment_everything_controller = SegmentEverythingController(self)
         self.sam_train_controller = SAMTrainController(self)
         self.dino_controller = DINOController(self)
         # SAM 3 video object tracking (issue #51). Reuses the DINO review
@@ -146,6 +155,25 @@ class ImageAnnotator(QMainWindow):
         self.yolo_controller = YOLOController(self)
         self.annotation_controller = AnnotationController(self)
         self.class_controller = ClassController(self)
+        # In-app annotation clipboard (issue #66). App-level, not per-image:
+        # it survives image / slice / frame / project switches, which is the
+        # entire point of copying a shape across a stack.
+        self.clipboard_controller = ClipboardController(self)
+        # Rule-based annotation audit (issue #70). The rules themselves are
+        # Qt-free in core/annotation_qc.py so the headless CLI can reuse them.
+        self.qc_controller = QCController(self)
+        # Model-vs-ground-truth review scoring (issue #71). Closes the active-
+        # learning loop: train, score, fix the worst, retrain.
+        self.review_controller = ReviewController(self)
+        # One entry point for all training (issue #73). Orchestrates the
+        # existing trainers; it does not replace them.
+        self.training_controller = TrainingController(self)
+        # Post-training lifecycle (issue #74): register, save into the project
+        # with a sidecar, report, and offer a one-click try.
+        self.model_registry_controller = ModelRegistryController(self)
+        # Embedding-based near-duplicate detection (issue #72). Recommends
+        # only — it has no delete path at all, by design.
+        self.curation_controller = CurationController(self)
 
         # CanvasContext gives ImageLabel a narrow read view of main-window
         # state. All write paths from the canvas leave as Qt signals
@@ -170,6 +198,16 @@ class ImageAnnotator(QMainWindow):
         # with Settings → Toggle Dark Mode (Ctrl+D).
         self.ui_font_pt, self.dark_mode = load_ui_prefs()
 
+        # Onion-skinning (issue #67). A viewing preference, persisted app-wide
+        # like the other UI prefs (ADR-020) rather than per project.
+        (
+            self.onion_enabled,
+            self.onion_opacity,
+            self.onion_offset,
+            self.onion_mode,
+            self.onion_content,
+        ) = load_onion_prefs()
+
         # Default annotations sorting
         self.current_sort_method = "class"  # Default sorting method
 
@@ -186,11 +224,16 @@ class ImageAnnotator(QMainWindow):
 
         # YOLO Trainer
         self.yolo_trainer = None
+        # One Model menu (issue #73): YOLO builds it, SAM fine-tuning adds its
+        # advanced entries to the same Advanced submenu. Two top-level training
+        # menus with eleven actions between them was the problem this replaces.
         self.setup_yolo_menu()
-
-        # SAM fine-tuning menu + register any previously fine-tuned models so
-        # they appear in the SAM model selector (built during setup_ui above).
-        self.sam_train_controller.setup_sam_train_menu()
+        self.sam_train_controller.setup_sam_train_menu(
+            self.yolo_controller.advanced_menu
+        )
+        # Register any previously fine-tuned models so they appear in the SAM
+        # model selector (built during setup_ui above). No longer reachable as
+        # a manual menu action -- registration is automatic (issue #74).
         self.sam_train_controller.refresh_model_selector()
 
         install_shortcuts(self)
@@ -217,6 +260,7 @@ class ImageAnnotator(QMainWindow):
         il.canvasSelectionChanged.connect(ac.apply_canvas_selection)
         il.bboxEditCommitted.connect(ac.commit_bbox_edit)
         il.polygonEditCommitted.connect(ac.commit_polygon_edit)
+        il.polygonGeometryChanged.connect(ac.sync_polygon_geometry)
         il.editBaselineRequested.connect(ac.capture_edit_baseline)
         il.deleteSelectionRequested.connect(ac.delete_selected_annotations)
         il.finishPolygonRequested.connect(ac.finish_polygon)
@@ -417,13 +461,18 @@ class ImageAnnotator(QMainWindow):
     def on_timeline_frame_selected(self, idx):
         """Route a video-timeline scrub to the matching frame (issue #48).
 
-        Slice-list rows are in frame order, so ``idx`` maps 1:1 to a row. Go
-        through ``switch_slice`` (never set ``current_image`` directly) so the
-        unsaved-change check, annotation save, edit-mode exit and DINO temp
-        re-sync all run.
+        Slice-list rows are in frame order, so ``idx`` maps 1:1 to a row.
+
+        Move the **row**, and let ``currentRowChanged`` perform the switch.
+        Calling ``switch_slice`` directly would leave the row pointing at the
+        frame you scrubbed away from, and since that row is what the arrow keys
+        step from, the next Down would teleport: scrub to frame 5, press Down,
+        land on frame 1. Routing through the row also keeps the unsaved-change
+        check, annotation save, edit-mode exit and DINO temp re-sync (all in
+        ``switch_slice``) exactly where they were.
         """
         if 0 <= idx < self.slice_list.count():
-            self.switch_slice(self.slice_list.item(idx))
+            self.slice_list.setCurrentRow(idx)
 
     def update_video_timeline(self):
         return self.image_controller.update_video_timeline()
@@ -516,35 +565,27 @@ class ImageAnnotator(QMainWindow):
                 self.delete_selected_annotations()
             elif self.image_list.hasFocus() and self.image_list.currentItem():
                 self.delete_selected_image()
-        elif event.key() == Qt.Key.Key_Up or event.key() == Qt.Key.Key_Down:
-            # Handle slice navigation
-            if self.slice_list.hasFocus():
-                current_row = self.slice_list.currentRow()
-                if event.key() == Qt.Key.Key_Up and current_row > 0:
-                    self.slice_list.setCurrentRow(current_row - 1)
-                elif (
-                    event.key() == Qt.Key.Key_Down
-                    and current_row < self.slice_list.count() - 1
-                ):
-                    self.slice_list.setCurrentRow(current_row + 1)
-                self.switch_slice(self.slice_list.currentItem())
-            else:
-                # Pass the event to the parent for default handling
-                super().keyPressEvent(event)
+        # NOTE: there is deliberately no Up/Down branch here. A focused
+        # QListWidget consumes the arrow keys for its own row navigation and
+        # never propagates them, so this was unreachable code pretending to be
+        # the slice-navigation implementation -- the row moved and the canvas
+        # stayed put. Slice navigation is driven by the slice list's
+        # `currentRowChanged` signal instead (see setup_slice_list).
         elif event.key() == Qt.Key.Key_Home or event.key() == Qt.Key.Key_End:
-            # First / last frame jump for videos (issue #48). Gated on the
-            # active image being a video AND focus on the slice list or the
-            # canvas — QLineEdit/QTextEdit are already spared by the early
-            # return at the top, so this can't steal Home/End from text cursors.
-            # Routes through switch_slice (never sets current_image directly).
-            if self._current_image_is_video() and (
-                self.slice_list.hasFocus() or self.image_label.hasFocus()
-            ):
+            # First / last frame jump for videos (issue #48), for Home/End
+            # pressed while the CANVAS has focus. The slice-list case is
+            # deliberately absent: a focused QListWidget handles Home/End
+            # itself, and since currentRowChanged now drives navigation it
+            # already jumps the canvas with it -- for stacks as well as videos,
+            # which is a widening of #48's video-only gate and a welcome one.
+            # QLineEdit/QTextEdit are spared by the early return at the top, so
+            # this cannot steal Home/End from a text cursor.
+            if self._current_image_is_video() and self.image_label.hasFocus():
                 count = self.slice_list.count()
                 if count > 0:
                     row = 0 if event.key() == Qt.Key.Key_Home else count - 1
+                    # The row change performs the switch (see setup_slice_list).
                     self.slice_list.setCurrentRow(row)
-                    self.switch_slice(self.slice_list.item(row))
             else:
                 super().keyPressEvent(event)
         elif event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
@@ -624,6 +665,9 @@ class ImageAnnotator(QMainWindow):
         self.sam_utils.unload()
         self.dino_utils.unload()
         self.sam3_utils.unload()
+        # The curation embedding model (issue #72) is registered here rather
+        # than getting its own unload action -- one place to reclaim VRAM.
+        self.curation_controller.unload()
         # Reset the dropdowns to a neutral state so the user knows they
         # need to re-pick the model.
         self.sam_model_selector.setCurrentIndex(0)
@@ -636,7 +680,8 @@ class ImageAnnotator(QMainWindow):
         QMessageBox.information(
             self,
             "Models Unloaded",
-            "SAM and DINO models have been unloaded from memory.\n\n"
+            "SAM, DINO and the curation embedding model have been unloaded "
+            "from memory.\n\n"
             "Note: PyTorch keeps a per-process CUDA context that survives "
             "this unload (typically a few hundred MB visible in Task Manager / "
             "nvidia-smi). To fully reclaim GPU memory, restart the app.\n\n"
@@ -741,6 +786,25 @@ class ImageAnnotator(QMainWindow):
         self.dataset_splitter = DatasetSplitterTool(self)
         self.dataset_splitter.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.dataset_splitter.show_centered(self)
+
+    def check_annotations(self):
+        return self.qc_controller.run_audit()
+
+    def open_train_dialog(self):
+        return self.training_controller.open_dialog()
+
+    def run_model_review(self):
+        return self.review_controller.run()
+
+    def analyse_dataset_similarity(self):
+        return self.curation_controller.run()
+
+    def sort_images_by_score(self):
+        if not self.image_controller.sort_image_list_by_score():
+            self.show_info(
+                "Sort by score",
+                "No review scores yet. Run “Review with model” first.",
+            )
 
     def show_annotation_statistics(self):
         if not self.all_annotations:
@@ -1352,8 +1416,10 @@ class ImageAnnotator(QMainWindow):
     def run_predictions(self, selected_images):
         return self.yolo_controller.run_predictions(selected_images)
 
-    def process_yolo_results(self, results, image_name):
-        return self.yolo_controller.process_yolo_results(results, image_name)
+    def process_yolo_results(self, results, image_name, image_size):
+        return self.yolo_controller.process_yolo_results(
+            results, image_name, image_size
+        )
 
     def add_temp_classes(self, temp_annotations):
         return self.dino_controller.add_temp_classes(temp_annotations)

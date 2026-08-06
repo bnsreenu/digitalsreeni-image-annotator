@@ -5,7 +5,7 @@ Tests for screen-to-image and image-to-screen coordinate conversions.
 """
 
 import pytest
-from PyQt6.QtCore import QPoint, QSize
+from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QPixmap
 
 # Phase 7 introduced widgets/tools/* as a subpackage, so image_label.py

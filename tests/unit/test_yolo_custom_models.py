@@ -113,6 +113,67 @@ def test_register_trained_model_writes_yaml_and_paths(tmp_path, qapp):
     written = yaml_lib.safe_load(data_yaml.read_text())
     assert written["nc"] == 2
     assert written["names"] == {0: "cell", 1: "nucleus"}
+    # The model is the active prediction model from here on, with no separate
+    # load step -- so its names have to be the prediction names too. Left None,
+    # the very next prediction died indexing them.
+    assert t.class_names == {0: "cell", 1: "nucleus"}
+
+
+def test_register_sets_the_prediction_keypoint_schema(tmp_path, qapp):
+    """The same defect as class_names, with a worse consequence.
+
+    A trained pose model is the active prediction model with no load step. Left
+    None, ``process_yolo_results`` seeds no ``keypoint_schemas`` entry, the
+    accept path carries none over, and ``finish_keypoint`` then SILENTLY
+    DISCARDS every pose the user places on that class -- no error, no mark on
+    the canvas, nothing in the project.
+    """
+    run = tmp_path / "run"
+    (run / "weights").mkdir(parents=True)
+    best = run / "weights" / "best.pt"
+    best.write_bytes(b"fake")
+
+    train_yaml = tmp_path / "data.yaml"
+    train_yaml.write_text(
+        yaml_lib.safe_dump({"kpt_shape": [3, 3], "flip_idx": [0, 1, 2]}),
+        encoding="utf-8",
+    )
+
+    t = _trainer(tmp_path, qapp)
+    t.yaml_path = str(train_yaml)
+    t.model = types.SimpleNamespace(
+        names={0: "person"},
+        trainer=types.SimpleNamespace(best=str(best), save_dir=str(run)),
+    )
+
+    t._register_trained_model()
+
+    schema = t.prediction_keypoint_schema
+    assert schema is not None, "a trained pose model resolved to no schema"
+    assert len(schema["names"]) == 3
+
+
+def test_register_leaves_no_schema_for_a_non_pose_run(tmp_path, qapp):
+    """A segment model must not acquire a phantom pose schema -- that would
+    make every class look like a pose class to the keypoint tool."""
+    run = tmp_path / "run"
+    (run / "weights").mkdir(parents=True)
+    best = run / "weights" / "best.pt"
+    best.write_bytes(b"fake")
+
+    train_yaml = tmp_path / "data.yaml"
+    train_yaml.write_text(yaml_lib.safe_dump({"names": {0: "cell"}}), encoding="utf-8")
+
+    t = _trainer(tmp_path, qapp)
+    t.yaml_path = str(train_yaml)
+    t.model = types.SimpleNamespace(
+        names={0: "cell"},
+        trainer=types.SimpleNamespace(best=str(best), save_dir=str(run)),
+    )
+
+    t._register_trained_model()
+
+    assert t.prediction_keypoint_schema is None
 
 
 def test_register_falls_back_to_save_dir_when_best_attr_missing(tmp_path, qapp):

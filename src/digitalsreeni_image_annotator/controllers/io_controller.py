@@ -25,27 +25,99 @@ from ..io.export_formats import (
     export_semantic_labels,
     export_yolo_v4,
     export_yolo_v5plus,
+    exportable_annotated_names,
 )
 from ..io.import_formats import import_coco_json, process_import_format
 
+from ..core.dataset_split import split_warning
 from ..core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
-def prompt_validation_split(parent):
+def annotated_image_names(mw):
+    """The names ``mw``'s next YOLO export will split.
+
+    Delegates to the exporter's own helper rather than reimplementing the
+    filter: the preview has to be computed over the same set the export uses,
+    or the warning is about a different split than the one that happens.
+    """
+    return exportable_annotated_names(
+        mw.all_annotations, mw.image_paths, mw.slices, mw.image_slices
+    )
+
+
+def split_inputs(mw):
+    """``(names, groups)`` for ``mw``'s next YOLO split.
+
+    One function because the two belong together: the warning and the export
+    that follows it have to describe the same split, and computing the grouping
+    twice at two call sites is exactly how they drift (ADR-044). The grouping
+    is structural, refined by near-duplicate clusters when a curation run has
+    produced any (ADR-045).
+    """
+    names = annotated_image_names(mw)
+    return names, mw.curation_controller.split_groups(names)
+
+
+def confirm_split_warning(parent, names, image_slices, val_pct, groups=None):
+    """Show what is wrong with the split, if anything. ``False`` to back out.
+
+    The wording lives in ``core.dataset_split.split_warning`` so the CLI emits
+    the identical text; this is the QMessageBox shell around it.
+
+    Offers **Cancel**, and callers honour it. A warning saying the validation
+    numbers cannot be trusted, with only an OK button, trains exactly the
+    click-through reflex it exists to prevent — and on the SAM path the user is
+    being told that the val loss driving early stopping is meaningless, which
+    is worth being able to act on before a GPU run starts.
+    """
+    message = split_warning(names, val_pct, image_slices, groups)
+    if not message:
+        return True
+    choice = QMessageBox.warning(
+        parent,
+        "Validation Split",
+        message,
+        QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        # Ok, not Cancel: on the export path the user has just typed a
+        # percentage, and defaulting to Cancel would let Enter throw it away.
+        # The warning is information; Cancel is there for acting on it.
+        QMessageBox.StandardButton.Ok,
+    )
+    return choice == QMessageBox.StandardButton.Ok
+
+
+def prompt_validation_split(parent, names=None, image_slices=None, groups=None):
     """Ask what fraction of images to hold out for validation.
 
     Returns ``(val_split, ok)`` from a single shared QInputDialog so the YOLO
     menu export and the in-app YOLO trainer can't drift apart. ``0`` keeps the
     historical all-in-train layout.
+
+    Pass ``names``/``image_slices`` to have a problem with the resulting split
+    reported straight after the choice (ADR-044). Declining that warning
+    returns to this dialog rather than proceeding, so the advice it gives is
+    actionable; omitting the arguments keeps the plain prompt for callers with
+    no project state to check.
     """
-    return QInputDialog.getInt(
-        parent,
-        "Validation Split",
-        "Percent of images for the validation set (0 = all in train):",
-        20, 0, 100, 5,
-    )
+    # Seeded from the last declined value, so backing out of the warning
+    # re-opens the prompt where the user left it rather than at the default.
+    proposed = 20
+    while True:
+        val_split, ok = QInputDialog.getInt(
+            parent,
+            "Validation Split",
+            "Percent of images for the validation set (0 = all in train):",
+            proposed, 0, 100, 5,
+        )
+        if not ok:
+            return val_split, False
+        proposed = val_split
+        if names is None or confirm_split_warning(
+            parent, names, image_slices, val_split, groups=groups
+        ):
+            return val_split, True
 
 
 def _rebuild_imported_annotation(ann, category_name, number):
@@ -97,6 +169,7 @@ def import_annotations(mw):
             return
 
         logger.debug(f"Selected file: {file_name}")
+        source = file_name
         json_dir = os.path.dirname(file_name)
         images_dir = os.path.join(json_dir, "images")
         try:
@@ -114,9 +187,17 @@ def import_annotations(mw):
             return
 
         logger.debug(f"Selected YAML file: {yaml_file}")
+        source = yaml_file
         try:
             imported_annotations, image_info, recovered_schemas = process_import_format(
-                import_format, yaml_file, mw.class_mapping
+                import_format, yaml_file, mw.class_mapping,
+                # The importer stays Qt-free (issue #76); the GUI supplies the
+                # prompt it used to raise itself.
+                confirm=lambda message: QMessageBox.question(
+                    mw, "Import Issues", message,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                ) == QMessageBox.StandardButton.Yes,
             )
             yaml_dir = os.path.dirname(yaml_file)
             if import_format == "YOLO (v4 and earlier)":
@@ -127,6 +208,36 @@ def import_annotations(mw):
             QMessageBox.warning(mw, "Import Error", str(e))
             return
 
+    elif import_format == "Pascal VOC":
+        # A directory, not a file: VOC is one XML per image, so there is no
+        # single manifest to point at (issue #75).
+        voc_dir = QFileDialog.getExistingDirectory(
+            mw, "Select the Pascal VOC dataset directory"
+        )
+        if not voc_dir:
+            logger.debug("No VOC directory selected, returning")
+            return
+
+        logger.debug(f"Selected VOC directory: {voc_dir}")
+        source = voc_dir
+        try:
+            imported_annotations, image_info, recovered_schemas = process_import_format(
+                import_format, voc_dir, mw.class_mapping
+            )
+        except ValueError as e:
+            QMessageBox.warning(mw, "Import Error", str(e))
+            return
+        # export_pascal_voc_bbox writes images/ next to Annotations/. When the
+        # user picked Annotations/ itself, step up one level to find them.
+        root_dir = voc_dir
+        if os.path.basename(os.path.normpath(voc_dir)) == "Annotations":
+            root_dir = os.path.dirname(os.path.normpath(voc_dir))
+        images_dir = os.path.join(root_dir, "images")
+        if not os.path.isdir(images_dir):
+            images_dir = os.path.join(root_dir, "JPEGImages")  # the VOC-spec name
+        if not os.path.isdir(images_dir):
+            images_dir = root_dir
+
     else:
         QMessageBox.warning(
             mw,
@@ -135,9 +246,6 @@ def import_annotations(mw):
         )
         return
 
-    logger.debug(
-        f"JSON/YOLO directory: {json_dir if import_format == 'COCO JSON' else os.path.dirname(yaml_file)}"
-    )
     logger.debug(f"Images directory: {images_dir}")
     logger.debug(f"Imported annotations count: {len(imported_annotations)}")
     logger.debug(f"Image info count: {len(image_info)}")
@@ -237,9 +345,12 @@ def import_annotations(mw):
 
     mw.image_label.update()
 
+    # `source` is set by every branch above. The previous form picked between
+    # `file_name` and `yaml_file` inline, which raised UnboundLocalError on any
+    # branch that set neither -- Pascal VOC (issue #75) crashed here AFTER
+    # doing the whole import, so the user saw a traceback instead of a result.
     message = (
-        f"Annotations have been imported successfully from "
-        f"{file_name if import_format == 'COCO JSON' else yaml_file}.\n"
+        f"Annotations have been imported successfully from {source}.\n"
     )
     message += f"{images_loaded} images were loaded from the 'images' directory.\n"
     if images_not_found:
@@ -288,8 +399,12 @@ def export_annotations(mw):
     # YOLO training needs a non-empty validation set; let the user choose how
     # much of the data to hold out (0 keeps the historical all-in-train layout).
     val_split = 0
+    split_groups = None
     if export_format in ("YOLO (v4 and earlier)", "YOLO (v5+)"):
-        val_split, ok = prompt_validation_split(mw)
+        names, split_groups = split_inputs(mw)
+        val_split, ok = prompt_validation_split(
+            mw, names, mw.image_slices, groups=split_groups
+        )
         if not ok:
             return
 
@@ -320,6 +435,7 @@ def export_annotations(mw):
             mw.image_slices,
             file_name,
             val_split,
+            groups=split_groups,
         )
         message = "Annotations have been exported successfully in YOLO (v4 and earlier) format.\n"
         message += f"Labels: {labels_dir}\nYAML: {yaml_path}\nValidation split: {val_split}%"
@@ -335,6 +451,7 @@ def export_annotations(mw):
                 file_name,
                 val_split,
                 keypoint_schemas=mw.keypoint_schemas,
+                groups=split_groups,
             )
         except ValueError as e:
             QMessageBox.warning(mw, "Export Error", str(e))

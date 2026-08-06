@@ -6,7 +6,6 @@ Tests for calculate_area, calculate_bbox, and normalize_image functions.
 
 import pytest
 import numpy as np
-import sys
 import os
 import importlib.util
 

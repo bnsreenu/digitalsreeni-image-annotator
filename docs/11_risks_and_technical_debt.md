@@ -37,6 +37,9 @@
 - Documentation recommends tiny/small models
 - UI warns about large model
 - Autosave reduces data loss
+- Out-of-memory on model load now shows an actionable "pick a smaller model"
+  dialog instead of a generic error (`core/torch_utils._is_oom` +
+  `SAMController.change_sam_model`, issue #34)
 
 **Future Action**:
 - Add RAM detection and warning
@@ -46,11 +49,16 @@
 
 ### Project File Portability
 
-**Risk Level**: Low-Medium
+**Status**: Resolved (#42, ADR-033)
 
-**Description**: Projects store absolute paths, not portable between machines
+**Risk Level**: Low-Medium (historical)
 
-**Impact**:
+**Description**: ~~Projects store absolute paths, not portable between machines.~~
+`.iap` now stores portable `image_paths_rel` (POSIX separators) alongside the absolutes;
+`resolve_image_path()` resolves relative-first, so a moved or shared project folder opens
+without a missing-images prompt. v1 projects still resolve via the `images/` convention.
+
+**Original impact** (pre-#42):
 - Cannot share projects easily
 - Moving images breaks projects
 - Collaboration difficult
@@ -76,10 +84,16 @@
 
 **Mitigation**:
 - Slice-by-slice loading for multi-dimensional images
+- **Lazy slice QImage materialisation with a bounded LRU (ADR-036, #45)** —
+  `create_slices` no longer builds every slice's `QImage` up front; slice
+  QImages decode on demand and at most `slice_cache.LRU_CAPACITY` (8) are held
+  live process-wide. Removes the dominant all-QImages-in-RAM cost and the
+  create-time peak.
 - Image downsampling for display (future)
-- Lazy loading (future)
 
-**Current Limitation**: All slices loaded into memory
+**Current Limitation**: The decoded source ndarray is still retained per open
+stack (Strategy A). Full array-free reading (memmap/zarr per-slice, or CZI
+lazy read) is a documented follow-up; the live-QImage count is now bounded.
 
 ---
 
@@ -87,32 +101,57 @@
 
 ### Low Test Coverage of Interactive Paths
 
-**Debt Level**: Medium
+**Status**: ✅ Largely resolved for the canvas layer (issue #77)
 
-**Description**: A pytest + pytest-qt suite of 94 tests now exists
-(boot smoke, coordinate conversions, export-format round-trips,
-utility functions). Coverage is ~15% by line — the gap is the
-canvas event flow (mouse events → tool handler → signal emission →
-controller slot) and the SAM/DINO/YOLO inference paths.
+**Debt Level**: Low (was Medium)
 
-**Impact**:
-- Phase 6/7/8 refactors had to lean on manual QA checklists for the
-  canvas flow because no automated test exercises it end-to-end.
-- Inference paths are exercised only via the smoke boot, not under
-  real model loads (those would slow CI prohibitively).
+**Description (historical)**: The canvas event flow — mouse event → tool
+handler → signal emission → controller slot — had no automated coverage. The
+per-tool handlers sat at 22–27 % by line and `canvas_renderer.py` at 49 %,
+which meant every canvas refactor leaned on a manual QA checklist.
 
-**Effort to Resolve**: Medium
+**Resolution**: Issue #77 added three layers of coverage, built on the shared
+doubles in `tests/canvas_fixtures.py` (`FakeCanvasContext`, `FakeMouseEvent`,
+`RecordingPainter`):
 
-**Priority**: Medium
+1. `tests/unit/test_tool_handlers.py` — every `ToolHandler` subclass driven
+   through press / move / release / Enter / Escape and its `paint_overlay`,
+   asserting the **emitted signal and payload** rather than internal state.
+   Includes the right-button (occluded keypoint) path that the left-only press
+   dispatch would otherwise hide (ADR-029).
+2. `tests/ui/test_canvas_gestures.py` — real `qtbot` mouse events through
+   `mousePressEvent`, so the dispatch *priority order* is covered as well as
+   the gesture logic: handle resize anchoring, drag-gated move, rubber-band
+   selection, double-click into vertex-edit mode, and the ADR-026 rule that an
+   Esc-aborted gesture leaves no history entry.
+3. `tests/unit/test_canvas_renderer_contract.py` — `CanvasRenderer` against a
+   recording painter, pinning draw order (selection overlay last, temp
+   annotations on top) and class-visibility filtering. This is the harness
+   onion-skinning (#67) inserts a layer into.
 
-**Plan**:
-1. Per-tool unit tests under `widgets/tools/` — each handler can be
-   tested by instantiating with a stub `label` carrying signals
-   and a fake `CanvasContext`, then feeding `QMouseEvent`s.
-2. Integration test that loads a tiny project, draws a polygon,
-   asserts the `.iap` round-trip restores state.
-3. Mock SAMUtils / DINOUtils inference returns to exercise the
-   controller signal paths without needing model weights.
+Plus `tests/unit/test_coordinate_conversion.py` for the screen↔image funnel
+every gesture passes through.
+
+**Measured effect** (full suite, `--cov`):
+
+| Module | Before | After |
+|--------|--------|-------|
+| `widgets/tools/eraser_tool.py` | 22 % | 75 % |
+| `widgets/tools/paint_tool.py` | 26 % | 79 % |
+| `widgets/tools/polygon_tool.py` | 26 % | 76 % |
+| `widgets/tools/rectangle_tool.py` | 27 % | 85 % |
+| `widgets/tools/keypoint_tool.py` | 65 % | 92 % |
+| `widgets/canvas_renderer.py` | 49 % | 69 % |
+| `widgets/image_label.py` | 59 % | 69 % |
+
+A `--cov-fail-under` floor is now configured in `pytest.ini` so the number
+cannot quietly slide back. The floor is set at the level actually reached, not
+an aspirational one — a gate that fails on day one gets disabled on day two.
+
+**Remaining gap**: the SAM/DINO/YOLO inference paths are still exercised only
+via the smoke boot and mocked controller tests, never under real model loads
+(those would slow CI prohibitively). That is a deliberate limit, not an
+oversight.
 
 ---
 
@@ -136,9 +175,18 @@ controller slot) and the SAM/DINO/YOLO inference paths.
 
 ### Inconsistent Error Handling
 
-**Debt Level**: Medium
+**Status**: ✅ Resolved with a written convention (issue #34)
 
-**Description**: Mix of exceptions, return values, and UI warnings
+**Debt Level**: Medium (historical)
+
+**Resolution**: A single error-handling convention now governs the codebase —
+core/inference/io/training raise; controllers/dialogs catch, `logger.exception`,
+and surface a `QMessageBox`; catch the narrowest type; never `pass` silently;
+bare `except:` banned. Seven silent `except: pass` sites were fixed and the one
+bare `except:` removed. See ADR-031 and the Error-Handling Convention in
+[docs/08](08_crosscutting_concepts.md#error-handling-convention-issue-34).
+
+**Description (historical)**: Mix of exceptions, return values, and UI warnings
 
 **Examples**:
 ```python
@@ -167,19 +215,16 @@ return None
 
 ### Print Statements for Logging
 
-**Debt Level**: Low
+**Status**: ✅ Resolved (issue #33)
 
-**Description**: Uses `print()` instead of proper logging framework
-
-**Impact**:
-- Cannot control log levels
-- Cannot redirect logs
-- Hard to debug production issues
-- Console spam
-
-**Effort to Resolve**: Low (days)
-
-**Priority**: Low
+**Description**: Historically used `print()` instead of a logging framework.
+All ~307 `print()` calls and 12 `traceback.print_exc()` sites in `src/` were
+migrated to the stdlib `logging` module: one package-level logger tree rooted
+at `digitalsreeni_image_annotator`, configured once in
+`core/logging_config.py`, with a `--debug` / `IMAGE_ANNOTATOR_DEBUG` level
+switch. `print()` is now banned in `src/` (ADR-030). See the
+"Logging and Debug Output" section in
+[docs/08](08_crosscutting_concepts.md#logging-and-debug-output).
 
 **Plan**: Replace with `logging` module
 
@@ -219,20 +264,84 @@ the orchestrator wires each to the matching controller slot.
 
 ### No Type Hints
 
-**Debt Level**: Medium
+**Status**: Partially resolved — the Qt-free core is typed and checked (#78)
 
-**Description**: Python code lacks type hints
+**Debt Level**: Low for `core/`, unchanged elsewhere
 
-**Impact**:
-- No static type checking
-- Harder to understand function contracts
-- More runtime errors
+**Description (historical)**: The codebase was essentially untyped, with no
+configuration and no checking step. The cost showed up most in the structures
+carrying the most meaning: an annotation is a dict whose valid shapes were
+documented in prose, and a pose instance is distinguished from a polygon by the
+**absence** of a key (ADR-029) — a rule only a comment protected.
 
-**Effort to Resolve**: High (add gradually)
+**What is now covered**
 
-**Priority**: Low
+`core/annotation_types.py` defines the annotation shapes as `TypedDict`s:
+`PolygonAnnotation`, `BBoxAnnotation`, `PoseAnnotation`, plus `KeypointSchema`
+and aliases for the recurring shapes (`Polygon`, `BBox`, `Keypoints`,
+`AnnotationsByImage`). **`PoseAnnotation` declares no `segmentation` key at
+all** — the type definition expresses the discriminator, because declaring one
+even as optional would legitimise writing it, and writing it breaks every
+existence-only `"segmentation" in ann` check. `is_pose` / `is_polygon` /
+`is_bbox_only` express the test once.
 
-**Plan**: Add type hints to new code, gradually backfill
+Every `TypedDict` is `total=False`, deliberately: the annotation dict
+legitimately gains keys at runtime (`segmentation_raw` lazily, ADR-025;
+`source` and `track_run` on tracked results, ADR-040; `assigned_class` on
+unprompted proposals, #69). Forcing a rigid schema onto genuinely open data
+would produce false errors and teach people to ignore the checker.
+
+mypy is configured in `pyproject.toml` with **global `ignore_errors = true` and
+a per-module opt-in**. That direction matters: the boundary of what is actually
+checked stays visible, whereas checking everything and suppressing failures
+would hide it. Currently opted in: `annotation_types`, `annotation_qc`,
+`constants`, `disagreement`, `image_size`, `mask_filters`, `model_sidecar`,
+`onion`, `project_io`, `similarity`, `task_inference`.
+
+Untyped third-party packages are listed **individually** rather than behind a
+global `ignore_missing_imports`, so the list stays visible and shrinks as
+upstreams ship stubs. Several of them ship source written for a newer Python
+than the project's 3.10 floor, so the override also sets
+`follow_imports = "skip"`.
+
+**Deliberately out of scope**: widget internals and dialogs. The PyQt6 stubs are
+incomplete, so annotating them produces noise rather than safety — which is
+exactly why an `mypy --strict` sweep over the whole tree is a different project.
+
+**The gate is verified to be non-vacuous.**
+`tests/unit/test_annotation_types.py` copies the tree, injects a deliberately
+wrong return type into an in-scope module, and asserts the real gate fails. A
+type-check step that checks nothing is worse than none: it reports success
+forever while teaching everyone to trust it.
+
+**Remaining**: `io/`, `utils.py` and the controller signatures are annotated
+only where they already were. Extending the opt-in list module by module is the
+intended path.
+
+---
+
+### No Linting
+
+**Status**: Resolved (issue #78)
+
+**Description**: The project had no linter at all.
+
+**Resolution**: `ruff` is configured in `pyproject.toml` with a **deliberately
+narrow** rule set — `E4`, `E7`, `E9`, `F`. The codebase predates any linter, so a
+broad selection would produce hundreds of findings nobody reads and the gate
+would be switched off within a week. These rules catch real defects (unused
+names, shadowed builtins, ambiguous identifiers, syntax-level errors) rather
+than style preferences. It found and fixed 17 pre-existing issues on first run;
+the tree is clean.
+
+Run both gates separately from the tests, so a type error is distinguishable
+from a test failure:
+
+```bash
+python -m ruff check src tests
+python -m mypy
+pytest
+```
 
 ---
 
@@ -254,15 +363,24 @@ the orchestrator wires each to the matching controller slot.
 
 ## Known Issues
 
-### YOLO Training Not Supported for Multi-dimensional Images
+### YOLO Training Needs a Stack's Slices to Be Loaded
 
-**Status**: Known Limitation
+**Status**: Resolved for the common case
 
-**Description**: YOLO training only works with single images, not TIFF/CZI slices
+**Description**: This entry previously read "YOLO training only works with single images, not
+TIFF/CZI slices", with "export slices as individual images first" as the workaround. That was
+wrong by the time it was written down: the exporters resolve slice pixels through `image_slices`
+(#45/#47), so stack slices and video frames export like any other image. The training dialog's
+pre-flight nonetheless refused every stack and video, which rejected valid datasets — including
+the one SAM 3 tracking (#51) exists to produce.
 
-**Workaround**: Export slices as individual images first
+What remains is narrower: a stack or video contributes **no pixels** until its slices have been
+materialised in this session. Project load and `add_images_to_list` both do that eagerly, so the
+reachable causes are a cancelled dimension dialog, an unreadable codec, or a moved file. The
+dialog blocks only when such a stack **has annotations**, since an unopened but unannotated stack
+cannot affect the export at all.
 
-**Priority**: Low (niche use case)
+**Priority**: Low (narrow residual case, reported explicitly rather than silently dropped)
 
 ---
 
@@ -289,12 +407,12 @@ the orchestrator wires each to the matching controller slot.
 - A schema is **per class** (the COCO rule); all instances of a class share it.
 - A point set to *not labelled* (v=0) via "finish early" doesn't render and can't be
   relabelled with a right-click in PR-1 (only v>0 points are hit-testable).
-- **Defining a schema on a class that already holds normal (polygon/bbox) annotations
-  is unguarded** — nothing forbids a mixed pose + non-pose class. It renders/saves
-  fine, but the change-class guard then treats it inconsistently (a normal annotation
-  can no longer move into that class once it has a schema, even alongside its own
-  kind). Not fixed in PR-1; either forbid schema definition on a non-empty class or
-  explicitly relax the guard for the mixed case.
+- ~~**Defining a schema on a class that already holds normal (polygon/bbox) annotations
+  is unguarded**~~ **— Resolved (#44).** The UI now blocks *new* mixing in both
+  directions (schema-on-plain-class; shape/SAM-tool-on-pose-class;
+  pose-class-selection-while-a-tool-is-active; DINO skips pose classes); see ADR-029
+  Guards. Legacy-mixed classes still load/render/save, and `_pose_export_check` remains
+  the export backstop.
 - **Forthcoming** (PR-2/PR-3): YOLO-pose export requires a **single `kpt_shape` per
   dataset**, so a project mixing pose classes of different K (or pose + non-pose) can't
   export to YOLO-pose (COCO has no such limit). YOLO-pose *training* stays unsupported
@@ -318,13 +436,12 @@ the orchestrator wires each to the matching controller slot.
 
 ### Autosave Doesn't Ask for File Location
 
-**Status**: Known Behavior
+**Status**: Resolved (#41, ADR-032)
 
-**Description**: Autosave only works after first manual save
-
-**Impact**: New projects lose autosave protection until first save
-
-**Priority**: Low
+**Description**: ~~Autosave only works after first manual save.~~ Before the first save,
+`auto_save()` now writes a silent recovery snapshot (no dialog) that the app offers to
+restore on next launch; a real save clears it. New projects are protected from the first
+mutation.
 
 ---
 
@@ -344,8 +461,53 @@ the orchestrator wires each to the matching controller slot.
 - Periodically review upstream
 - Consider contributing changes back
 
-**Current Fork-Specific Changes**:
-- (Document any fork-specific features here)
+**Current Fork-Specific Changes** (derived from the merge history and ADR index):
+- PyQt6 migration replacing PyQt5 (ADR-014), with a torch-before-Qt DLL
+  load-order guard in `main.py` (ADR-017).
+- In-process SAM 2 / Grounding-DINO inference on a `QThread` with a re-entrancy
+  guard, replacing the old subprocess workers (ADR-013).
+- Grounding-DINO text-prompted detection — single image and batch — with an
+  Enter/Escape review-and-accept overlay.
+- SAM 2 fine-tuning via a custom loop over the Ultralytics SAM2 module (ADR-021),
+  with always-on MLflow experiment tracking (ADR-027).
+- YOLO training + prediction for detection, segmentation, and pose (issue #35).
+- Keypoint / pose annotation: per-class named schema + skeleton (COCO instance
+  model), with COCO-keypoints and YOLO-pose export/import (ADR-029).
+- Undo / redo via per-image annotation snapshots (ADR-026).
+- Canvas selection unified with the annotations table + handle-based shape
+  editing and vertex editing (ADR-022 / 023 / 025), with bounds clamping and
+  augmentation clipping (ADR-024).
+- Modular architecture: thin `ImageAnnotator` orchestrator + per-responsibility
+  controllers + per-tool handlers (ADR-018 / 019).
+- Central stdlib `logging` framework (ADR-030) and a written error-handling
+  convention (ADR-031).
+- A pytest + pytest-qt automated test suite run in CI on 3 OS × Python
+  3.10-3.14, superseding the original manual-testing-only decision (ADR-004).
+
+---
+
+## SAM 3 Dependency & Licensing Constraints (Milestone D, ADR-038)
+
+**Risk Level**: Medium (forward-looking; applies once #50/#51 ship)
+
+**Description**: The SAM 3 spike (#49, ADR-038) confirmed SAM 3 is consumable via Ultralytics
+(>=8.3.237) but with three material constraints:
+
+- **Non-redistributable, gated weights**: `sam3.pt` (3.45 GB) is under Meta's custom **SAM License**
+  (not OSI open-source) and is access-gated on Hugging Face. We must **not** vendor or ship the
+  weights; users request access, accept Meta's terms, and download them (same posture as gated DINO
+  models). Redistributed weights/derivatives must stay under the SAM License; a patent-retaliation
+  clause applies.
+- **CPU impractical**: no documented CPU path; 3.45 GB / 473.6M params make CPU inference infeasible.
+  SAM 3 is GPU-recommended; the Grounding-DINO two-stage pipeline remains the CPU fallback.
+- **Version floor bump**: `ultralytics` floor rises to `>=8.3.237,<9` for #50; a CLIP dependency quirk
+  may require `pip install git+https://github.com/ultralytics/CLIP.git`.
+
+**Mitigation**: Lazy-load SAM 3 (ADR-012) so older installs still launch; keep DINO selectable for CPU
+users; surface a clear gated-download status message; document the manual weight step. Two D3 facts
+(numpy-frame seeding, long-video predictor memory) remain unresolved and are #51's verify-first items.
+
+**Priority**: Tracked in ADR-038; addressed by #50/#51.
 
 ---
 

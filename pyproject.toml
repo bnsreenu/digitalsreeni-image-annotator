@@ -25,7 +25,17 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "PyQt6>=6.7.0",
+    # Upper bound = the highest minor CI actually exercises, plus one. 6.11 is green
+    # across ubuntu/windows/macos x Py3.10-3.14, so the cap only keeps an untested
+    # future minor from arriving silently; Qt 6.12 is upstream's last Windows-10
+    # release, so raising it deserves a real run rather than a bump.
+    #
+    # NOT a fix for issue #92. That report (PyQt6 6.11 failing to import in an
+    # existing Conda env) is DLL shadowing inside that environment, not a defect in
+    # 6.11 -- see ADR-046. Do not "fix" it by tightening this to <6.9: that downgrades
+    # every working install to paper over one contaminated environment. The remedy
+    # lives in `sreeni-cli doctor` and README's Troubleshooting section.
+    "PyQt6>=6.7.0,<6.12",
     "numpy>=2.0.0",           # pip resolves 2.4+ on Py3.14, 2.2.x on Py3.10
     "Pillow>=10.0.0",
     "tifffile>=2023.0.0",
@@ -53,6 +63,11 @@ dev = [
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.12.0",
     "pytest-xvfb>=3.0.0; sys_platform == 'linux'",
+    "ruff>=0.6",                                    # lint (issue #78)
+    "mypy>=1.11",                                   # type check (issue #78)
+    # tomllib is stdlib from 3.12; the tests that read the mypy config back out
+    # of pyproject.toml need the backport on the supported floor versions.
+    "tomli>=2.0; python_version < '3.12'",
 ]
 
 [project.urls]
@@ -61,6 +76,94 @@ Homepage = "https://github.com/bnsreenu/digitalsreeni-image-annotator"
 [project.scripts]
 digitalsreeni-image-annotator = "digitalsreeni_image_annotator.main:main"
 sreeni = "digitalsreeni_image_annotator.main:main"
+# Headless entry point (issue #76). Deliberately a separate script: the GUI
+# entry imports torch eagerly before QApplication to work around a Windows DLL
+# conflict (ADR-017), and the CLI must not inherit that startup path.
+sreeni-cli = "digitalsreeni_image_annotator.cli:main"
+
+# --- lint (issue #78) ------------------------------------------------------
+[tool.ruff]
+src = ["src"]
+line-length = 100
+extend-exclude = ["build", "dist", ".venv"]
+# `ruff check .` is what CI runs, so the config has to hold for the whole tree,
+# not just src/ and tests/.
+
+[tool.ruff.lint]
+# Deliberately narrow. The codebase predates any linter, so a broad rule set
+# would produce hundreds of findings nobody reads and the gate would be turned
+# off within a week. These four catch real defects (unused names, shadowed
+# builtins, ambiguous identifiers) rather than style preferences.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Public API re-exports: names are imported to be re-exported, not used here.
+"src/digitalsreeni_image_annotator/__init__.py" = ["F401"]
+
+# --- type check (issue #78) ------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+files = ["src/digitalsreeni_image_annotator"]
+# Global settings stay permissive so the gate is green from the first commit;
+# checking is enabled per-module below, and tightens module by module. A gate
+# that fails on day one is a gate that gets disabled on day two.
+ignore_errors = true
+follow_imports = "silent"
+ignore_missing_imports = false
+warn_unused_configs = true
+# Do not read type information out of installed packages. This is the only
+# setting that behaves identically across the 3.10-3.14 CI matrix: a dependency
+# ships whatever stubs its own release targets, and mypy parses them under OUR
+# python_version. numpy 2.x's __init__.pyi uses 3.12+ `type` statements, so
+# targeting the 3.10 floor made mypy fail on numpy's own stubs on every matrix
+# entry -- a file we neither own nor call. A per-module follow_imports = "skip"
+# does not prevent that parse for site-packages stubs; this does.
+#
+# The trade-off is explicit: third-party boundaries type as `Any`, which is
+# already what the ignore list below declares for most of them. We type-check
+# our own core, not our dependencies.
+no_site_packages = true
+
+# Untyped third-party packages. Listed individually rather than switching on a
+# global ignore_missing_imports, so the ignore list stays visible and shrinks
+# as upstreams ship stubs.
+#
+# With no_site_packages above, every one of these is unresolvable by design;
+# listing them individually rather than switching on a global
+# ignore_missing_imports keeps the set visible, so a typo in an INTERNAL import
+# still fails the check instead of being silently ignored.
+#
+# follow_imports = "skip" is belt-and-braces for the same parse problem.
+[[tool.mypy.overrides]]
+module = [
+    "cv2.*", "czifile.*", "mlflow.*", "numpy.*", "plotly.*", "pystackreg.*",
+    "pydicom.*", "shapely.*", "skimage.*", "tifffile.*",
+    "transformers.*", "ultralytics.*", "yaml.*", "PIL.*",
+]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+# Modules that ARE annotated and ARE checked. Everything else is excluded
+# above -- explicitly, so the boundary is visible rather than a silent gap.
+# Widget internals and dialogs stay out of scope on purpose: the PyQt6 stubs
+# are incomplete, so annotating them produces noise, not safety.
+[[tool.mypy.overrides]]
+module = [
+    "digitalsreeni_image_annotator.core.annotation_types",
+    "digitalsreeni_image_annotator.core.annotation_qc",
+    "digitalsreeni_image_annotator.core.constants",
+    "digitalsreeni_image_annotator.core.dataset_split",
+    "digitalsreeni_image_annotator.core.disagreement",
+    "digitalsreeni_image_annotator.core.image_size",
+    "digitalsreeni_image_annotator.core.mask_filters",
+    "digitalsreeni_image_annotator.core.model_sidecar",
+    "digitalsreeni_image_annotator.core.onion",
+    "digitalsreeni_image_annotator.core.project_io",
+    "digitalsreeni_image_annotator.core.qt_diagnostics",
+    "digitalsreeni_image_annotator.core.similarity",
+    "digitalsreeni_image_annotator.core.task_inference",
+]
+ignore_errors = false
 
 [tool.setuptools.packages.find]
 where = ["src"]

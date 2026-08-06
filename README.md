@@ -28,21 +28,33 @@ Dr. Sreenivas Bhattiprolu
 - Grounding-DINO and SAM 3 text-prompted object detection — describe what you want in plain English and review/accept detections one image or a whole batch at a time.
 - Video annotation (MP4/AVI/MOV) — frame-by-frame annotation with a scrub timeline, plus SAM 3 object tracking to propagate a selected mask forward and backward across a video's frames, with per-frame or whole-run undo and one-click export of annotated frames.
 - SAM 2 fine-tuning on your own annotations, with always-on MLflow experiment tracking, so you can adapt SAM to your specific dataset instead of relying on the generic pre-trained weights.
+- One Train Model dialog for both YOLO and SAM 2 — it works out the task from your annotations and handles dataset preparation, YAML wrangling, loading and saving for you, so training is one dialog instead of a menu safari.
+- Trained models register themselves: weights are copied into the project with a sidecar describing what they were trained on, the run is reported, and the model is offered for an immediate trial on the current image.
+- Group-aware train/val split — a stack's slices and a video's frames are held out together instead of being scattered across both sides, so your validation numbers measure generalisation rather than memorisation. Where no leak-free split exists, the app says so instead of quietly reporting flattering numbers. Run the curation pass first and its near-duplicate clusters seed the grouping too, catching frames that were extracted as ordinary files and whose names give nothing away.
+- Model-vs-ground-truth review: score every image by how much a trained model disagrees with its labels (or how unsure it is where there are none) and sort the image list by it — annotate what the model actually finds hard.
+- Dataset curation with image embeddings (CLIP or DINOv2): find near-duplicates and coverage gaps, so you stop annotating the fortieth near-identical frame. Recommends only — it has no delete button, by design.
+- Annotation QC audit — rule-based geometry, redundancy, statistics and hygiene checks, with one-click repairs applied as a single undo step.
 - Keypoint / pose annotation with per-class named skeletons (COCO instance model, 3-state point visibility), including COCO-keypoints and YOLO-pose export/import.
 - Manual annotations with polygons and rectangles — For when you want to show SAM-2 who's really in charge.
 - Paint brush and Eraser tools with adjustable pen sizes (use - and = on your keyboard)
 - Merge annotations - For when SAM-2's guesswork needs a little human touch.
 - Undo / redo for annotation edits (Ctrl+Z / Ctrl+Y).
 - Handle-based resize/move and vertex editing for any selected shape, with canvas selection unified with the annotations table.
+- Insert and delete polygon vertices: double-click an edge to add one, Alt+click a vertex to remove it.
+- Segment Everything — let SAM propose every mask it can find and review them with the same accept/reject overlay as the text-prompted detections.
+- Copy and paste annotations (Ctrl+C / Ctrl+V) across images, slices and video frames.
+- Onion-skinning for stacks and videos — see the neighbouring slices' annotations, image, or both, while you work.
+- Keyboard-driven annotation: 1…9 pick a class, P/R/B/E/K pick a tool, V returns to selection — and they stay out of the way while you are typing in a text field.
 - Save and load projects for continued work.
 - Save As... and Autosave functionality.
 - A secret game, for when you are bored.
-- Import existing COCO JSON annotations with images.
+- Import existing COCO JSON and Pascal VOC annotations with images.
 - Export annotations to various formats (COCO JSON, YOLO v8/v11, YOLO-pose, Labeled images, Semantic labels, Pascal VOC).
 - Handle multi-dimensional images (TIFF stacks and CZI files).
 - Zoom and pan for detailed annotations.
 - Support for multiple classes with customizable colors.
 - User-friendly interface with intuitive controls, built on PyQt6.
+- A headless command line (`sreeni-cli`) for export, format conversion, annotation validation and batch prediction — for the parts of the work that belong in a script rather than in a GUI.
 - Change the application font size on the fly — Make your annotations as big or small as your caffeine level requires.
 - Dark mode for those late-night annotation marathons — Who needs sleep when you have dark mode?
 - Pick appropriate pre-trained SAM2 model for flexible and improved semi-automated annotations.
@@ -90,6 +102,10 @@ pip install digitalsreeni-image-annotator
 
 The application uses the Ultralytics library, so there's no need to separately install SAM2 or PyTorch, or download SAM2 models manually.
 
+Prefer a **clean virtual environment**. Installing into an existing Conda
+environment that already carries its own Qt is the one setup known to break — see
+[Troubleshooting](#troubleshooting-qt-fails-to-import) below.
+
 ### GPU acceleration (NVIDIA)
 
 The PyTorch wheel installed by default from PyPI is **CPU-only** on Windows. If you have an NVIDIA GPU, SAM and Grounding DINO will run dramatically faster on CUDA — reinstall PyTorch from the CUDA index:
@@ -113,6 +129,52 @@ PyTorch ≥ 2.8 wheels no longer include kernels for GPUs older than Volta (comp
 
 ```bash
 pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+```
+
+### Troubleshooting: Qt fails to import
+
+If starting the app fails with
+
+```
+ImportError: DLL load failed while importing QtCore: The specified procedure could not be found.
+```
+
+(Windows exception `0xc0000139`, `STATUS_ENTRYPOINT_NOT_FOUND`), run:
+
+```bash
+sreeni-cli doctor
+```
+
+It never imports Qt, so it still works when the application itself cannot start.
+It prints the installed PyQt6 / Qt / sip versions and every `Qt6Core.dll` in the
+order PyQt6's own `find_qt()` consults them, with each one's version.
+
+**What causes it.** Almost always a second Qt in the environment, not a bad PyQt6
+release. In a Conda environment `qt6-main` (pulled in by `pyqt`, `qtpy`, `spyder`,
+`napari`, matplotlib's Qt backend, …) installs its own `Qt6Core.dll`, and PyQt6
+finds it *before* the copy its own wheel ships — the interpreter's directory is
+checked first, and for a Conda environment that is the environment root.
+conda-forge's Qt lags PyPI's, so a newer PyQt6 ends up calling into an older Qt
+that lacks the symbols it needs. An outdated `msvcp140.dll` from Conda's
+`vc14_runtime` does the same thing.
+
+This is why downgrading PyQt6 appears to fix it: the binding stops being newer
+than the Qt it collided with.
+
+**Fixes**, best first:
+
+```bash
+# 1. Install into a clean virtual environment with no Qt of its own
+python -m venv .venv
+.venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
+pip install -e .
+
+# 2. Or remove the conflicting Qt, if nothing in the environment needs it
+conda remove qt6-main
+
+# 3. Or match the binding to the Qt already present
+#    (doctor prints the version to use here — 6.8.* is only an example)
+pip install "PyQt6==<major>.<minor>.*"
 ```
 
 ## Usage
@@ -207,7 +269,7 @@ pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorc
 
 ## Known Issues and Bug Fixes
 
-- YOLO training is not currently supported for multi-dimensional images (TIFF stacks / CZI slices) — single images only.
+- YOLO training now works with multi-dimensional images (TIFF stacks / CZI slices) and video frames. One caveat: a stack's slices must have been loaded in the current session — opening the image once is enough.
 - SAM 2 large may crash the application on systems with limited RAM; smaller SAM2 models are recommended.
 - When loading a YOLO model trained on different classes compared to the loaded YAML file, the application now gives a message to the user about the mismatch instead of crashing.
 - Various other bugs have been addressed to improve overall stability and performance.

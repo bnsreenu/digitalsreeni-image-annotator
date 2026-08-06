@@ -16,6 +16,8 @@ import os
 from PyQt6.QtGui import QImage
 
 from .sam_trainer import SampleGroup
+from ..core.slice_index import resolve_slice_image as _resolve_slice_image
+from ..core.slice_index import slice_index as _slice_index
 from ..inference.sam_utils import _qimage_to_numpy
 
 from ..core.logging_config import get_logger
@@ -42,7 +44,7 @@ def build_groups_from_project(all_annotations, image_paths, slices, image_slices
     Images load lazily (one at a time during training) to bound memory; in-RAM
     slice QImages are reused directly.
     """
-    slice_map = {name: qimage for name, qimage in slices}
+    slice_index = _slice_index(slices, image_slices)
     groups = []
 
     for image_name, image_annotations in all_annotations.items():
@@ -50,13 +52,8 @@ def build_groups_from_project(all_annotations, image_paths, slices, image_slices
         if not specs:
             continue
 
-        if image_name in slice_map or ("_" in image_name and "." not in image_name):
-            qimage = slice_map.get(image_name)
-            if qimage is None:
-                for stack_slices in image_slices.values():
-                    qimage = next((s[1] for s in stack_slices if s[0] == image_name), None)
-                    if qimage is not None:
-                        break
+        if image_name in slice_index or ("_" in image_name and "." not in image_name):
+            qimage = _resolve_slice_image(slice_index, image_name)
             if qimage is None:
                 logger.warning(f"skip slice {image_name!r}: no image data")
                 continue
@@ -107,14 +104,26 @@ def build_groups_from_folder(folder: str):
         specs = entry.get("instances", [])
         if not specs or not os.path.exists(img_path):
             continue
-        groups.append(SampleGroup(lambda p=img_path: _qimage_to_numpy(QImage(p)), specs, name=img_rel))
+        # Ext-stripped basename, matching what the project path puts in `name`
+        # (`build_groups_from_project` uses the annotation key). The manifest
+        # stores `images/clip_F00042.png`, and the dot in that made
+        # `derive_groups` treat every frame of a recording as its own group --
+        # so "Fine-Tune SAM from Dataset Folder" silently got no grouping at
+        # all while the project path was correctly grouped. Normalising here
+        # rather than at the split keeps every consumer of `name` seeing one
+        # shape.
+        groups.append(SampleGroup(
+            lambda p=img_path: _qimage_to_numpy(QImage(p)),
+            specs,
+            name=os.path.splitext(os.path.basename(img_rel))[0],
+        ))
     return groups
 
 
 # ── train/val split ──────────────────────────────────────────────────────────
 
-def split_groups(groups, train_pct):
-    """Partition ``groups`` into ``(train, val)`` deterministically by image.
+def split_groups(groups, train_pct, keyed_groups=None):
+    """Partition ``groups`` into ``(train, val)`` deterministically by source.
 
     ``train_pct`` in ``[0, 100]``; ``>= 100`` (or fewer than 2 groups) keeps
     everything in train with an empty val set — the caller then skips the
@@ -122,8 +131,32 @@ def split_groups(groups, train_pct):
     (stable MD5 ordering) so the SAM split matches the YOLO export's behaviour
     and is reproducible across runs and machines.
 
-    Each group is keyed by ``"{index}:{name}"`` so duplicate or empty
-    ``SampleGroup.name`` values can't collapse two images into one split bucket.
+    Each group is keyed by ``"{index}:{name}"``, which keeps two same-named
+    ``SampleGroup``s distinct as *entries*. They do now share a split bucket,
+    deliberately: identically-named sources are exactly what the grouping is
+    supposed to keep together. An **empty** name falls back to the unique key,
+    since "unnamed" is not evidence of a shared source.
+
+    **Split by source, not by name (ADR-044).** ``SampleGroup.name`` is the
+    source image or slice name, so a stack's slices and a video's frames are
+    routed to one side together instead of straddling the split — otherwise the
+    val loss is measured on frames all but identical to trained ones, and early
+    stopping is driven by a number that means nothing.
+
+    The grouping comes from the names alone: this runs on the training worker
+    thread and has no access to the main window's ``image_slices``, so
+    ``keyed_groups`` lets the GUI hand over the grouping it already computed
+    and *warned about*, refined by near-duplicate clusters when a curation run
+    produced any (ADR-045). Re-deriving it here instead would silently drop
+    that refinement, so the dialog would describe one split and the run would
+    perform another. Keys it does not recognise are ignored and keys it omits
+    fall back to the derived grouping, so a stale mapping degrades to the
+    structural split rather than to nonsense.
+
+    Otherwise the grouping comes from the names alone: this runs on the
+    training worker thread with no access to the main window's
+    ``image_slices``, so ``derive_groups`` falls back to its name-prefix rule — which covers every
+    name the app itself produces.
     """
     from ..io.export_formats import assign_train_val
 
@@ -131,8 +164,51 @@ def split_groups(groups, train_pct):
     if train_pct >= 100 or len(groups) < 2:
         return groups, []
 
-    keyed = {f"{i}:{g.name}": g for i, g in enumerate(groups)}
-    _train_keys, val_keys = assign_train_val(keyed.keys(), 100 - train_pct)
+    keyed, derived = split_keys(groups)
+    if keyed_groups:
+        if not set(keyed_groups) & set(derived):
+            # The keys are "{index}:{name}", rebuilt here from the same list the
+            # caller keyed. If they ever stop matching -- a reordered or
+            # rebuilt group list -- every lookup falls back and the refinement
+            # vanishes without a trace. Say so; the fallback is safe, the
+            # silence is not.
+            logger.warning(
+                "the supplied grouping matched none of the %d split keys; "
+                "using the derived grouping instead",
+                len(derived),
+            )
+        derived = {
+            key: keyed_groups.get(key, group) for key, group in derived.items()
+        }
+    _train_keys, val_keys = assign_train_val(
+        keyed.keys(), 100 - train_pct, derived
+    )
     train = [g for k, g in keyed.items() if k not in val_keys]
     val = [g for k, g in keyed.items() if k in val_keys]
     return train, val
+
+
+def split_keys(groups):
+    """``({split key: group}, {split key: source group})`` for ``groups``.
+
+    Factored out so the warning shown before a run previews **this** mapping
+    rather than rebuilding an approximation of it. Passing the bare
+    ``[g.name for g in groups]`` looked equivalent and was not: two groups can
+    share a name (a prepared folder holding `a.png` and `a.jpg` ext-strips both
+    to `a`), and a list of duplicates collapses to one entry before the split
+    sees it — so the preview reported a healthy split while the real one
+    degenerated and fell back. Same divergence class as the export preview,
+    one layer down.
+    """
+    from ..core.dataset_split import derive_groups
+
+    keyed = {f"{index}:{group.name}": group for index, group in enumerate(groups)}
+    name_groups = derive_groups([group.name for group in groups])
+
+    keyed_groups = {}
+    for key, group in keyed.items():
+        # An unnamed group falls back to its own unique key: collapsing every
+        # `name=""` group into one bucket is exactly what the indexed key
+        # exists to prevent.
+        keyed_groups[key] = (name_groups.get(group.name) or key) if group.name else key
+    return keyed, keyed_groups

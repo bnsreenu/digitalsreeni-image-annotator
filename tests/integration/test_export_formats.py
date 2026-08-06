@@ -10,6 +10,7 @@ import os
 import tempfile
 import shutil
 from pathlib import Path
+from PIL import Image
 from PyQt6.QtGui import QImage
 import yaml as yaml_lib
 from src.digitalsreeni_image_annotator.io.export_formats import (
@@ -27,6 +28,383 @@ def temp_output_dir():
     temp_dir = tempfile.mkdtemp()
     yield temp_dir
     shutil.rmtree(temp_dir)
+
+
+# --- group-aware train/val split at the export boundary (#81, ADR-044) -----
+#
+# These run the exporter itself rather than `plan_split`, because the wiring is
+# the load-bearing part: the grouping is derived *inside* the exporter, which is
+# what makes the fix apply on every path without a caller opting in. Assertions
+# are on files that exist on disk, not on name sets — the regression these guard
+# against produced perfectly reasonable name sets and an unusable dataset.
+
+
+def _box_annotation():
+    return {"cell": [{"bbox": [1, 1, 4, 4], "category": "cell"}]}
+
+
+def test_export_keeps_a_recordings_frames_on_one_side(temp_output_dir):
+    """A video's frames and a stack's slices must not straddle the split.
+
+    Real slice names, so the grouping actually engages: they are ext-stripped
+    (`clip_F00000`, `stack_T1_Z1`), never `stack.tif_T0_Z0_C0`.
+    """
+    out_dir = os.path.join(temp_output_dir, "grouped")
+    image = QImage(32, 32, QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFFFF)
+
+    clip = [(f"clip_F{i:05d}", image) for i in range(12)]
+    stack = [(f"stack_T1_Z{i + 1}", image) for i in range(8)]
+    annotations = {name: _box_annotation() for name, _ in clip + stack}
+
+    export_yolo_v5plus(
+        annotations, {"cell": 1}, image_paths={},
+        slices=[], image_slices={"clip": clip, "stack": stack},
+        output_dir=out_dir, val_split=40,
+    )
+
+    train = {os.path.splitext(f)[0] for f in os.listdir(os.path.join(out_dir, "images", "train"))}
+    val = {os.path.splitext(f)[0] for f in os.listdir(os.path.join(out_dir, "images", "val"))}
+    assert train and val
+    assert len(train) + len(val) == 20
+
+    for base in ("clip", "stack"):
+        members = {name for name, _ in (clip if base == "clip" else stack)}
+        assert members <= train or members <= val, f"{base} straddled the split"
+
+
+def test_v4_export_keeps_a_recordings_frames_on_one_side(temp_output_dir):
+    """The v4 twin. It is one of the three choke points ADR-044 names, it is
+    reachable from the export menu and from `sreeni-cli export --format
+    yolov4`, and its directory layout differs (`train/images` + `valid/images`)
+    — so the v5+ test does not transfer by inspection.
+
+    Added after a mutation test: switching v4's grouping off left the whole
+    suite green.
+    """
+    out_dir = os.path.join(temp_output_dir, "grouped_v4")
+    image = QImage(32, 32, QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFFFF)
+
+    clip = [(f"clip_F{i:05d}", image) for i in range(12)]
+    stack = [(f"stack_T1_Z{i + 1}", image) for i in range(8)]
+    annotations = {name: _box_annotation() for name, _ in clip + stack}
+
+    export_yolo_v4(
+        annotations, {"cell": 1}, image_paths={},
+        slices=[], image_slices={"clip": clip, "stack": stack},
+        output_dir=out_dir, val_split=40,
+    )
+
+    train = {
+        os.path.splitext(f)[0]
+        for f in os.listdir(os.path.join(out_dir, "train", "images"))
+    }
+    val = {
+        os.path.splitext(f)[0]
+        for f in os.listdir(os.path.join(out_dir, "valid", "images"))
+    }
+    assert train and val
+    assert len(train) + len(val) == 20
+
+    for base in ("clip", "stack"):
+        members = {name for name, _ in (clip if base == "clip" else stack)}
+        assert members <= train or members <= val, f"{base} straddled the split"
+
+
+def test_v4_headless_export_never_empties_the_train_directory(temp_output_dir):
+    """The v4 twin of the empty-`train` regression — also mutation-proven to be
+    uncovered before this existed."""
+    out_dir = os.path.join(temp_output_dir, "headless_v4")
+    photo_dir = os.path.join(temp_output_dir, "photos_v4")
+    os.makedirs(photo_dir)
+
+    image_paths, annotations = {}, {}
+    for i in range(20):
+        name = f"p{i:02d}.png"
+        path = os.path.join(photo_dir, name)
+        Image.new("RGB", (32, 32)).save(path)
+        image_paths[name] = path
+        annotations[name] = _box_annotation()
+    for i in range(200):
+        annotations[f"clip_F{i:05d}"] = _box_annotation()
+
+    export_yolo_v4(
+        annotations, {"cell": 1}, image_paths,
+        slices=[], image_slices={}, output_dir=out_dir, val_split=20,
+    )
+
+    train = os.listdir(os.path.join(out_dir, "train", "images"))
+    val = os.listdir(os.path.join(out_dir, "valid", "images"))
+    assert train, "train/images is empty; the dataset cannot be trained"
+    assert val
+    assert len(train) + len(val) == 20
+    assert len(val) == 4
+
+
+def test_a_slice_name_shadowed_by_a_substring_match_is_still_excluded(
+    temp_output_dir,
+):
+    """`_is_exportable`'s "looks like a slice, nothing holds it" early return.
+
+    Without it the substring fallback below can match an unrelated key —
+    `stack_T1_Z1` is a substring of `stack_T1_Z1_mask.png` — and the name would
+    pass the filter, consume a slot in the split budget, and then be skipped by
+    the export loop anyway, which is the exact accounting error the filter
+    exists to prevent.
+    """
+    from src.digitalsreeni_image_annotator.io.export_formats import _is_exportable
+
+    image_paths = {"stack_T1_Z1_mask.png": "/nowhere/stack_T1_Z1_mask.png"}
+    assert not _is_exportable("stack_T1_Z1", {}, image_paths)
+
+
+def test_an_explicit_grouping_overrides_the_derived_one(temp_output_dir):
+    """The curation refinement's only route into the export (ADR-045).
+
+    These are ten independent files by name -- nothing structural links them --
+    so only a supplied grouping can keep them together. If the exporter ignored
+    the parameter, the split would simply look reasonable and the refinement
+    would be silently inert, which is precisely the failure mode this whole
+    area keeps producing.
+    """
+    from src.digitalsreeni_image_annotator.core.dataset_split import (
+        derive_groups,
+        plan_split,
+    )
+
+    photo_dir = os.path.join(temp_output_dir, "photos_grouped")
+    os.makedirs(photo_dir)
+
+    image_paths, annotations = {}, {}
+    for index in range(10):
+        name = f"shot{index:02d}.png"
+        path = os.path.join(photo_dir, name)
+        Image.new("RGB", (32, 32)).save(path)
+        image_paths[name] = path
+        annotations[name] = _box_annotation()
+
+    # The first six are near-duplicates of each other; the rest are their own.
+    groups = {
+        name: ("burst" if index < 6 else name)
+        for index, name in enumerate(sorted(annotations))
+    }
+    burst = {name for name, group in groups.items() if group == "burst"}
+
+    # The exact val set the supplied grouping implies, and it must differ from
+    # the one the derived (per-name) grouping gives -- otherwise the assertion
+    # would hold whether or not the parameter is honoured, which is how the
+    # first version of this test passed against a mutation that ignored it.
+    names = sorted(annotations)
+    _, expected_val = plan_split(names, 40, groups)[:2]
+    _, derived_val = plan_split(names, 40, derive_groups(names, {}))[:2]
+    assert expected_val != derived_val, "pick a fixture the two disagree on"
+    assert burst <= expected_val or not (burst & expected_val)
+
+    v5_dir = os.path.join(temp_output_dir, "grouped_arg_v5")
+    export_yolo_v5plus(
+        annotations, {"cell": 1}, image_paths,
+        slices=[], image_slices={}, output_dir=v5_dir, val_split=40,
+        groups=groups,
+    )
+    v5_val = set(os.listdir(os.path.join(v5_dir, "images", "val")))
+    assert v5_val == expected_val, "the supplied grouping was ignored"
+
+    # The v4 twin: separate comprehension, separate layout.
+    v4_dir = os.path.join(temp_output_dir, "grouped_arg_v4")
+    export_yolo_v4(
+        annotations, {"cell": 1}, image_paths,
+        slices=[], image_slices={}, output_dir=v4_dir, val_split=40,
+        groups=groups,
+    )
+    v4_val = set(os.listdir(os.path.join(v4_dir, "valid", "images")))
+    assert v4_val == expected_val, "the supplied grouping was ignored"
+
+
+def test_an_empty_grouping_means_no_grouping_not_no_opinion(temp_output_dir):
+    """The sentinel is ``None``, not falsiness.
+
+    An empty mapping is a caller saying "I computed a grouping and it is
+    empty", which is a different statement from "I have no opinion". Treating
+    them alike is safe only by coincidence of today's single caller, and the
+    comment above `export_yolo_v4` argues the rule at length -- so it needs a
+    test, or it needs deleting.
+    """
+    out_dir = os.path.join(temp_output_dir, "empty_grouping")
+    image = QImage(32, 32, QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFFFF)
+    # TWO recordings, deliberately: with one, the derived grouping degenerates
+    # to a single group and falls back to the per-name split anyway -- so both
+    # branches straddle and the test cannot tell them apart. That is how the
+    # first version of this test let the mutation live.
+    clips = {
+        base: [(f"{base}_F{i:05d}", image) for i in range(10)]
+        for base in ("clipA", "clipB")
+    }
+    annotations = {
+        name: _box_annotation()
+        for frames in clips.values()
+        for name, _ in frames
+    }
+
+    export_yolo_v5plus(
+        annotations, {"cell": 1}, image_paths={},
+        slices=[], image_slices=clips,
+        output_dir=out_dir, val_split=40, groups={},
+    )
+    val = {
+        os.path.splitext(f)[0]
+        for f in os.listdir(os.path.join(out_dir, "images", "val"))
+    }
+    assert val
+    straddled = [
+        base
+        for base, frames in clips.items()
+        if 0 < len({name for name, _ in frames} & val) < len(frames)
+    ]
+    assert straddled, "an empty mapping was read as 'derive your own'"
+
+
+def test_unannotated_images_do_not_consume_the_split_budget(temp_output_dir):
+    """An opened-but-unannotated image is `all_annotations[name] == {}`, which
+    is the normal state for most of a project.
+
+    Counting those inflates the budget: 20 annotated plus 200 unannotated makes
+    the val target 44 rather than 4, and 44 arbitrary names get routed to val
+    while only the annotated subset is written — so `data.yaml` points `val:`
+    at a directory holding a handful of files, or none. Same accounting bug as
+    the unwritable-frames one, different filter.
+
+    Mutation-proven gap: removing `ann and` from both exporters' comprehensions
+    left the entire suite green.
+    """
+    out_dir = os.path.join(temp_output_dir, "unannotated")
+    photo_dir = os.path.join(temp_output_dir, "photos_unannotated")
+    os.makedirs(photo_dir)
+
+    image_paths, annotations = {}, {}
+    for i in range(20):
+        name = f"has{i:03d}.png"
+        path = os.path.join(photo_dir, name)
+        Image.new("RGB", (32, 32)).save(path)
+        image_paths[name] = path
+        annotations[name] = _box_annotation()
+    for i in range(200):
+        # Real files with real paths — only the annotations are missing, so
+        # nothing but the `ann and` guard keeps them out of the budget.
+        name = f"none{i:03d}.png"
+        path = os.path.join(photo_dir, name)
+        Image.new("RGB", (32, 32)).save(path)
+        image_paths[name] = path
+        annotations[name] = {}
+
+    export_yolo_v5plus(
+        annotations, {"cell": 1}, image_paths,
+        slices=[], image_slices={}, output_dir=out_dir, val_split=20,
+    )
+    train = os.listdir(os.path.join(out_dir, "images", "train"))
+    val = os.listdir(os.path.join(out_dir, "images", "val"))
+    assert len(train) + len(val) == 20, "only annotated images should be written"
+    # 20% of the twenty annotated images, not of all 220 names.
+    assert len(val) == 4
+    assert len(train) == 16
+
+    # The v4 twin: same guard, separate comprehension, separate layout.
+    v4_dir = os.path.join(temp_output_dir, "unannotated_v4")
+    export_yolo_v4(
+        annotations, {"cell": 1}, image_paths,
+        slices=[], image_slices={}, output_dir=v4_dir, val_split=20,
+    )
+    v4_train = os.listdir(os.path.join(v4_dir, "train", "images"))
+    v4_val = os.listdir(os.path.join(v4_dir, "valid", "images"))
+    assert len(v4_train) + len(v4_val) == 20
+    assert len(v4_val) == 4
+
+
+def test_the_split_preview_lists_exactly_what_the_export_writes(temp_output_dir):
+    """`_is_exportable` is a second implementation of the export loop's
+    resolution order, kept in step by a docstring. This asserts they agree, so
+    the next edit to the loop cannot drift them apart in silence.
+    """
+    from src.digitalsreeni_image_annotator.io.export_formats import (
+        exportable_annotated_names,
+    )
+
+    out_dir = os.path.join(temp_output_dir, "agreement")
+    photo_dir = os.path.join(temp_output_dir, "photos_mixed")
+    os.makedirs(photo_dir)
+    image = QImage(32, 32, QImage.Format.Format_RGB32)
+    image.fill(0xFFFFFFFF)
+
+    image_paths, annotations = {}, {}
+    for name in ("real.png", "other.jpg"):
+        path = os.path.join(photo_dir, name)
+        Image.new("RGB", (32, 32)).save(path)
+        image_paths[name] = path
+        annotations[name] = _box_annotation()
+    # A TIFF source (skipped in favour of its slices), a loaded slice, and a
+    # slice whose collection was never loaded.
+    image_paths["stack.tif"] = os.path.join(photo_dir, "stack.tif")
+    annotations["stack.tif"] = _box_annotation()
+    loaded = [("stack_T1_Z1", image)]
+    annotations["stack_T1_Z1"] = _box_annotation()
+    annotations["ghost_F00001"] = _box_annotation()
+    annotations["unannotated.png"] = {}
+
+    previewed = set(
+        exportable_annotated_names(annotations, image_paths, [], {"stack": loaded})
+    )
+    export_yolo_v5plus(
+        annotations, {"cell": 1}, image_paths,
+        slices=[], image_slices={"stack": loaded},
+        output_dir=out_dir, val_split=0,
+    )
+
+    written = set(os.listdir(os.path.join(out_dir, "images", "train")))
+    # A slice is written as `<name>.png`; a regular image keeps its own file
+    # name. Stripping both sides would hide an extension mismatch and collide
+    # `x.png` with `x.jpg`, so the expectation is built the way the loop
+    # writes it.
+    expected = {
+        name if "." in name else f"{name}.png" for name in previewed
+    }
+    assert expected == written
+
+
+def test_headless_export_never_empties_the_train_directory(temp_output_dir):
+    """The CLI passes empty slice collections, so a video's frames have no
+    pixels to write. They must not consume the train side's budget.
+
+    Before the exportable-name filter this produced `images/train` with zero
+    files and a `data.yaml` still pointing at it — an export that reported
+    success and could not be trained.
+    """
+    out_dir = os.path.join(temp_output_dir, "headless")
+    photo_dir = os.path.join(temp_output_dir, "photos")
+    os.makedirs(photo_dir)
+
+    image_paths, annotations = {}, {}
+    for i in range(20):
+        name = f"p{i:02d}.png"
+        path = os.path.join(photo_dir, name)
+        Image.new("RGB", (32, 32)).save(path)
+        image_paths[name] = path
+        annotations[name] = _box_annotation()
+    for i in range(200):
+        annotations[f"clip_F{i:05d}"] = _box_annotation()
+
+    export_yolo_v5plus(
+        annotations, {"cell": 1}, image_paths,
+        slices=[], image_slices={}, output_dir=out_dir, val_split=20,
+    )
+
+    train = os.listdir(os.path.join(out_dir, "images", "train"))
+    val = os.listdir(os.path.join(out_dir, "images", "val"))
+    assert train, "images/train is empty; the dataset cannot be trained"
+    assert val
+    # The percentage now describes what is written, not what was counted.
+    assert len(train) + len(val) == 20
+    assert len(val) == 4
 
 
 @pytest.fixture
@@ -678,7 +1056,7 @@ class TestYOLOPoseExport:
         label_files = [f for f in os.listdir(labels_dir) if f.endswith('.txt')]
         assert len(label_files) == 1
         with open(os.path.join(labels_dir, label_files[0])) as f:
-            lines = [l.strip() for l in f if l.strip()]
+            lines = [line.strip() for line in f if line.strip()]
         assert len(lines) == 1
         return lines[0]
 

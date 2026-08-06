@@ -11,6 +11,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -20,10 +21,13 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QTableWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from ..core import onion
 
 from ..core.constants import (
     ANNOT_COL_AREA,
@@ -34,6 +38,8 @@ from ..core.constants import (
 from ..dialogs.dino_phrase_editor import ClassThresholdTable, PhraseEditorPanel
 from ..inference.sam3_utils import SAM3_MODEL_LABEL
 from ..widgets.video_timeline import VideoTimeline
+from .class_list_delegate import ClassShortcutDelegate
+from .image_list_delegate import ImageScoreDelegate
 
 
 def _section_header(text):
@@ -82,6 +88,9 @@ def build_sidebar(window):
     window.import_format_selector.addItem("COCO JSON")
     window.import_format_selector.addItem("YOLO (v4 and earlier)")
     window.import_format_selector.addItem("YOLO (v5+)")
+    # Closes the export/import asymmetry: VOC export has existed for a long
+    # time, VOC import had not (issue #75).
+    window.import_format_selector.addItem("Pascal VOC")
     window.sidebar_layout.addWidget(window.import_format_selector)
 
     # Add spacing
@@ -97,6 +106,10 @@ def build_sidebar(window):
 
     # Class list (without the "Classes" header)
     window.class_list = QListWidget()
+    # Paints the 1..9 digit-shortcut badge (issue #65). Kept out of the item
+    # text on purpose -- see ClassShortcutDelegate's docstring.
+    window.class_shortcut_delegate = ClassShortcutDelegate(window.class_list)
+    window.class_list.setItemDelegate(window.class_shortcut_delegate)
     window.class_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
     window.class_list.customContextMenuRequested.connect(window.show_class_context_menu)
     window.class_list.itemClicked.connect(window.on_class_selected)
@@ -167,6 +180,20 @@ def build_sidebar(window):
     sam_buttons_layout.addWidget(window.sam_box_button)
     sam_buttons_layout.addWidget(window.sam_points_button)
     sam_layout.addLayout(sam_buttons_layout)
+
+    # Segment Everything (issue #69). Not checkable and not part of
+    # tool_group: it is a one-shot action, not a canvas mode -- the review
+    # that follows happens in the existing temp-annotation overlay.
+    window.segment_everything_button = QPushButton("Segment Everything")
+    window.segment_everything_button.setToolTip(
+        "Run SAM with no prompt and review every mask it finds. Click a "
+        "proposal to assign the active class (digits 1-9 switch class), then "
+        "Enter to commit or Escape to discard."
+    )
+    window.segment_everything_button.clicked.connect(
+        window.segment_everything_controller.run
+    )
+    sam_layout.addWidget(window.segment_everything_button)
 
     # SAM model selector
     window.sam_model_selector = QComboBox()
@@ -381,6 +408,8 @@ def build_image_area(window):
     window.video_timeline.frameSelected.connect(window.on_timeline_frame_selected)
     window.image_layout.addWidget(window.video_timeline)
 
+    _build_onion_controls(window)
+
     window.zoom_slider = QSlider(Qt.Orientation.Horizontal)
     window.zoom_slider.setMinimum(10)
     window.zoom_slider.setMaximum(500)
@@ -392,6 +421,98 @@ def build_image_area(window):
 
     window.image_info_label = QLabel()
     window.image_layout.addWidget(window.image_info_label)
+
+
+def _build_onion_controls(window):
+    """Onion-skin toggle, opacity and offset, under the canvas (issue #67).
+
+    Placed next to the slice/frame navigation it belongs to rather than in a
+    new sidebar panel, and hidden outright on a plain image — where the feature
+    has no meaning, a permanently-disabled row is just clutter.
+
+    No background/colour literals anywhere here: the active stylesheet paints
+    these, or they punch a bright box into the soft-dark theme (CLAUDE.md,
+    "No Hardcoded Colors Rule").
+    """
+    window.onion_row = QWidget()
+    layout = QHBoxLayout(window.onion_row)
+    layout.setContentsMargins(0, 0, 0, 0)
+
+    window.onion_checkbox = QCheckBox("Onion skin")
+    window.onion_checkbox.setChecked(window.onion_enabled)
+    window.onion_checkbox.setToolTip(
+        "Ghost the neighbouring slice or frame over the current one - by "
+        "default what you annotated there, so you can line this slice up "
+        "against it."
+    )
+    window.onion_checkbox.toggled.connect(window.image_controller.set_onion_enabled)
+    layout.addWidget(window.onion_checkbox)
+
+    # Labelled, because this combo and the neighbour-mode one next to it both
+    # offer an option spelled "Both" and are otherwise indistinguishable.
+    layout.addWidget(QLabel("Ghost:"))
+    # WHAT to ghost. Annotations first because it is the default and the
+    # reason the feature earns its screen space: ghosting the neighbouring
+    # *pixels* over an opaque photographic slice mostly just makes the current
+    # one look out of focus.
+    window.onion_content_combo = QComboBox()
+    for label, value in (
+        ("Annotations", onion.CONTENT_ANNOTATIONS),
+        ("Image", onion.CONTENT_IMAGE),
+        ("Both", onion.CONTENT_BOTH),
+    ):
+        window.onion_content_combo.addItem(label, value)
+    window.onion_content_combo.setCurrentIndex(
+        window.onion_content_combo.findData(window.onion_content)
+    )
+    window.onion_content_combo.setToolTip(
+        "What to ghost: the neighbour's annotations, its image, or both."
+    )
+    window.onion_content_combo.currentIndexChanged.connect(
+        lambda _i: window.image_controller.set_onion_content(
+            window.onion_content_combo.currentData()
+        )
+    )
+    layout.addWidget(window.onion_content_combo)
+
+    window.onion_mode_combo = QComboBox()
+    for label, value in (
+        ("Previous", onion.MODE_PREVIOUS),
+        ("Next", onion.MODE_NEXT),
+        ("Both", onion.MODE_BOTH),
+    ):
+        window.onion_mode_combo.addItem(label, value)
+    window.onion_mode_combo.setCurrentIndex(
+        window.onion_mode_combo.findData(window.onion_mode)
+    )
+    window.onion_mode_combo.currentIndexChanged.connect(
+        lambda _i: window.image_controller.set_onion_mode(
+            window.onion_mode_combo.currentData()
+        )
+    )
+    layout.addWidget(window.onion_mode_combo)
+
+    layout.addWidget(QLabel("±"))
+    window.onion_offset_spin = QSpinBox()
+    window.onion_offset_spin.setRange(1, onion.MAX_OFFSET)
+    window.onion_offset_spin.setValue(window.onion_offset)
+    window.onion_offset_spin.setToolTip("How many slices away the ghost is")
+    window.onion_offset_spin.valueChanged.connect(
+        window.image_controller.set_onion_offset
+    )
+    layout.addWidget(window.onion_offset_spin)
+
+    window.onion_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+    window.onion_opacity_slider.setRange(5, 95)
+    window.onion_opacity_slider.setValue(int(round(window.onion_opacity * 100)))
+    window.onion_opacity_slider.setToolTip("Ghost opacity")
+    window.onion_opacity_slider.valueChanged.connect(
+        window.image_controller.set_onion_opacity
+    )
+    layout.addWidget(window.onion_opacity_slider, 1)
+
+    window.onion_row.setVisible(False)  # revealed by update_onion_controls
+    window.image_layout.addWidget(window.onion_row)
 
 
 def build_image_list(window):
@@ -428,13 +549,49 @@ def build_image_list(window):
     window.image_list_layout.addWidget(window.image_group_combo)
 
     window.image_list = QListWidget()
+    # Paints the review score (issue #71). Reads the controller live rather
+    # than a snapshot, and stays out of the item text -- see the delegate's
+    # docstring for why that matters here in particular.
+    window.image_score_delegate = ImageScoreDelegate(
+        window.image_list, lambda name: window.review_controller.score_for(name)
+    )
+    window.image_list.setItemDelegate(window.image_score_delegate)
     window.image_list.itemClicked.connect(window.switch_image)
     window.image_list.currentRowChanged.connect(
         lambda row: window.switch_image(window.image_list.currentItem())
     )
+    # ExtendedSelection so a similarity cluster can actually be selected as a
+    # group (issue #72). Navigation is driven by itemClicked /
+    # currentRowChanged, not by the selection, so this does not change which
+    # image is shown.
+    window.image_list.setSelectionMode(
+        QAbstractItemView.SelectionMode.ExtendedSelection
+    )
     window.image_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
     window.image_list.customContextMenuRequested.connect(window.show_image_context_menu)
     window.image_list_layout.addWidget(window.image_list)
+
+    # Review-with-model row (issue #71). Kept next to the image list because
+    # the ranking IS the list order -- putting it in a menu would separate the
+    # action from the thing it reorders.
+    review_row = QHBoxLayout()
+    window.review_button = QPushButton("Review with model")
+    window.review_button.setToolTip(
+        "Run the loaded prediction model over the project and score every "
+        "image: annotated images by how much the model disagrees with the "
+        "labels, unannotated ones by how unsure the model is."
+    )
+    window.review_button.clicked.connect(window.run_model_review)
+    review_row.addWidget(window.review_button)
+
+    window.sort_by_score_button = QPushButton("Sort by score")
+    window.sort_by_score_button.setToolTip(
+        "Order the list by review score, highest first. Unscored images sink "
+        "to the bottom."
+    )
+    window.sort_by_score_button.clicked.connect(window.sort_images_by_score)
+    review_row.addWidget(window.sort_by_score_button)
+    window.image_list_layout.addLayout(review_row)
 
     window.clear_all_button = QPushButton("Clear All Images and Annotations")
     window.clear_all_button.clicked.connect(window.clear_all)

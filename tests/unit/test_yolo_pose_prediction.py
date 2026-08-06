@@ -7,7 +7,6 @@ window instead of a real ImageAnnotator/QApplication window — the function
 under test only touches a handful of ``mw`` attributes.
 """
 
-import copy
 from types import SimpleNamespace
 
 import numpy as np
@@ -18,6 +17,7 @@ from PyQt6.QtCore import QObject
 from src.digitalsreeni_image_annotator.controllers.yolo_controller import (
     YOLOController,
 )
+from src.digitalsreeni_image_annotator.dialogs.yolo_trainer import YOLOTrainer
 
 
 class _FakeTensor:
@@ -66,6 +66,11 @@ class _StubYoloTrainer:
         self.model = SimpleNamespace(task=task)
         self.class_names = class_names
         self.prediction_keypoint_schema = prediction_keypoint_schema
+
+    # The real accessor, not a copy of it: a stub reimplementation means the
+    # controller call sites are only ever exercised against a duplicate of the
+    # code under test.
+    class_name_for = YOLOTrainer.class_name_for
 
 
 class _StubMainWindow(QObject):
@@ -132,7 +137,7 @@ def test_pose_branch_builds_keypoint_temp_annotations(tmp_path, qapp):
     fake_results = ([fake_result], orig_shape, orig_shape)
 
     controller = YOLOController(mw)
-    controller.process_yolo_results(fake_results, "test_image.png")
+    controller.process_yolo_results(fake_results, "test_image.png", (width, height))
 
     assert mw.added_temp_classes is not None
     assert "Temp-person" in mw.added_temp_classes
@@ -183,7 +188,7 @@ def test_segment_branch_unchanged(tmp_path, qapp):
     fake_results = ([fake_result], orig_shape, orig_shape)
 
     controller = YOLOController(mw)
-    controller.process_yolo_results(fake_results, "test_image.png")
+    controller.process_yolo_results(fake_results, "test_image.png", (width, height))
 
     assert mw.added_temp_classes is not None
     assert "Temp-cell" in mw.added_temp_classes

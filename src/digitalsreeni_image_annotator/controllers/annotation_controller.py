@@ -50,7 +50,6 @@ from ..io.export_formats import create_coco_annotation as _export_create_coco_an
 from ..utils import (
     calculate_area,
     calculate_bbox,
-    clamp_bbox,
     clamp_keypoints,
     keypoint_instance_bbox,
     simplify_polygon,
@@ -316,6 +315,19 @@ class AnnotationController(QObject):
         # deferred-gesture baseline (e.g. a discarded paint stroke).
         self._detail_coalesce_key = None
         self._pending_baseline = None
+
+    def rename_class_in_history(self, old_name, new_name):
+        """Follow a class rename into the undo/redo snapshots (ADR-026).
+
+        Snapshots are whole per-image annotation dicts keyed by class name, so
+        they are just as name-keyed as ``class_mapping`` -- and just as much a
+        part of the rename fan-out.
+        """
+        self.history.rename_class(old_name, new_name)
+
+    def drop_class_from_history(self, class_name):
+        """Forget a deleted class in the undo/redo snapshots (ADR-026)."""
+        self.history.drop_class(class_name)
 
     def capture_edit_baseline(self):
         """Remember the pre-gesture state at the *start* of a bbox drag or
@@ -705,6 +717,27 @@ class AnnotationController(QObject):
         self.update_annotation_list()
         self.mw.update_slice_list_colors()
         self.mw.auto_save()
+
+    def sync_polygon_geometry(self):
+        """Push a mid-edit vertex insert/remove through to storage and the table
+        (issue #68) **without** ending the edit gesture.
+
+        The distinction from :meth:`commit_polygon_edit` is deliberate and is
+        the whole reason this is a separate slot: it saves and refreshes, but
+        does *not* push the undo baseline. The baseline stays pending until
+        Enter, so a vertex-edit session remains one undo step and Esc still
+        reverts the entire session including its insertions (ADR-026).
+
+        Saving eagerly matters because ``update_annotation_list`` rebuilds the
+        table from ``all_annotations``; without the sync the Area column would
+        show the pre-edit value right after loading an image, where the two
+        dicts are not yet sharing objects.
+        """
+        selected = list(self.mw.image_label.highlighted_annotations)
+        self.save_current_annotations()
+        self.update_annotation_list()
+        if selected:
+            self.apply_canvas_selection(selected, "replace")
 
     def commit_keypoint_edit(self):
         """Persist a single-keypoint drag or visibility toggle on a committed
@@ -1260,7 +1293,10 @@ class AnnotationController(QObject):
         QMessageBox.information(
             self.mw,
             "Edit Mode",
-            "You are now in edit mode. Click and drag points to move them, Shift+Click to delete points, or click on edges to add new points.",
+            "You are now in edit mode. Drag a point to move it, Alt+click a "
+            "point to delete it, and double-click an edge to insert one. "
+            "(Issue #68 moved insertion from single- to double-click: with "
+            "both, the first click of a double-click would insert too.)",
         )
 
     def exit_edit_mode(self):

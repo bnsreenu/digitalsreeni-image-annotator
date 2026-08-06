@@ -110,6 +110,192 @@ def _seed_batch(window, tmp_path):
     return ["reg1.png", "stack_T0_Z0"]
 
 
+# --- discarded detections are reported, not just logged --------------------
+#
+# A rename used to leave the DINO threshold table on the old class name (fixed
+# in ClassController.rename_class). Every detection then came back tagged with
+# a class that no longer existed, _commit_dino_results dropped all of them with
+# only a console warning, and the run still finished on "Detections have been
+# saved to annotations." A total failure was indistinguishable from a total
+# success. These pin the reporting half of that fix.
+
+
+def test_commit_reports_what_it_actually_wrote(dino_ready):
+    window = dino_ready
+    committed, skipped = window.dino_controller._commit_dino_results(
+        "img1.png",
+        [{"class_name": "cell", "score": 0.9, "bbox": [1, 1, 10, 10]},
+         {"class_name": "ghost", "score": 0.8, "bbox": [2, 2, 9, 9]}],
+        [{"segmentation": [1.0, 1.0, 10.0, 1.0, 10.0, 10.0]},
+         {"segmentation": [2.0, 2.0, 9.0, 2.0, 9.0, 9.0]}],
+    )
+
+    assert committed == 1
+    assert dict(skipped) == {"ghost": 1}
+
+
+def test_a_detection_for_a_missing_class_is_surfaced(dino_ready, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    window = dino_ready
+    window.class_mapping = {}  # the configured class is gone from the project
+
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning",
+        staticmethod(lambda *a, **k: warnings.append(" ".join(map(str, a)))),
+    )
+    window.dino_batch_mode.setCurrentText("Auto-accept all detections")
+
+    window.dino_controller.run_dino_detection_single()
+
+    assert warnings, "the discard was invisible outside the console log"
+    assert "cell" in warnings[0]
+
+
+def test_rename_then_detect_lands_under_the_new_name(dino_ready, monkeypatch):
+    """The composite assertion the two halves miss.
+
+    Rename-re-keys-the-table and commit-reports-discards are each covered on
+    their own, but the bug lived in the *coupling*: ``_build_dino_class_configs``
+    reads the THRESHOLD TABLE rather than the class list. Only running the whole
+    chain -- table -> configs -> detect -> commit -- with the real builder pins
+    it.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor
+    from PyQt6.QtWidgets import QInputDialog
+
+    from digitalsreeni_image_annotator.controllers.dino_controller import (
+        DINOController,
+    )
+
+    window = dino_ready
+    c = window.dino_controller
+
+    # The fixture hands out canned class_configs; put the real builder back,
+    # since reading the table is precisely what is under test.
+    monkeypatch.setattr(
+        c,
+        "_build_dino_class_configs",
+        DINOController._build_dino_class_configs.__get__(c),
+    )
+    # ...and register the class through the real path so it reaches the table.
+    window.class_mapping = {}
+    window.add_class("cell", QColor("#ff0000"))
+
+    # Echo back whichever class the config carried -- exactly how a stale table
+    # name used to reach _commit_dino_results.
+    monkeypatch.setattr(
+        window.dino_utils,
+        "detect",
+        lambda img, configs, **k: [
+            {"class_name": configs[0]["name"], "score": 0.9, "bbox": [1, 1, 10, 10]}
+        ],
+    )
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **k: ("hole", True))
+    )
+    window.class_controller.rename_class(
+        window.class_list.findItems("cell", Qt.MatchFlag.MatchExactly)[0]
+    )
+
+    window.dino_batch_mode.setCurrentText("Auto-accept all detections")
+    c.run_dino_detection_single()
+
+    assert list(window.image_label.annotations) == ["hole"]
+    assert len(window.image_label.annotations["hole"]) == 1
+
+
+def test_accept_reports_a_class_that_vanished_mid_review(dino_ready, monkeypatch):
+    """The review path is the dropdown DEFAULT and carried the identical
+    silent-discard-behind-a-success-message bug as auto-accept."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    window = dino_ready
+    window.image_label.temp_annotations = [_temp_ann("cell")]
+    window.class_mapping = {}
+
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **k: warnings.append(" ".join(map(str, a)))),
+    )
+
+    window.dino_controller.accept_dino_results()
+
+    assert warnings, "the discard was invisible outside the console log"
+    assert "cell" in warnings[0]
+    assert window.image_label.annotations == {}
+
+
+def test_pending_review_results_follow_a_rename(dino_ready):
+    """Proposals capture their class name at DETECTION time, so a rename
+    mid-review leaves them tagged with a name the project no longer has --
+    they draw in the fallback colour and are binned on accept."""
+    window = dino_ready
+    window.image_label.temp_annotations = [_temp_ann("cell")]
+    window.dino_batch_results["other.png"] = [_temp_ann("cell")]
+
+    window.dino_controller.rename_class_in_pending("cell", "hole")
+
+    assert window.image_label.temp_annotations[0]["category_name"] == "hole"
+    assert window.dino_batch_results["other.png"][0]["category_name"] == "hole"
+
+
+def test_deleting_a_class_drops_its_pending_results(dino_ready):
+    window = dino_ready
+    window.image_label.temp_annotations = [_temp_ann("cell")]
+    window.dino_batch_results["other.png"] = [_temp_ann("cell")]
+
+    window.dino_controller.drop_class_from_pending("cell")
+
+    assert window.image_label.temp_annotations == []
+    assert "other.png" not in window.dino_batch_results
+
+
+def test_deleting_an_assigned_class_unassigns_rather_than_discards(dino_ready):
+    """An unprompted proposal was never *named* for that class -- it only had
+    it assigned by a click, so it stays reviewable under a different one."""
+    from digitalsreeni_image_annotator.controllers.segment_everything_controller import (
+        SOURCE,
+        TEMP_AUTO_CLASS,
+    )
+
+    window = dino_ready
+    proposal = {
+        "segmentation": [1.0, 1.0, 10.0, 1.0, 10.0, 10.0],
+        "category_name": TEMP_AUTO_CLASS,
+        "score": 0.9,
+        "source": SOURCE,
+        "assigned_class": "cell",
+        "temp": True,
+    }
+    window.image_label.temp_annotations = [proposal]
+
+    window.dino_controller.drop_class_from_pending("cell")
+
+    assert window.image_label.temp_annotations == [proposal]
+    assert proposal["assigned_class"] is None
+
+
+def test_a_clean_run_does_not_warn(dino_ready, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    window = dino_ready
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a))
+    )
+    window.dino_batch_mode.setCurrentText("Auto-accept all detections")
+
+    window.dino_controller.run_dino_detection_single()
+
+    assert warnings == []
+    assert len(window.image_label.annotations["cell"]) == 1
+
+
 # --- single detection ------------------------------------------------------
 
 def test_single_review_attaches_temp_annotations(dino_ready):

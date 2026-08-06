@@ -15,6 +15,7 @@ from PIL import Image
 from PyQt6.QtCore import QPoint, QPointF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
+    QCursor,
     QImage,
     QKeyEvent,
     QMouseEvent,
@@ -23,7 +24,7 @@ from PyQt6.QtGui import (
     QPixmap,
     QWheelEvent,
 )
-from PyQt6.QtWidgets import QLabel, QMessageBox
+from PyQt6.QtWidgets import QLabel, QMessageBox, QToolTip
 
 from .tools import (
     EraserTool,
@@ -34,7 +35,9 @@ from .tools import (
 )
 from .canvas_renderer import CanvasRenderer
 from . import edit_gestures
+from ..core import onion
 from ..core.constants import DEFAULT_FILL_OPACITY
+from ..core.mask_filters import SAM_EVERYTHING_SOURCE
 from ..utils import (
     calculate_area,
     clamp_segmentation,
@@ -60,6 +63,7 @@ class ImageLabel(QLabel):
     canvasSelectionChanged = pyqtSignal(object, str)    # (list[annotation], mode); mode: replace|add|toggle
     bboxEditCommitted = pyqtSignal()                    # bbox resize/move finished (issue #40)
     polygonEditCommitted = pyqtSignal()                 # vertex edit committed (Enter) — save + undo push (ADR-026)
+    polygonGeometryChanged = pyqtSignal()               # vertex inserted/removed mid-edit — save + list refresh, NO undo push (#68)
     editBaselineRequested = pyqtSignal()                # capture undo baseline at gesture start (ADR-026)
     deleteSelectionRequested = pyqtSignal()
     finishPolygonRequested = pyqtSignal()
@@ -141,8 +145,12 @@ class ImageLabel(QLabel):
         self.drawing_polygon = False
         self.editing_polygon = None
         # Original segmentation captured when vertex-edit mode is entered, so
-        # Esc can revert the in-place drags (ADR-026).
+        # Esc can revert the in-place drags (ADR-026). The raw/detail pair goes
+        # with it: an insert/remove during the session invalidates the Detail-%
+        # baseline (#68), and a cancel has to restore that too.
         self._editing_polygon_orig = None
+        self._editing_polygon_orig_raw = None
+        self._editing_polygon_orig_detail = None
         self.editing_point_index = None
         self.hover_point_index = None
         self.fill_opacity = DEFAULT_FILL_OPACITY
@@ -162,6 +170,25 @@ class ImageLabel(QLabel):
         self.temp_eraser_mask = None
         self.is_erasing = False
         self.cursor_pos = None
+
+        # Onion skin (issue #67). Purely decorative: these pixmaps are read by
+        # CanvasRenderer.draw_onion_skin and by nothing else -- no hit-testing,
+        # no SAM input, no export. `original_pixmap` remains the one and only
+        # current image, which is what keeps the ghost from leaking downstream.
+        self.onion_pixmaps = []
+        # Ghosted neighbour shapes as [(class_name, annotation), ...]. Same
+        # decorative contract as the pixmaps above, and the default content
+        # setting -- ghosting what you LABELLED on the neighbouring slice is
+        # the question worth answering while stepping through a stack; ghosting
+        # its pixels mostly just makes the current slice look out of focus.
+        self.onion_annotations = []
+        self.onion_opacity = onion.DEFAULT_OPACITY
+        # Zoom-scaled copies, cached exactly like `scaled_pixmap` is for the
+        # main image. Scaling in the paint pass would put two full-resolution
+        # SmoothTransformation rescales per repaint on the GUI thread during
+        # pan and zoom, which is the cost the main image already avoids.
+        self._scaled_onion_pixmaps = []
+        self._scaled_onion_zoom = None
 
         # SAM
         self.sam_bbox = None
@@ -316,6 +343,10 @@ class ImageLabel(QLabel):
             painter.drawPixmap(
                 int(self.offset_x), int(self.offset_y), self.scaled_pixmap
             )
+            # Onion-skin ghost of the neighbouring slice(s), issue #67. Sits
+            # between the image and every annotation layer: visible over the
+            # opaque raster, never on top of an annotation.
+            self.renderer.draw_onion_skin(painter)
             # Draw committed annotations
             self.renderer.draw_annotations(painter)
             # Polygon edit mode is modal; runs orthogonal to tool selection
@@ -356,6 +387,47 @@ class ImageLabel(QLabel):
                 self.renderer.draw_temp_annotations(painter)
             painter.end()
 
+    def scaled_onion_pixmaps(self):
+        """Onion ghosts scaled to the current zoom, cached until zoom changes.
+
+        Mirrors what ``update_scaled_pixmap`` does for the main image. Doing
+        this in ``draw_onion_skin`` instead would rescale full-resolution
+        images on every repaint, on the GUI thread, throughout a pan.
+        """
+        if not self.onion_pixmaps:
+            return []
+        if self._scaled_onion_zoom != self.zoom_factor:
+            self._scaled_onion_pixmaps = [
+                pixmap.scaled(
+                    max(1, int(pixmap.width() * self.zoom_factor)),
+                    max(1, int(pixmap.height() * self.zoom_factor)),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                for pixmap in self.onion_pixmaps
+                if pixmap is not None and not pixmap.isNull()
+            ]
+            self._scaled_onion_zoom = self.zoom_factor
+        return self._scaled_onion_pixmaps
+
+    def set_onion_pixmaps(self, pixmaps):
+        """Replace the ghosts and drop the scaled cache."""
+        self.onion_pixmaps = list(pixmaps or [])
+        self._scaled_onion_pixmaps = []
+        self._scaled_onion_zoom = None
+
+    def set_onion_annotations(self, ghosts):
+        """Replace the ghosted neighbour shapes.
+
+        ``[(class_name, [annotation, ...]), ...]`` -- grouped by class so the
+        renderer resolves visibility and colour once per class rather than once
+        per shape, inside ``paintEvent``.
+
+        No scaled cache to invalidate: these are drawn under the painter's own
+        zoom transform, so there is nothing pre-rendered to go stale.
+        """
+        self.onion_annotations = list(ghosts or [])
+
     def draw_temp_annotations(self, painter):
         return self.renderer.draw_temp_annotations(painter)
 
@@ -387,6 +459,61 @@ class ImageLabel(QLabel):
     def discard_temp_annotations(self):
         self.temp_annotations.clear()
         self.update()
+
+    # --- Segment Everything candidate assignment (issue #69) ---
+
+    def has_assignable_temp(self):
+        """True when the review overlay holds unprompted proposals.
+
+        DINO and SAM 3 proposals already know their class (they were prompted
+        with one); an unprompted pass does not, so only those need the
+        click-to-assign step.
+        """
+        return any(
+            annotation.get("source") == SAM_EVERYTHING_SOURCE
+            for annotation in self.temp_annotations
+        )
+
+    def temp_annotation_at(self, pos):
+        """Smallest assignable proposal containing ``pos``, or None.
+
+        Smallest-wins mirrors :meth:`annotation_at`: an unprompted pass
+        routinely nests a small mask inside a larger one, and the small one
+        would otherwise be unreachable.
+        """
+        best = None
+        best_area = None
+        for annotation in self.temp_annotations:
+            if annotation.get("source") != SAM_EVERYTHING_SOURCE:
+                continue
+            if not self._annotation_contains(annotation, pos):
+                continue
+            area = calculate_area(annotation)
+            if best is None or area < best_area:
+                best, best_area = annotation, area
+        return best
+
+    def assign_class_to_temp_at(self, pos, additive=False):
+        """Assign the active class to the proposal under ``pos``.
+
+        A plain click toggles: clicking a proposal already carrying the active
+        class clears it, so a mis-click is undone by repeating it rather than
+        by discarding the whole batch. Shift+click only ever assigns, which is
+        what makes dragging through a row of candidates additive.
+
+        Returns True when a proposal was hit (and the event consumed).
+        """
+        annotation = self.temp_annotation_at(pos)
+        if annotation is None:
+            return False
+        class_name = self._ctx.current_class() if self._ctx else None
+        if not class_name:
+            return False
+        if not additive and annotation.get("assigned_class") == class_name:
+            annotation["assigned_class"] = None
+        else:
+            annotation["assigned_class"] = class_name
+        return True
 
     def draw_tool_size_indicator(self, painter):
         return self.renderer.draw_tool_size_indicator(painter)
@@ -440,9 +567,13 @@ class ImageLabel(QLabel):
         self.scaled_pixmap = None
         self.editing_polygon = None
         self._editing_polygon_orig = None
+        self._editing_polygon_orig_raw = None
+        self._editing_polygon_orig_detail = None
         self.editing_point_index = None
         self.hover_point_index = None
         self.current_rectangle = None
+        self.set_onion_pixmaps([])
+        self.set_onion_annotations([])
         self.sam_bbox = None
         self.temp_sam_prediction = None
         self.update()
@@ -558,6 +689,15 @@ class ImageLabel(QLabel):
                 handler.on_mouse_press(event, pos)
             self.update()
             return
+
+        # Click a Segment Everything proposal to assign the active class to it
+        # (issue #69). Sits before the tool dispatch because temp_annotations
+        # suppresses select mode, so nothing else would claim the click.
+        if event.button() == Qt.MouseButton.LeftButton and self.has_assignable_temp():
+            additive = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            if self.assign_class_to_temp_at(pos, additive):
+                self.update()
+                return
 
         # Right-click a committed keypoint of the single selected pose instance
         # toggles its visibility (visible <-> occluded) (#35).
@@ -693,6 +833,29 @@ class ImageLabel(QLabel):
             return
         pos = self.get_image_coordinates(event.position())
         if event.button() == Qt.MouseButton.LeftButton:
+            # Already in vertex-edit mode: a double-click on an edge inserts a
+            # vertex there (issue #68). Checked before the tool handler and
+            # before re-entering edit mode, otherwise the double-click would
+            # just re-select the same polygon and the gesture would be dead.
+            if self.editing_polygon:
+                if self.insert_editing_vertex(pos):
+                    self.update()
+                    return
+                # Double-clicking an existing vertex is refused above (it would
+                # plant a coincident duplicate). Stop here rather than falling
+                # through: a vertex sits on the polygon boundary, where
+                # point_in_polygon is unreliable, so falling through could end
+                # the session outright on what the user meant as a no-op.
+                if self._vertex_at(pos) is not None:
+                    return
+                # The click missed this polygon's edges, so it is starting a
+                # NEW edit session -- probably on a different polygon. Commit
+                # the current one first. Without this, start_polygon_edit
+                # re-emits editBaselineRequested, capture_edit_baseline
+                # overwrites the pending baseline with the POST-edit state,
+                # and the first polygon's already-persisted insert becomes
+                # permanently un-undoable (ADR-026).
+                self.finish_polygon_edit()
             # Polygon handler can consume the double-click to finish
             # the polygon. If it doesn't (no in-progress polygon), fall
             # through to polygon-edit mode.
@@ -725,31 +888,10 @@ class ImageLabel(QLabel):
             elif self.temp_sam_prediction:
                 self.samPredictionAccepted.emit()
             elif self.editing_polygon:
-                # Clamp the edited polygon back into the image before exit so a
-                # vertex dragged past the edge can't poison the saved coords
-                # (upstream #32).
-                if self.original_pixmap is not None:
-                    self.editing_polygon["segmentation"] = clamp_segmentation(
-                        self.editing_polygon["segmentation"],
-                        self.original_pixmap.width(),
-                        self.original_pixmap.height(),
-                    )
-                changed = (
-                    self.editing_polygon.get("segmentation")
-                    != self._editing_polygon_orig
-                )
-                self.editing_polygon = None
-                self._editing_polygon_orig = None
-                self.editing_point_index = None
-                self.hover_point_index = None
-                self.enableToolsRequested.emit()
-                if changed:
-                    # polygonEditCommitted syncs all_annotations + pushes the
-                    # undo baseline + refreshes the list (ADR-026).
-                    self.polygonEditCommitted.emit()
-                else:
-                    # Nothing moved — just refresh, no history entry.
-                    self.annotationListUpdateRequested.emit()
+                # One implementation, shared with the start-a-new-session path
+                # in mouseDoubleClickEvent, so the two cannot drift on which
+                # of them pushes the undo baseline (#68).
+                self.finish_polygon_edit()
             else:
                 handler = self.active_tool_handler
                 if handler is not None:
@@ -775,15 +917,16 @@ class ImageLabel(QLabel):
                 self.clear_temp_sam_prediction()
                 self.selectModeRequested.emit()
             elif self.editing_polygon:
-                # Revert the in-place vertex drags so Esc truly cancels the
-                # edit (it used to silently keep them). No commit → no undo
-                # entry; the pending baseline is dropped on the next gesture.
-                if self._editing_polygon_orig is not None:
-                    self.editing_polygon["segmentation"] = list(
-                        self._editing_polygon_orig
-                    )
+                # Revert the in-place vertex drags and any insert/remove so Esc
+                # truly cancels the edit (it used to silently keep the drags).
+                # No commit -> no undo entry; the pending baseline is dropped on
+                # the next gesture by the deep-equal dedup in
+                # AnnotationHistory.record.
+                self._restore_editing_polygon()
                 self.editing_polygon = None
                 self._editing_polygon_orig = None
+                self._editing_polygon_orig_raw = None
+                self._editing_polygon_orig_detail = None
                 self.editing_point_index = None
                 self.hover_point_index = None
                 self.enableToolsRequested.emit()
@@ -1072,7 +1215,11 @@ class ImageLabel(QLabel):
         best_area = None
         for class_name, annotations in self.annotations.items():
             for annotation in annotations:
-                if "segmentation" in annotation:
+                # Truthiness, not `in`: an imported bbox-only annotation carries
+                # `"segmentation": None`, and slicing that raises. A pose
+                # instance has no segmentation key at all (ADR-029). Both must
+                # be unreachable from vertex editing.
+                if annotation.get("segmentation"):
                     points = [
                         QPoint(int(x), int(y))
                         for x, y in zip(
@@ -1088,8 +1235,14 @@ class ImageLabel(QLabel):
         if best is not None:
             self.editing_polygon = best
             # Snapshot for undo (pushed on Enter) and for Esc revert — vertex
-            # drags mutate the segmentation in place (ADR-026).
+            # drags mutate the segmentation in place (ADR-026). The Detail-%
+            # baseline is snapshotted too: a vertex insert/remove invalidates
+            # it (#68), and Esc has to put it back or cancelling an edit would
+            # still cost the user their simplification history.
             self._editing_polygon_orig = list(best.get("segmentation", []))
+            raw = best.get("segmentation_raw")
+            self._editing_polygon_orig_raw = list(raw) if raw else None
+            self._editing_polygon_orig_detail = best.get("detail_pct")
             self.editBaselineRequested.emit()
             self.current_tool = None
             self.disableToolsRequested.emit()
@@ -1097,33 +1250,174 @@ class ImageLabel(QLabel):
             return best
         return None
 
-    def handle_editing_click(self, pos, event):
-        """Handle clicks during polygon editing."""
-        points = [
-            QPoint(int(x), int(y))
-            for x, y in zip(
-                self.editing_polygon["segmentation"][0::2],
-                self.editing_polygon["segmentation"][1::2],
+    def finish_polygon_edit(self):
+        """Commit the current vertex-edit session (the Enter path).
+
+        The single implementation, shared with the start-a-new-session path in
+        ``mouseDoubleClickEvent``: both must push the pending undo baseline, or
+        an edit that ``sync_polygon_geometry`` has already persisted ends up
+        with no history entry at all (ADR-026).
+        """
+        if not self.editing_polygon:
+            return
+        # Clamp the edited polygon back into the image before exit so a vertex
+        # dragged past the edge can't poison the saved coords (upstream #32).
+        if self.original_pixmap is not None:
+            self.editing_polygon["segmentation"] = clamp_segmentation(
+                self.editing_polygon["segmentation"],
+                self.original_pixmap.width(),
+                self.original_pixmap.height(),
             )
-        ]
-        for i, point in enumerate(points):
-            if self.distance(pos, point) < 10 * self.ui_scale / self.zoom_factor:
-                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    # Delete point
-                    del self.editing_polygon["segmentation"][i * 2 : i * 2 + 2]
-                else:
-                    # Start moving point
-                    self.editing_point_index = i
-                return
-        # Add new point
-        for i in range(len(points)):
-            if self.point_on_line(pos, points[i], points[(i + 1) % len(points)]):
-                self.editing_polygon["segmentation"][i * 2 + 2 : i * 2 + 2] = [
-                    pos[0],
-                    pos[1],
-                ]
-                self.editing_point_index = i + 1
-                return
+        changed = (
+            self.editing_polygon.get("segmentation") != self._editing_polygon_orig
+        )
+        edit_gestures.sync_bbox_key(self.editing_polygon)
+        self.editing_polygon = None
+        self._editing_polygon_orig = None
+        self._editing_polygon_orig_raw = None
+        self._editing_polygon_orig_detail = None
+        self.editing_point_index = None
+        self.hover_point_index = None
+        self.enableToolsRequested.emit()
+        if changed:
+            # polygonEditCommitted syncs all_annotations + pushes the undo
+            # baseline + refreshes the list (ADR-026).
+            self.polygonEditCommitted.emit()
+        else:
+            # Nothing moved -- just refresh, no history entry.
+            self.annotationListUpdateRequested.emit()
+
+    def _restore_editing_polygon(self):
+        """Put the polygon back exactly as vertex-edit mode found it (Esc).
+
+        Restores the vertex list *and* the Detail-% baseline, which an
+        insert/remove during the session may have invalidated (#68), then
+        re-syncs the derived bbox.
+        """
+        if self._editing_polygon_orig is None:
+            return
+        self.editing_polygon["segmentation"] = list(self._editing_polygon_orig)
+        if self._editing_polygon_orig_raw is not None:
+            self.editing_polygon["segmentation_raw"] = list(
+                self._editing_polygon_orig_raw
+            )
+        else:
+            self.editing_polygon.pop("segmentation_raw", None)
+        if self._editing_polygon_orig_detail is not None:
+            self.editing_polygon["detail_pct"] = self._editing_polygon_orig_detail
+        else:
+            self.editing_polygon.pop("detail_pct", None)
+        edit_gestures.sync_bbox_key(self.editing_polygon)
+        # A vertex-count change during the session already wrote through to
+        # all_annotations and the table; the revert has to do the same or the
+        # UI keeps showing the cancelled geometry.
+        self.polygonGeometryChanged.emit()
+
+    def _vertex_grab_radius(self):
+        """Vertex/edge grab radius in image units — zoom-compensated so it is a
+        constant on-screen target at any magnification."""
+        return 10 * self.ui_scale / max(self.zoom_factor, 1e-6)
+
+    def _vertex_at(self, pos):
+        """Index of the editing polygon's vertex under ``pos``, or None."""
+        segmentation = self.editing_polygon["segmentation"]
+        radius = self._vertex_grab_radius()
+        for i, point in enumerate(zip(segmentation[0::2], segmentation[1::2])):
+            if self.distance(pos, point) < radius:
+                return i
+        return None
+
+    def handle_editing_click(self, pos, event):
+        """Handle clicks during polygon editing.
+
+        Alt+click (or Shift+click, the pre-#68 binding, kept so existing muscle
+        memory still works) removes a vertex; a plain click on one starts
+        dragging it. A plain click on an *edge* deliberately does nothing —
+        edge insertion moved to double-click in issue #68, so that the first
+        click of that double-click is not itself an insertion.
+        """
+        index = self._vertex_at(pos)
+        if index is None:
+            return
+        modifiers = event.modifiers()
+        removing = bool(
+            modifiers
+            & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier)
+        )
+        if removing:
+            self.remove_editing_vertex(index)
+        else:
+            self.editing_point_index = index
+
+    def remove_editing_vertex(self, index):
+        """Remove one vertex from the polygon being edited (issue #68).
+
+        Refused at the minimum vertex count, with a transient tooltip rather
+        than a modal: this is a gesture, and a dialog per mis-click would be
+        worse than the mistake.
+        """
+        segmentation = self.editing_polygon["segmentation"]
+        if not edit_gestures.can_remove_vertex(segmentation):
+            QToolTip.showText(
+                QCursor.pos(),
+                f"A polygon needs at least "
+                f"{edit_gestures.MIN_POLYGON_VERTICES} vertices.",
+                self,
+            )
+            return False
+        self.editing_polygon["segmentation"] = edit_gestures.remove_vertex(
+            segmentation, index
+        )
+        self.editing_point_index = None
+        self.hover_point_index = None
+        self._after_vertex_count_change()
+        return True
+
+    def insert_editing_vertex(self, pos):
+        """Insert a vertex on the edge nearest ``pos`` (issue #68).
+
+        Returns False when no edge is within the grab radius, so the caller can
+        fall through to whatever the click would otherwise have meant.
+        """
+        # A vertex sits on both of its adjacent edges at perpendicular distance
+        # zero, so without this an insert on top of an existing vertex would
+        # always "succeed" and plant a coincident duplicate.
+        if self._vertex_at(pos) is not None:
+            return False
+        hit = edit_gestures.closest_edge(
+            self.editing_polygon["segmentation"], pos, self._vertex_grab_radius()
+        )
+        if hit is None:
+            return False
+        index, point = hit
+        self.editing_polygon["segmentation"] = edit_gestures.insert_vertex(
+            self.editing_polygon["segmentation"], index, point
+        )
+        # Point the drag index at the new vertex. Note this only survives a
+        # programmatic call: reached through a real double-click, the release
+        # that ends the gesture clears it again (the button is already up, so
+        # there is no drag to arm). Kept because a future press-drag path would
+        # want it, not because the double-click flow uses it.
+        self.editing_point_index = index
+        self._after_vertex_count_change()
+        return True
+
+    def _after_vertex_count_change(self):
+        """Shared tail of insert and remove.
+
+        Invalidating the Detail-% baseline here is the load-bearing step — see
+        ``edit_gestures.invalidate_raw_polygon`` for why leaving it stale would
+        silently revert the edit on the next Detail-% drag.
+        """
+        edit_gestures.invalidate_raw_polygon(self.editing_polygon)
+        edit_gestures.sync_bbox_key(self.editing_polygon)
+        # Push the new geometry through to all_annotations and rebuild the
+        # table so Area reflects the change immediately, without ending the
+        # edit gesture: the undo baseline stays pending until Enter, so the
+        # whole vertex-edit session is still one undo step and Esc still
+        # reverts everything (ADR-026).
+        self.polygonGeometryChanged.emit()
+        self.update()
 
     def handle_editing_move(self, pos):
         """Handle mouse movement during polygon editing."""
@@ -1146,10 +1440,22 @@ class ImageLabel(QLabel):
             )
 
     def exit_editing_mode(self):
-        self.editing_polygon = None
-        self._editing_polygon_orig = None
-        self.editing_point_index = None
-        self.hover_point_index = None
+        """Leave vertex-edit mode, committing whatever the session changed.
+
+        Called on image and slice switches. It used to just clear the state,
+        which reopened the lost-baseline hole from the other side: a vertex
+        insert is persisted eagerly by ``sync_polygon_geometry`` but leaves the
+        undo baseline pending until the session ends, so exiting without
+        emitting ``polygonEditCommitted`` left an already-saved edit with no
+        history entry — and ``commit_edit_baseline``'s key guard then dropped
+        the stale baseline once the new image was current.
+
+        Routing through :meth:`finish_polygon_edit` also picks up the
+        ``clamp_segmentation`` this path was skipping, so a vertex dragged out
+        of bounds at the moment of a switch can no longer be persisted
+        unclamped (ADR-024).
+        """
+        self.finish_polygon_edit()
         self.update()
 
     @staticmethod

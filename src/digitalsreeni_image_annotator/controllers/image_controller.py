@@ -41,7 +41,8 @@ from PyQt6.QtWidgets import (
 )
 from tifffile import TiffFile
 
-from ..core import image_utils
+from ..app_settings import save_onion_prefs
+from ..core import image_utils, onion
 from ..core.slice_cache import (
     LazySliceList,
     SliceProvider,
@@ -168,6 +169,59 @@ class ImageController(QObject):
                 self.mw.image_list.blockSignals(False)
                 if do_switch:
                     self.switch_image(items[0])
+
+    def refresh_image_list_scores(self):
+        """Repaint the list so review-score badges appear or disappear (#71).
+
+        Only a repaint: the scores are read live by the delegate, so there is
+        nothing to copy into the items — which is what keeps the item text a
+        pure file name.
+        """
+        self.mw.image_list.viewport().update()
+
+    def sort_image_list_by_score(self, descending=True):
+        """Reorder the list by review score, highest first (issue #71).
+
+        Sorts ``all_images`` and rebuilds, exactly like
+        :meth:`sort_image_list`, so the ``all_images[i]`` ↔ ``item(i)``
+        positional invariant other code relies on is preserved. Unscored
+        images sink to the bottom rather than being hidden — the point of the
+        ranking is where to start, not what to ignore.
+        """
+        review = getattr(self.mw, "review_controller", None)
+        if review is None or not review.has_scores():
+            return False
+
+        def key(info):
+            score = review.score_for(info.get("file_name"))
+            if score is None:
+                return (1, 0.0, info.get("file_name", "").casefold())
+            return (0, -score if descending else score,
+                    info.get("file_name", "").casefold())
+
+        current = None
+        if self.mw.image_list.currentItem() is not None:
+            current = self.mw.image_list.currentItem().text()
+
+        self.mw.all_images.sort(key=key)
+        self.mw.image_list.blockSignals(True)
+        self.mw.image_list.clear()
+        for info in self.mw.all_images:
+            item = QListWidgetItem(info["file_name"])
+            group = info.get("group")
+            if group:
+                item.setToolTip(f"{info['file_name']}  [{group}]")
+            self.mw.image_list.addItem(item)
+        self.mw.image_list.blockSignals(False)
+        self.apply_image_filter()
+
+        if current is not None:
+            items = self.mw.image_list.findItems(current, Qt.MatchFlag.MatchExactly)
+            if items:
+                self.mw.image_list.blockSignals(True)
+                self.mw.image_list.setCurrentItem(items[0])
+                self.mw.image_list.blockSignals(False)
+        return True
 
     def image_has_annotations(self, image_info):
         """True if the image (or, for multi-dim images, any of its slices)
@@ -386,6 +440,14 @@ class ImageController(QObject):
     def setup_slice_list(self):
         self.mw.slice_list = QListWidget()
         self.mw.slice_list.itemClicked.connect(self.switch_slice)
+        # Keyboard navigation. A focused QListWidget handles the arrow keys
+        # itself and does NOT propagate them, so the main window's keyPressEvent
+        # never saw Up/Down here -- the row moved and the canvas did not follow.
+        # The image list above has always connected both signals, which is
+        # exactly why arrow keys worked there and not here.
+        self.mw.slice_list.currentRowChanged.connect(
+            lambda _row: self.switch_slice(self.mw.slice_list.currentItem())
+        )
         self.mw.image_list_layout.addWidget(QLabel("Slices:"))
         self.mw.image_list_layout.addWidget(self.mw.slice_list)
 
@@ -640,6 +702,11 @@ class ImageController(QObject):
     def update_video_timeline(self):
         """Sync the video timeline widget to the active image (issue #48).
 
+        Also refreshes the onion-skin control row (issue #67): both are
+        per-image navigation chrome whose visibility depends on what kind of
+        image is active, and every navigation path already funnels through here
+        — hooking the second one on separately is how the two drift apart.
+
         Shows + configures the timeline when the active image is a video,
         otherwise hides it. The timeline is a pure VIEW: it never changes the
         frame itself (user scrubs route back through ``switch_slice`` via
@@ -651,6 +718,7 @@ class ImageController(QObject):
         if timeline is None:
             return
 
+        self.update_onion_controls()
         video = self.current_video()
         if video is not None:
             base_name, handler, _info = video
@@ -709,6 +777,21 @@ class ImageController(QObject):
 
     def switch_slice(self, item):
         if item is None:
+            return
+        # Already showing it -> nothing to do.
+        #
+        # This is load-bearing, not an optimisation. `currentRowChanged` drives
+        # navigation, so it fires for PROGRAMMATIC selections too, and the
+        # invariant every caller must honour is: **select the row for the slice
+        # you have just made current**. Callers that do are no-ops here; the
+        # ones that select a different row get the switch performed for them.
+        #
+        # Without it, `update_slice_list`'s re-selection re-enters switch_slice
+        # *after* switch_image has already repointed `current_slice` at the new
+        # image's first slice -- so the outgoing slice's annotations get saved
+        # under the incoming slice's key, silently duplicating them across two
+        # different images. See test_switching_videos_does_not_bleed_annotations.
+        if item.text() == self.mw.current_slice:
             return
         # check_unsaved_changes prompts the user and commits/discards
         # all dirty tool handlers; returns False on Cancel.
@@ -1404,8 +1487,144 @@ class ImageController(QObject):
             if not pixmap.isNull():
                 self.mw.image_label.setPixmap(pixmap)
                 self.mw.image_label.adjustSize()
+                self.refresh_onion_skin()
             else:
                 logger.warning("Null pixmap")
         else:
             self.mw.image_label.clear()
             logger.debug("No current image to display")
+
+    # --- Onion skin (issue #67) ---
+
+    def onion_available(self) -> bool:
+        """True when the active image has enough slices for a ghost to mean
+        anything — a multi-slice stack or a video, never a plain image."""
+        return onion.is_available(slice_names(self.mw.slices))
+
+    def refresh_onion_skin(self):
+        """Resolve the neighbouring slice pixmaps for the current slice.
+
+        Called from :meth:`display_image` (the single funnel where the canvas
+        image changes) rather than from ``paintEvent``: resolving per repaint
+        would put a cache lookup, and on a miss a full decode, in the pan and
+        zoom path.
+
+        Neighbours are fetched through the same ``LazySliceList.get`` every
+        other consumer uses, so the shared bounded LRU (ADR-036) stays the only
+        owner of decoded slice pixels. In the default single-neighbour mode
+        that is one extra live decode; "both" makes it two, which is why the
+        LRU capacity of 8 is left alone rather than quietly raised.
+        """
+        label = self.mw.image_label
+        label.set_onion_pixmaps([])
+        label.set_onion_annotations([])
+        if not self.mw.onion_enabled or not self.mw.current_slice:
+            return
+
+        slices = self.mw.slices
+        label.onion_opacity = self.mw.onion_opacity
+        names = onion.neighbour_names(
+            slice_names(slices),
+            self.mw.current_slice,
+            self.mw.onion_offset,
+            self.mw.onion_mode,
+        )
+
+        # The annotation ghost first: it is a dict lookup per neighbour, needs
+        # no decoded pixels at all, and is the half of the feature people
+        # actually use.
+        if onion.wants_annotations(self.mw.onion_content):
+            label.set_onion_annotations(self._onion_annotations_for(names))
+
+        if not onion.wants_image(self.mw.onion_content):
+            return  # nothing will draw the pixels; don't pay to decode them
+
+        getter = getattr(slices, "get", None)
+        if getter is None:
+            return  # plain-list slice collection (legacy/tests): nothing to do
+
+        pixmaps = []
+        for name in names:
+            qimage = getter(name)
+            if qimage is None:
+                continue  # first/last slice, or a decode that failed: no ghost
+            pixmaps.append(QPixmap.fromImage(qimage))
+        label.set_onion_pixmaps(pixmaps)
+
+    def _onion_annotations_for(self, names):
+        """Committed annotations of the neighbour slices, grouped by class.
+
+        ``[(class_name, [annotation, ...]), ...]``, read from
+        ``all_annotations`` -- the project-level cache, which holds every slice
+        except the one on screen (that one lives on the label until
+        ``save_current_annotations`` writes it back). A neighbour is by
+        definition not the current slice, so that cache is the right source.
+
+        **Grouped, not flattened**, because the renderer asks
+        ``is_class_visible`` once per entry and that routes through a linear
+        ``findItems`` scan of the class-list widget. Once per class is cheap;
+        once per shape would put hundreds of widget scans per repaint into the
+        pan and zoom path the ghost is otherwise careful to stay out of.
+
+        ``Temp-*`` classes are excluded: ``save_current_annotations`` copies
+        ``image_label.annotations`` wholesale into ``all_annotations``, so
+        un-reviewed YOLO predictions live there too, and ghosting them would
+        present proposals nobody has accepted as if they were labels.
+        """
+        grouped = {}
+        for name in names:
+            by_class = self.mw.all_annotations.get(name) or {}
+            for class_name, annotations in by_class.items():
+                if class_name.startswith("Temp-"):
+                    continue
+                grouped.setdefault(class_name, []).extend(annotations)
+        return list(grouped.items())
+
+    def set_onion_enabled(self, enabled):
+        self.mw.onion_enabled = bool(enabled)
+        self._store_onion_prefs()
+        self.refresh_onion_skin()
+        self.mw.image_label.update()
+
+    def set_onion_opacity(self, percent):
+        self.mw.onion_opacity = onion.clamp_opacity(percent / 100.0)
+        self.mw.image_label.onion_opacity = self.mw.onion_opacity
+        self._store_onion_prefs()
+        self.mw.image_label.update()
+
+    def set_onion_offset(self, offset):
+        self.mw.onion_offset = onion.clamp_offset(offset)
+        self._store_onion_prefs()
+        self.refresh_onion_skin()
+        self.mw.image_label.update()
+
+    def set_onion_mode(self, mode):
+        self.mw.onion_mode = onion.normalise_mode(mode)
+        self._store_onion_prefs()
+        self.refresh_onion_skin()
+        self.mw.image_label.update()
+
+    def set_onion_content(self, content):
+        self.mw.onion_content = onion.normalise_content(content)
+        self._store_onion_prefs()
+        self.refresh_onion_skin()
+        self.mw.image_label.update()
+
+    def _store_onion_prefs(self):
+        save_onion_prefs(
+            self.mw.onion_enabled,
+            self.mw.onion_opacity,
+            self.mw.onion_offset,
+            self.mw.onion_mode,
+            self.mw.onion_content,
+        )
+
+    def update_onion_controls(self):
+        """Show the onion controls only for a multi-slice image or a video.
+
+        Hidden rather than greyed out: on a plain image the feature has no
+        meaning at all, and a permanently-disabled row is just clutter.
+        """
+        row = getattr(self.mw, "onion_row", None)
+        if row is not None:
+            row.setVisible(self.onion_available())

@@ -37,14 +37,120 @@ class CanvasRenderer:
         """Overlay label font: ui-scaled, zoom-compensated (constant on screen)."""
         return QFont("Arial", max(1, int(base * self.label.ui_scale / self.label.zoom_factor)))
 
+    def draw_onion_skin(self, painter):
+        """Ghost the neighbouring slice(s) over the current image (issue #67).
+
+        Two independent ghosts, picked by the content setting: the neighbour's
+        **annotations** (the default) and its **raster**.
+
+        **Layer position.** The issue text described this as drawing "underneath
+        the current image". That cannot work here: unlike animation cels, an
+        image slice is a fully opaque raster, so anything painted beneath it is
+        invisible. The pass therefore runs *after* the image and *before* the
+        annotations, which delivers what the requirement actually asked for —
+        a visible ghost with the current slice's annotations legible on top.
+
+        Both ghosts are resolved on navigation, not here: ``paintEvent`` runs on
+        every repaint, and a filesystem or decode hit per repaint would make
+        panning crawl. This method only draws what the controller already put on
+        the label.
+        """
+        self._draw_onion_pixmaps(painter)
+        self._draw_onion_annotations(painter)
+
+    def _draw_onion_pixmaps(self, painter):
+        pixmaps = self.label.scaled_onion_pixmaps()
+        if not pixmaps:
+            return
+        painter.save()
+        painter.setOpacity(self.label.onion_opacity)
+        for pixmap in pixmaps:
+            # Same origin as the main image, and pre-scaled to the same zoom,
+            # so ghost and current slice stay in lockstep through pan and zoom.
+            painter.drawPixmap(
+                int(self.label.offset_x), int(self.label.offset_y), pixmap
+            )
+        painter.setOpacity(1.0)
+        painter.restore()
+
+    def _draw_onion_annotations(self, painter):
+        """Ghost the neighbouring slices' committed shapes.
+
+        This, not the raster ghost, is what onion-skinning is for in an
+        annotation tool. Blending a neighbouring photographic slice over the
+        current one mostly reads as "this image is out of focus"; the question
+        worth answering while stepping through a stack is *what did I label
+        there, and does this slice line up with it?*
+
+        Outline only, dashed, no fill: the current slice's own masks are filled,
+        so a filled ghost would compete with exactly the thing it exists to be
+        compared against. Hidden classes are skipped, because a ghost that
+        ignores the visibility checkbox is a ghost you cannot turn off.
+        """
+        ghosts = self.label.onion_annotations
+        if not ghosts:
+            return
+        painter.save()
+        painter.translate(self.label.offset_x, self.label.offset_y)
+        painter.scale(self.label.zoom_factor, self.label.zoom_factor)
+        painter.setOpacity(self.label.onion_opacity)
+        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        for class_name, annotations in ghosts:
+            # The same visibility question every other layer asks, asked the
+            # same way (ADR-018). The shadow `class_visibility` dict disagrees
+            # for a class missing from the list, so a second idiom here would
+            # be a second answer. Asked once per CLASS -- it is a linear scan
+            # of the class-list widget, and this runs inside paintEvent.
+            if not self.label._ctx.is_class_visible(class_name):
+                continue
+            color = QColor(
+                self.label.class_colors.get(class_name, QColor(Qt.GlobalColor.white))
+            )
+            painter.setPen(QPen(color, self._pen_w(2), Qt.PenStyle.DashLine))
+            for annotation in annotations:
+                self._draw_onion_shape(painter, annotation)
+        painter.setOpacity(1.0)
+        painter.restore()
+
+    def _draw_onion_shape(self, painter, annotation):
+        """Outline one ghosted annotation, whatever kind it is.
+
+        Polygon first, then bbox: a pose instance carries a ``bbox`` and
+        deliberately NO ``segmentation`` key (ADR-029), so this order ghosts a
+        pose as its instance box and never has to special-case it.
+        """
+        segmentation = annotation.get("segmentation")
+        if segmentation and len(segmentation) >= 6:
+            painter.drawPolygon(QPolygonF([
+                QPointF(segmentation[i], segmentation[i + 1])
+                for i in range(0, len(segmentation) - 1, 2)
+            ]))
+            return
+        bbox = annotation.get("bbox")
+        if bbox and len(bbox) == 4:
+            x, y, width, height = bbox
+            painter.drawRect(QRectF(x, y, width, height))
+
     def draw_temp_annotations(self, painter):
         painter.save()
         painter.translate(self.label.offset_x, self.label.offset_y)
         painter.scale(self.label.zoom_factor, self.label.zoom_factor)
 
         for annotation in self.label.temp_annotations:
-            color = QColor(255, 165, 0, 128)  # Semi-transparent orange
-            painter.setPen(QPen(color, self._pen_w(2), Qt.PenStyle.DashLine))
+            # An unprompted proposal that has been given a class (issue #69)
+            # draws in that class's colour with a solid outline, so "assigned"
+            # and "still undecided" are distinguishable at a glance -- without
+            # which a partially-reviewed batch is impossible to work through.
+            assigned = annotation.get("assigned_class")
+            if assigned:
+                color = QColor(
+                    self.label.class_colors.get(assigned, QColor(Qt.GlobalColor.white))
+                )
+                color.setAlpha(140)
+                painter.setPen(QPen(color, self._pen_w(2), Qt.PenStyle.SolidLine))
+            else:
+                color = QColor(255, 165, 0, 128)  # Semi-transparent orange
+                painter.setPen(QPen(color, self._pen_w(2), Qt.PenStyle.DashLine))
             painter.setBrush(QBrush(color))
 
             # Prefer segmentation polygon over bbox when both are present
@@ -65,7 +171,8 @@ class CanvasRenderer:
 
             # Draw label and score
             painter.setFont(self._overlay_font())
-            label = f"{annotation['category_name']} {annotation['score']:.2f}"
+            name = assigned or annotation["category_name"]
+            label = f"{name} {annotation['score']:.2f}"
             if points is not None:
                 centroid = self.calculate_centroid(points)
                 if centroid:

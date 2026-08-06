@@ -25,27 +25,34 @@ but is now shared with DINO and most easily co-located.
 """
 
 import os
+from collections import Counter
 
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QLineEdit,
     QMessageBox,
     QProgressDialog,
-    QTextEdit,
 )
 
+from ..core.annotation_types import resolve_category_id
 from ..core.constants import default_class_color
 from ..core.keypoint_schema import schema_k
+from ..core.mask_filters import SAM_EVERYTHING_SOURCE
 from ..core.slice_cache import slice_names
 from ..inference.sam3_utils import SAM3_MODEL_LABEL
 from ..inference.sam_utils import InferenceBusyError
+from ..ui.input_gates import focus_is_text_entry, no_modal_open
 
 from ..core.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+# Producers whose temp annotations this filter's Enter/Escape applies to.
+# Adding a producer means adding it here, not installing a second filter.
+REVIEW_SOURCES = ("dino", "sam3", SAM_EVERYTHING_SOURCE)
 
 
 class DINOReviewEventFilter(QObject):
@@ -57,7 +64,10 @@ class DINOReviewEventFilter(QObject):
 
     Suppressed when a modal dialog is active or focus is on a text-input
     widget so we don't break dialog default-button behaviour or
-    in-cell editing.
+    in-cell editing. Those two checks are shared with the issue-#65 shortcut
+    registry via ``ui.input_gates`` rather than duplicated here — two filters
+    drifting apart on a safety predicate is exactly the failure the ADR-015
+    follow-up warned about.
     """
 
     def __init__(self, main_window):
@@ -70,18 +80,16 @@ class DINOReviewEventFilter(QObject):
         key = event.key()
         if key not in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape):
             return False
-        app = QApplication.instance()
-        if app is None or app.activeModalWidget() is not None:
-            return False
-        focused = app.focusWidget()
-        if isinstance(focused, (QLineEdit, QTextEdit)):
+        if not no_modal_open() or focus_is_text_entry():
             return False
         temp = self.main_window.image_label.temp_annotations
-        # SAM 3 (issue #50) produces temp annotations tagged "sam3"; DINO
-        # tags "dino". Both reuse this Enter/Escape review gate — widen the
-        # membership so SAM 3 review isn't dead. See ADR-038.
+        # Three producers now feed this one review gate: DINO tags "dino",
+        # SAM 3 tags "sam3" (issue #50 / ADR-038), and Segment Everything tags
+        # "sam-everything" (issue #69). Widening the accepted set is
+        # deliberately how a new producer joins -- ADR-015 warns against
+        # installing a parallel filter instead.
         if not temp or not any(
-            a.get("source") in ("dino", "sam3") for a in temp
+            a.get("source") in REVIEW_SOURCES for a in temp
         ):
             return False
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -110,6 +118,11 @@ class DINOController(QObject):
     def _on_dino_model_changed(self, text):
         """Selection → ready state. Downloads happen lazily on first Detect."""
         self.mw.dino_browse_row.setVisible(text == "Custom / fine-tuned (browse)")
+        # Clear here rather than on the one branch that sets it: the status
+        # label is shared by every model, so a tooltip left attached from the
+        # SAM 3 "weights not found" branch would still be hanging off
+        # "Ready: grounding-dino-base" three selections later.
+        self.mw.lbl_dino_status.setToolTip("")
 
         if text == SAM3_MODEL_LABEL:
             self._on_sam3_selected()
@@ -165,8 +178,18 @@ class DINOController(QObject):
         if not sam3.weights_available():
             self.mw.lbl_dino_status.setText(
                 "SAM 3 weights (sam3.pt) not found. Request access on Hugging "
-                "Face, then place sam3.pt in the working directory or the "
-                "models/sam/ folder."
+                "Face, then place sam3.pt in one of the folders in this "
+                "label's tooltip."
+            )
+            # The exact paths go in the tooltip rather than the label: it is a
+            # one-line status strip, and three absolute Windows paths in it
+            # would push everything else off the end. Naming them at all is the
+            # point -- "not found" without a location sends you hunting.
+            self.mw.lbl_dino_status.setToolTip(
+                "Searched for sam3.pt in:\n  "
+                + "\n  ".join(sam3.searched_weight_paths())
+                + "\n\nOr point the SAM3_MODEL_PATH environment variable at "
+                "the checkpoint."
             )
             self.mw.btn_detect_single.setEnabled(False)
             self.mw.btn_detect_batch.setEnabled(False)
@@ -436,11 +459,19 @@ class DINOController(QObject):
         )
         if auto_accept:
             logger.debug(f"detect_single: auto_accept=True, committing {len(results)} result(s)")
+            n_committed = 0
+            skipped = Counter()
             try:
-                self._commit_dino_results(image_name, results, sam_results)
+                # The count has to come from the commit, not from `sam_results`:
+                # a result whose class no longer exists is dropped in there, and
+                # counting the inputs reported it as saved anyway.
+                n_committed, skipped = self._commit_dino_results(
+                    image_name, results, sam_results
+                )
             except Exception:
                 logger.exception("_commit_dino_results failed")
-            n_committed = sum(1 for s in sam_results if "error" not in s)
+            if skipped:
+                self._warn_unknown_classes(skipped, n_committed)
             self.mw.image_label.temp_annotations = []
             self.mw.image_label.update()
             self.mw.update_annotation_list()
@@ -545,6 +576,9 @@ class DINOController(QObject):
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
 
+        committed_total = 0
+        skipped_total = Counter()
+
         for idx, (image_name, qimage) in enumerate(work_items):
             if progress.wasCanceled():
                 break
@@ -566,7 +600,11 @@ class DINOController(QObject):
                 continue
 
             if auto_accept:
-                self._commit_dino_results(image_name, results, sam_results)
+                committed, skipped = self._commit_dino_results(
+                    image_name, results, sam_results
+                )
+                committed_total += committed
+                skipped_total.update(skipped)
             else:
                 self._store_dino_batch_results(image_name, results, sam_results)
 
@@ -574,10 +612,13 @@ class DINOController(QObject):
         progress.close()
 
         if auto_accept:
-            QMessageBox.information(
-                self.mw, "Batch Detection Complete",
-                "Detections have been saved to annotations."
-            )
+            if skipped_total:
+                self._warn_unknown_classes(skipped_total, committed_total)
+            else:
+                QMessageBox.information(
+                    self.mw, "Batch Detection Complete",
+                    f"{committed_total} detection(s) saved to annotations."
+                )
             self.mw.update_annotation_list()
             self.mw.update_slice_list_colors()
             self.mw.auto_save()
@@ -633,6 +674,13 @@ class DINOController(QObject):
         image_label.annotations so the canvas reflects the change and the
         next save_current_annotations() doesn't overwrite the additions.
         Otherwise write directly to the project-level cache.
+
+        Returns ``(committed, skipped)`` -- the number of annotations actually
+        written, and a ``Counter`` of the class names that were dropped because
+        no such class exists. Callers must surface that second half: a detection
+        aimed at a class that isn't in the class list has nowhere to go, and
+        reporting it only to the log is how a run that saved *nothing* still
+        ended with a "detections have been saved" dialog.
         """
         current_image = self.mw.current_slice or self.mw.image_file_name
         is_current = image_name == current_image
@@ -648,28 +696,68 @@ class DINOController(QObject):
                 self.mw.all_annotations[image_name] = {}
             target = self.mw.all_annotations[image_name]
 
+        committed = 0
+        skipped = Counter()
         for r, s in zip(dino_results, sam_results):
             if "error" in s:
                 continue
             class_name = r["class_name"]
-            if class_name not in self.mw.class_mapping:
+            category_id = resolve_category_id(
+                self.mw.class_mapping, class_name, skipped
+            )
+            if category_id is None:
                 logger.warning(f"Skipping DINO result for unknown class '{class_name}'")
                 continue
             existing = target.get(class_name, [])
             number = max((a.get("number", 0) for a in existing), default=0) + 1
             ann = {
                 "segmentation": s["segmentation"],
-                "category_id": self.mw.class_mapping[class_name],
+                "category_id": category_id,
                 "category_name": class_name,
                 "score": r["score"],
                 "source": r.get("source", "dino"),
                 "number": number,
             }
             target.setdefault(class_name, []).append(ann)
+            committed += 1
 
         if is_current:
             self.mw.save_current_annotations()
             self.mw.image_label.update()
+        return committed, skipped
+
+    def _warn_unknown_classes(self, skipped, committed=None):
+        """Tell the user which detections were thrown away, and why.
+
+        ``_commit_dino_results`` drops any detection whose class is missing
+        from the class list. That used to be a console warning only, so the run
+        still finished on "Detections have been saved to annotations." even
+        when every last one had been discarded -- a total failure and a total
+        success looked identical from the UI.
+
+        The cause was renaming a class: the detection phrase table kept the old
+        name and kept prompting with it. ``ClassController.rename_class`` now
+        re-keys the table, the phrases and any pending review results, and
+        ``delete_class`` drops the pending results outright -- so the remaining
+        way to reach this is a class disappearing between a detection running
+        and its results being accepted. Rare, but it must not fail quietly a
+        second time.
+        """
+        dropped = sum(skipped.values())
+        names = ", ".join(
+            f"'{name}' ({count})" for name, count in sorted(skipped.items())
+        )
+        saved = (
+            f"{committed} detection(s) saved to annotations.\n\n"
+            if committed is not None else ""
+        )
+        QMessageBox.warning(
+            self.mw,
+            "Detections Discarded",
+            f"{saved}{dropped} detection(s) were discarded: {names}.\n\n"
+            "The project has no such class, so there was nowhere to file "
+            "them. Re-add the class and run the detection again.",
+        )
 
     def _store_dino_batch_results(self, image_name, dino_results, sam_results):
         """Store results for batch review mode."""
@@ -779,34 +867,140 @@ class DINOController(QObject):
 
         self.mw.annotation_controller.record_history(image_name)
 
+        unassigned = 0
+        committed = 0
+        skipped = Counter()
         for ann in self.mw.image_label.temp_annotations:
-            class_name = ann["category_name"]
-            if class_name not in self.mw.class_mapping:
+            # An unprompted Segment Everything proposal (issue #69) commits
+            # under the class the user assigned by clicking it. One that was
+            # never assigned is discarded rather than guessed at -- committing
+            # it under Temp-Auto would leave exactly the orphan class the #63
+            # rename guard had to work around.
+            class_name = ann.get("assigned_class") or ann["category_name"]
+            if ann.get("source") == SAM_EVERYTHING_SOURCE and not ann.get(
+                "assigned_class"
+            ):
+                unassigned += 1
+                continue
+            category_id = resolve_category_id(
+                self.mw.class_mapping, class_name, skipped
+            )
+            if category_id is None:
                 logger.warning(f"Skipping DINO result for unknown class '{class_name}'")
                 continue
             new_ann = {
                 "segmentation": ann["segmentation"],
-                "category_id": self.mw.class_mapping[class_name],
+                "category_id": category_id,
                 "category_name": class_name,
                 "score": ann.get("score", 0.0),
                 "source": ann.get("source", "dino"),
             }
             self.mw.image_label.annotations.setdefault(class_name, []).append(new_ann)
             self.mw.add_annotation_to_list(new_ann)
+            committed += 1
 
         self.mw.image_label.temp_annotations = []
+        self._drop_auto_temp_class()
         self.mw.dino_batch_results.pop(image_name, None)
+        # Report BEFORE advancing the review. _show_dino_batch_review navigates
+        # to the next pending image, so a warning raised after it would name
+        # classes dropped from an image the user is no longer looking at.
+        if skipped:
+            self._warn_unknown_classes(skipped, committed)
         if self.mw.dino_batch_results:
             self._show_dino_batch_review()
         self.mw.save_current_annotations()
         self.mw.update_slice_list_colors()
         self.mw.image_label.update()
-        self.mw.lbl_dino_status.setText("Results accepted.")
+        # Report the discards rather than losing them quietly: assigning 18 of
+        # 30 proposals and pressing Enter should not silently drop 12.
+        status = "Results accepted."
+        if unassigned:
+            status = (
+                f"Results accepted; {unassigned} unassigned proposal(s) "
+                "discarded."
+            )
+            logger.info("discarded %d unassigned proposal(s)", unassigned)
+        self.mw.lbl_dino_status.setText(status)
         logger.info("DINO results accepted.")
+
+    def rename_class_in_pending(self, old_name, new_name):
+        """Follow a class rename through the pending review results.
+
+        ``dino_batch_results`` and ``image_label.temp_annotations`` capture
+        ``category_name`` at DETECTION time, so a rename mid-review otherwise
+        leaves every pending proposal tagged with a name the project no longer
+        has: they draw in the fallback colour and are then discarded on accept.
+
+        Re-keyed rather than cleared -- renaming a class should not destroy a
+        review the user is halfway through.
+        """
+        pending = list(self.mw.dino_batch_results.values())
+        pending.append(self.mw.image_label.temp_annotations)
+        for results in pending:
+            for ann in results:
+                if ann.get("category_name") == old_name:
+                    ann["category_name"] = new_name
+                # Segment Everything proposals stay under Temp-Auto and carry
+                # the user's choice in `assigned_class` instead (#69).
+                if ann.get("assigned_class") == old_name:
+                    ann["assigned_class"] = new_name
+
+    def drop_class_from_pending(self, class_name):
+        """Detach a deleted class from the pending review results.
+
+        Unlike a rename there is nowhere for these to go. A prompted proposal
+        (DINO / SAM 3) named that class and is removed; an unprompted one only
+        had it *assigned*, so it goes back to unassigned and stays reviewable.
+        Leaving either in place parks work that can now only be discarded.
+        """
+        for image_name in list(self.mw.dino_batch_results):
+            kept = self._detach_class(
+                self.mw.dino_batch_results[image_name], class_name
+            )
+            if kept:
+                self.mw.dino_batch_results[image_name] = kept
+            else:
+                del self.mw.dino_batch_results[image_name]
+        self.mw.image_label.temp_annotations = self._detach_class(
+            self.mw.image_label.temp_annotations, class_name
+        )
+        # Deleting a class can empty the review that is on screen while other
+        # images still have pending results. Without this the overlay silently
+        # vanishes, the status line keeps advertising the review that is gone,
+        # and the remaining images are never offered -- so they survive only
+        # until the app closes. Mirrors what reject_dino_results does.
+        if not self.mw.image_label.temp_annotations and self.mw.dino_batch_results:
+            self._show_dino_batch_review()
+        self.mw.image_label.update()
+
+    @staticmethod
+    def _detach_class(results, class_name):
+        kept = []
+        for ann in results:
+            if ann.get("assigned_class") == class_name:
+                ann["assigned_class"] = None
+            if ann.get("category_name") == class_name:
+                continue
+            kept.append(ann)
+        return kept
+
+    def _drop_auto_temp_class(self):
+        """Remove the placeholder colour entry Segment Everything registered.
+
+        Both accept and reject call this. A surviving ``Temp-*`` class is not
+        cosmetic: it shows up in the class list, in exports, and in the rename
+        guard added for #63.
+        """
+        from .segment_everything_controller import TEMP_AUTO_CLASS
+
+        self.mw.image_label.class_colors.pop(TEMP_AUTO_CLASS, None)
+        self.mw.image_label.annotations.pop(TEMP_AUTO_CLASS, None)
 
     def reject_dino_results(self):
         """Discard current temp_annotations."""
         self.mw.image_label.temp_annotations = []
+        self._drop_auto_temp_class()
         image_name = self.mw.current_slice or self.mw.image_file_name
         self.mw.dino_batch_results.pop(image_name, None)
         if self.mw.dino_batch_results:

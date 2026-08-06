@@ -27,6 +27,66 @@ def window(qt_application):
     w.deleteLater()
 
 
+def _write_voc_dataset(tmp_path):
+    """A VOC dataset in the layout ``export_pascal_voc_both`` writes: an inline
+    ``<segmentation><polygon>`` and a ``<bndbox>``, with the image beside it."""
+    import xml.etree.ElementTree as ET
+
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    Image.new("RGB", (200, 200), (60, 60, 60)).save(images_dir / "a.png")
+
+    ann_dir = tmp_path / "Annotations"
+    ann_dir.mkdir()
+    root = ET.Element("annotation")
+    ET.SubElement(root, "filename").text = "a.png"
+    size = ET.SubElement(root, "size")
+    ET.SubElement(size, "width").text = "200"
+    ET.SubElement(size, "height").text = "200"
+    obj = ET.SubElement(root, "object")
+    ET.SubElement(obj, "name").text = "cell"
+    box = ET.SubElement(obj, "bndbox")
+    for tag, value in (("xmin", 10), ("ymin", 10), ("xmax", 60), ("ymax", 80)):
+        ET.SubElement(box, tag).text = str(value)
+    seg = ET.SubElement(obj, "segmentation")
+    poly = ET.SubElement(seg, "polygon")
+    for i, (x, y) in enumerate([(10, 10), (60, 10), (60, 80)], start=1):
+        pt = ET.SubElement(poly, f"pt{i}")
+        ET.SubElement(pt, "x").text = str(x)
+        ET.SubElement(pt, "y").text = str(y)
+    ET.ElementTree(root).write(ann_dir / "a.xml", encoding="utf-8")
+    return tmp_path
+
+
+def test_voc_import_completes_without_crashing(tmp_path, window, monkeypatch):
+    """Regression: the success message interpolated a variable that only the
+    COCO and YOLO branches set, so Pascal VOC raised ``UnboundLocalError``
+    **after** importing everything — the user saw a traceback instead of a
+    result. Caught only by running the real GUI path; the importer's own unit
+    tests call ``import_pascal_voc`` directly and never reach this line.
+    """
+    voc_dir = _write_voc_dataset(tmp_path)
+    shown = {}
+
+    monkeypatch.setattr(
+        iomod.QFileDialog, "getExistingDirectory",
+        staticmethod(lambda *a, **k: str(voc_dir)),
+    )
+    monkeypatch.setattr(
+        iomod.QMessageBox, "information",
+        staticmethod(lambda _p, title, text, *a, **k: shown.update(title=title, text=text)),
+    )
+    window.import_format_selector.setCurrentText("Pascal VOC")
+
+    iomod.import_annotations(window)  # must not raise
+
+    assert shown.get("title") == "Import Complete"
+    assert str(voc_dir) in shown["text"], shown["text"]
+    assert "a.png" in window.all_annotations
+    imported = window.all_annotations["a.png"]["cell"][0]
+    assert imported["segmentation"], "the inline polygon was dropped"
+
+
 def _write_coco_with_pose(tmp_path):
     images_dir = tmp_path / "images"
     images_dir.mkdir()
